@@ -13,7 +13,7 @@
 // the box for casual users while letting power users tune precision
 // by writing tight descriptions.
 // ──────────────────────────────────────────────
-import type { AgentContext, AgentResult, LorebookEntry } from "@marinara-engine/shared";
+import { estimateTextTokens, type AgentContext, type AgentResult, type LorebookEntry } from "@marinara-engine/shared";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import { executeAgent, type AgentExecConfig } from "./agent-executor.js";
 import { logger } from "../../lib/logger.js";
@@ -83,7 +83,10 @@ export interface KnowledgeRouterCandidateOptions extends LorebookEmbeddingOption
 
 /** Take the first ~N tokens of text (rough char-count approximation). */
 function firstNTokens(text: string, n: number): string {
-  return text.slice(0, n * 4).trim();
+  const codePoints = Array.from(text);
+  let end = Math.min(codePoints.length, n * 4);
+  while (end > 0 && estimateTextTokens(codePoints.slice(0, end).join("")) > n) end -= 1;
+  return codePoints.slice(0, end).join("").trim();
 }
 
 /**

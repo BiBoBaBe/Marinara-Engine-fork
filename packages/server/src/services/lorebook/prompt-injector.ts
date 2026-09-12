@@ -4,7 +4,7 @@
 // them into the prompt at the correct positions
 // (WORLD_INFO_BEFORE / WORLD_INFO_AFTER / depth).
 // ──────────────────────────────────────────────
-import type { LorebookRole } from "@marinara-engine/shared";
+import { estimateTextTokens, type LorebookRole } from "@marinara-engine/shared";
 import type { ActivatedEntry } from "./keyword-scanner.js";
 
 /** A prompt message ready for injection. */
@@ -129,12 +129,11 @@ export function injectAtDepth(
 /**
  * Apply token budget to activated entries.
  * Trims entries (by priority/order) until total tokens are within budget.
- * Uses a rough estimate of 4 characters per token.
+ * Uses the shared lightweight token estimator.
  */
 export function applyTokenBudget(activatedEntries: ActivatedEntry[], tokenBudget: number): ActivatedEntry[] {
   if (tokenBudget <= 0) return activatedEntries;
 
-  const CHARS_PER_TOKEN = 4;
   let totalTokens = 0;
   const result: ActivatedEntry[] = [];
 
@@ -146,7 +145,7 @@ export function applyTokenBudget(activatedEntries: ActivatedEntry[], tokenBudget
   });
 
   for (const entry of sorted) {
-    const entryTokens = Math.ceil(entry.entry.content.length / CHARS_PER_TOKEN);
+    const entryTokens = estimateTextTokens(entry.entry.content);
     if (totalTokens + entryTokens > tokenBudget) {
       // Budget exhausted — skip remaining entries
       break;
@@ -194,7 +193,7 @@ export function processActivatedEntries(
   const outlets = Object.fromEntries(Array.from(outletParts, ([name, parts]) => [name, parts.join("\n")]));
 
   // Estimate tokens
-  const totalChars = budgeted.reduce((sum, a) => sum + a.entry.content.length, 0);
+  const totalTokensEstimate = budgeted.reduce((sum, a) => sum + estimateTextTokens(a.entry.content), 0);
 
   return {
     worldInfoBefore: before,
@@ -202,6 +201,6 @@ export function processActivatedEntries(
     depthEntries,
     outlets,
     totalEntries: budgeted.length,
-    totalTokensEstimate: Math.ceil(totalChars / 4),
+    totalTokensEstimate,
   };
 }

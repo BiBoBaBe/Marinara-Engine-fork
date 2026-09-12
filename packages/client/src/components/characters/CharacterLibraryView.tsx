@@ -23,7 +23,7 @@ import {
   Star,
   User,
 } from "lucide-react";
-import { type CharacterData, type Persona } from "@marinara-engine/shared";
+import { estimateTextTokens, type CharacterData, type Persona } from "@marinara-engine/shared";
 import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import {
@@ -176,10 +176,10 @@ function getPersonaSections(persona: Persona): LibrarySection[] {
 }
 
 function estimatePersonaTokens(persona: Persona) {
-  return Math.ceil(
+  return estimateTextTokens(
     [persona.description, persona.personality, persona.scenario, persona.backstory, persona.appearance]
       .map(getText)
-      .join("").length / 4,
+      .join(""),
   );
 }
 

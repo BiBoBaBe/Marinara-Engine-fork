@@ -9,7 +9,7 @@ const RECALL_TRUNCATION_MARKER = "\n...[recalled memory truncated]...\n";
 function estimateTextTokens(content: string): number {
   const trimmed = content.trim();
   if (!trimmed) return 0;
-  return Math.max(1, Math.ceil(trimmed.length / 4));
+  return estimateTokens(trimmed);
 }
 
 function sliceAtCodePointBoundaries(content: string, start: number, end: number): string {
@@ -86,3 +86,4 @@ export function packRecalledMemories(
 
   return { lines, estimatedTokens, budgetTokens, trimmed };
 }
+import { estimateTextTokens as estimateTokens } from "@marinara-engine/shared";

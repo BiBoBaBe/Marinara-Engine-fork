@@ -6,6 +6,7 @@ import { createHash, randomInt, randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { basename, extname, join } from "path";
 import { z } from "zod";
+import { estimateTextTokens } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
@@ -3706,7 +3707,7 @@ function fitSessionConclusionMessages(args: {
     guard += 1;
     transcriptTruncated = true;
 
-    const currentTranscriptTokens = Math.ceil(Array.from(transcriptText).length / SESSION_SUMMARY_CHARS_PER_TOKEN);
+    const currentTranscriptTokens = estimateTextTokens(transcriptText);
     const overflowTokens = Math.max(1, fit.estimatedTokensBefore - (fit.inputBudget ?? fit.estimatedTokensBefore - 1));
     const targetTranscriptTokens = Math.max(
       Math.ceil(SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS / SESSION_SUMMARY_CHARS_PER_TOKEN),

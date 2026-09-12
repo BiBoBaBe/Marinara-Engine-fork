@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AgentOutputSpoiler } from "../agents/AgentOutputSpoiler";
-import type { Chat, GameState } from "@marinara-engine/shared";
+import { estimateTextTokens, type Chat, type GameState } from "@marinara-engine/shared";
 import {
   useAgentMemory,
   useAgentSuiteRewrite,
@@ -645,6 +645,10 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
     () => selectedContextSources.reduce((total, source) => total + source.content.length, 0),
     [selectedContextSources],
   );
+  const contextTotalTokens = useMemo(
+    () => selectedContextSources.reduce((sum, source) => sum + estimateTextTokens(source.content), 0),
+    [selectedContextSources],
+  );
   const contextOverLimit =
     selectedContextSources.length > MAX_CONTEXT_SECTIONS || contextTotalChars > MAX_CONTEXT_TOTAL_CHARS;
 
@@ -817,7 +821,7 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
                     />
                     <span className="min-w-0 flex-1 truncate">{source.display}</span>
                     <span className="shrink-0 text-[0.5rem] text-[var(--muted-foreground)]">
-                      ~{Math.ceil(source.content.length / 4).toLocaleString()}{" "}
+                      ~{estimateTextTokens(source.content).toLocaleString()}{" "}
                       {localizeUi("ui.agents.agenteditor.tokens")}
                     </span>
                   </label>
@@ -837,7 +841,7 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
           {selectedContextSources.length} {localizeUi("ui.chat.agentsuitemodal.source")}
           {selectedContextSources.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s")}{" "}
           {localizeUi("ui.chat.agentsuitemodal.attached")}
-          {Math.ceil(contextTotalChars / 4).toLocaleString()} {localizeUi("ui.agents.agenteditor.tokens")}
+          {contextTotalTokens.toLocaleString()} {localizeUi("ui.agents.agenteditor.tokens")}
           {contextOverLimit &&
             ` — too large (max ${MAX_CONTEXT_SECTIONS} sources / ${MAX_CONTEXT_TOTAL_CHARS.toLocaleString()} characters), deselect some sources`}
         </p>

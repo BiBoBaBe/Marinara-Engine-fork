@@ -9,7 +9,11 @@ import {
   isProviderLocalUrlsEnabled,
 } from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
-import type { GenerationParameterSendKey, GenerationParameterSendMap } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  type GenerationParameterSendKey,
+  type GenerationParameterSendMap,
+} from "@marinara-engine/shared";
 
 /**
  * Shared undici Agent settings. The headers timeout (time to first byte) follows
@@ -331,9 +335,7 @@ function minDefined(...values: Array<number | undefined>): number | undefined {
   return result;
 }
 
-export function estimateTextTokens(text: string): number {
-  return Math.ceil(Array.from(text).length / CHARS_PER_TOKEN);
-}
+export { estimateTextTokens };
 
 function estimateStructuredTokens(value: unknown): number {
   try {

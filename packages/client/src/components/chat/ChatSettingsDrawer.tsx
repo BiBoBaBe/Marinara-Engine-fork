@@ -91,7 +91,7 @@ import { SceneInstructionsSection } from "../../features/chat-settings/sections/
 import { TranslationSection } from "../../features/chat-settings/sections/TranslationSection";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { AvatarCrop } from "@marinara-engine/shared";
-import { isRoleplayCommandEnabled, resolveScopedRegexMode } from "@marinara-engine/shared";
+import { estimateTextTokens, isRoleplayCommandEnabled, resolveScopedRegexMode } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { showAlertDialog, showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -1747,7 +1747,7 @@ export function ChatSettingsDrawer({
         },
       ];
     });
-    const tokensByType = new Map<string, number>(inputs.map((i) => [i.type, Math.ceil(i.promptTemplate.length / 4)]));
+    const tokensByType = new Map<string, number>(inputs.map((i) => [i.type, estimateTextTokens(i.promptTemplate)]));
     return {
       cost: estimateAgentLoadCost(inputs, chat.connectionId ?? null),
       tokensByType,
@@ -9970,7 +9970,7 @@ function formatMemoryDate(value: string): string {
 
 function estimateMemoryTokens(memories: ChatMemoryChunk[]): number {
   const text = memories.map((memory) => memory.content).join("\n\n");
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function formatMemoryChunkCount(count: number): string {

@@ -6,7 +6,7 @@
 // a single LLM context window, it splits it into chunks and runs
 // multiple extraction passes, then consolidates the results.
 // ──────────────────────────────────────────────
-import type { AgentContext, AgentResult } from "@marinara-engine/shared";
+import { estimateTextTokens, type AgentContext, type AgentResult } from "@marinara-engine/shared";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import { executeAgent, type AgentExecConfig } from "./agent-executor.js";
 
@@ -15,7 +15,7 @@ import { executeAgent, type AgentExecConfig } from "./agent-executor.js";
  * We leave headroom for the system prompt + context block.
  */
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function normalizeSourceContextBudget(value: unknown, fallback = 6000): number {

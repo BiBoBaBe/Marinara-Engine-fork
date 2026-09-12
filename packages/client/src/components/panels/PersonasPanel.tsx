@@ -56,7 +56,7 @@ import {
 } from "../../lib/card-library-search";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
-import type { Persona } from "@marinara-engine/shared";
+import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string };
 type ParsedPersonaGroupRow = PersonaGroupRow & { memberIds: string[] };
@@ -82,7 +82,7 @@ function parseDroppedPersonaIds(payload: string): unknown {
 
 function estimateTokens(p: Persona): number {
   const text = [p.description, p.personality, p.scenario, p.backstory, p.appearance].join("");
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function getPersonaPreviewMetadata(p: Persona): string | null {

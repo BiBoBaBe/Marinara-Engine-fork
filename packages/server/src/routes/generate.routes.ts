@@ -65,6 +65,7 @@ import {
   normalizeTextForMatch,
   parseManagedGenerationParameterDefinitions,
   normalizeGameStoryboardKeyframeCount,
+  estimateTextTokens,
   type APIProvider,
   type MacroContext,
 } from "@marinara-engine/shared";
@@ -2835,9 +2836,9 @@ export async function generateRoutes(app: FastifyInstance) {
             lorebookScanSnapshot = {
               activatedEntries: assembled.lorebookActivatedEntries ?? [],
               budgetSkippedEntries: assembled.lorebookBudgetSkippedEntries ?? [],
-              totalTokensEstimate: Math.ceil(
-                (assembled.lorebookActivatedEntries ?? []).reduce((total, entry) => total + entry.content.length, 0) /
-                  4,
+              totalTokensEstimate: (assembled.lorebookActivatedEntries ?? []).reduce(
+                (total, entry) => total + estimateTextTokens(entry.content),
+                0,
               ),
               totalEntries: (assembled.lorebookActivatedEntries ?? []).length,
             };
