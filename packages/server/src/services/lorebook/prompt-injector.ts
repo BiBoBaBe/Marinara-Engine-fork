@@ -193,7 +193,7 @@ export function processActivatedEntries(
   const outlets = Object.fromEntries(Array.from(outletParts, ([name, parts]) => [name, parts.join("\n")]));
 
   // Estimate tokens
-  const totalTokensEstimate = budgeted.reduce((sum, a) => sum + estimateTextTokens(a.entry.content), 0);
+  const totalTokensEstimate = estimateTextTokens(budgeted.map((a) => a.entry.content).join(""));
 
   return {
     worldInfoBefore: before,

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { estimateTextTokens } from "../../packages/shared/src/utils/token-estimator.js";
 import { estimateCharacterCardTokens } from "../../packages/client/src/lib/character-token-count.js";
+import { processActivatedEntries } from "../../packages/server/src/services/lorebook/prompt-injector.js";
 
 assert.equal(estimateTextTokens(""), 0);
 assert.equal(estimateTextTokens("abcdefghijkl"), 3, "Latin text should retain the four-characters-per-token estimate");
@@ -17,3 +19,42 @@ assert.equal(
   4,
   "character cards should display the shared token estimate, not their raw character count",
 );
+
+for (const [contents, expected] of [
+  [[], 0],
+  [["a", "b"], 1],
+  [["가", "나"], 1],
+  [["漢", "字", "漢"], 3],
+  [["a", "가", "漢"], 2],
+] as Array<[string[], number]>) {
+  const entries = contents.map((content, order) => ({
+    entry: { content, order, position: 0 },
+    matchedKeys: [],
+    activationSources: [],
+    injectionOrder: order,
+  })) as Parameters<typeof processActivatedEntries>[0];
+  assert.equal(
+    processActivatedEntries(entries).totalTokensEstimate,
+    expected,
+    "Lorebook totals must apply script weights and round once after combining entries",
+  );
+}
+
+// Guard the other aggregate call sites without loading route or UI dependencies.
+for (const [path, expression] of [
+  [
+    "packages/client/src/components/chat/AgentSuiteModal.tsx",
+    'estimateTextTokens(selectedContextSources.map((source) => source.content).join(""))',
+  ],
+  [
+    "packages/server/src/routes/generate.routes.ts",
+    'estimateTextTokens( (assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join(""), )',
+  ],
+  [
+    "packages/server/src/routes/lorebooks.routes.ts",
+    'estimateTextTokens(activatedEntries.map((entry) => entry.content).join(""))',
+  ],
+]) {
+  const text = readFileSync(new URL(`../../${path}`, import.meta.url), "utf8").replace(/\s+/gu, " ");
+  assert.ok(text.includes(expression!), `${path}: combined text must be estimated only once`);
+}

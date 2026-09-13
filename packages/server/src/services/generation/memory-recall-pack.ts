@@ -1,3 +1,5 @@
+import { estimateTextTokens as estimateTokens } from "@marinara-engine/shared";
+
 const DEFAULT_MEMORY_RECALL_BUDGET_TOKENS = 1024;
 const MIN_MEMORY_RECALL_BUDGET_TOKENS = 384;
 const MAX_MEMORY_RECALL_BUDGET_TOKENS = 1536;
@@ -86,4 +88,3 @@ export function packRecalledMemories(
 
   return { lines, estimatedTokens, budgetTokens, trimmed };
 }
-import { estimateTextTokens as estimateTokens } from "@marinara-engine/shared";

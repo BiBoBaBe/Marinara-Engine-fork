@@ -2836,9 +2836,8 @@ export async function generateRoutes(app: FastifyInstance) {
             lorebookScanSnapshot = {
               activatedEntries: assembled.lorebookActivatedEntries ?? [],
               budgetSkippedEntries: assembled.lorebookBudgetSkippedEntries ?? [],
-              totalTokensEstimate: (assembled.lorebookActivatedEntries ?? []).reduce(
-                (total, entry) => total + estimateTextTokens(entry.content),
-                0,
+              totalTokensEstimate: estimateTextTokens(
+                (assembled.lorebookActivatedEntries ?? []).map((entry) => entry.content).join(""),
               ),
               totalEntries: (assembled.lorebookActivatedEntries ?? []).length,
             };

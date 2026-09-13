@@ -646,7 +646,7 @@ export function AgentSuiteModal({ chat, open, onClose, onCloseGuardChange, agent
     [selectedContextSources],
   );
   const contextTotalTokens = useMemo(
-    () => selectedContextSources.reduce((sum, source) => sum + estimateTextTokens(source.content), 0),
+    () => estimateTextTokens(selectedContextSources.map((source) => source.content).join("")),
     [selectedContextSources],
   );
   const contextOverLimit =

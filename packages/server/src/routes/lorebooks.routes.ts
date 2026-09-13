@@ -229,7 +229,7 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
   const totalTokensEstimate =
     typeof value.totalTokensEstimate === "number" && Number.isFinite(value.totalTokensEstimate)
       ? value.totalTokensEstimate
-      : activatedEntries.reduce((total, entry) => total + estimateTextTokens(entry.content), 0);
+      : estimateTextTokens(activatedEntries.map((entry) => entry.content).join(""));
   const totalEntries =
     typeof value.totalEntries === "number" && Number.isFinite(value.totalEntries)
       ? value.totalEntries
