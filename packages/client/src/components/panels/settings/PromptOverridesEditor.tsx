@@ -383,7 +383,7 @@ function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly str
             {localizeUi("ui.panels.promptoverrideseditorbody.template")}
           </span>
           <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
-            {formatEstimatedTokens(estimateTextTokens(draft), localizeUi)}
+            {formatEstimatedTokens(loadingPrompt ? 0 : estimateTextTokens(draft), localizeUi)}
           </span>
         </div>
         <textarea

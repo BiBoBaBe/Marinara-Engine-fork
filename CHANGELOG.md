@@ -184,7 +184,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 ### Fixed
 
 - Recalled memories, summary preparation, and context trimming respect CJK token estimates without splitting Unicode characters or discarding a usable excerpt. Short lorebook previews stop scanning once their token budget is filled (#6161).
-- Preset editors tolerate malformed saved marker settings, and prompt token counters use the selected UI language (#6161).
+- Preset editors tolerate malformed saved marker settings, and prompt token counters use the selected UI language and clear stale counts while loading (#6161).
+- Saved translations appear when returning to a chat before a delayed translation finishes saving, without unhiding dismissed translations.
 - Mobile character reordering keeps Chat Settings still during the drag; swiping outside the handle continues to scroll normally (#6098).
 - Roleplay message actions keep their tapped state when opening menus on iPhone, suppress native tap flashes, and use direct tray buttons for recipient controls (#6092, #6094).
 - Community and Field Notes shortcuts fit within their widget padding, including Firefox desktop layouts (#6093).

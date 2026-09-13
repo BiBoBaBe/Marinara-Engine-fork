@@ -4291,6 +4291,23 @@ test("Character and Persona avatar actions stay separated and visually balanced"
       await expect(compactMenuButton).toBeVisible();
       await expect(compactMenuButton).toHaveText("Card");
       await openEditorSection(editor, "Metadata");
+      // Finish the animated jump before testing which item receives initial focus.
+      // During the jump the scroll spy can still select Card, then change to Metadata.
+      await expect
+        .poll(() =>
+          editor.locator(".mari-editor-content").evaluate((root) => {
+            const target = root.querySelector<HTMLElement>('[data-editor-section="metadata"]')!;
+            const destination = Math.max(
+              0,
+              Math.min(
+                root.scrollHeight - root.clientHeight,
+                root.scrollTop + target.getBoundingClientRect().top - root.getBoundingClientRect().top - 16,
+              ),
+            );
+            return Math.abs(root.scrollTop - destination);
+          }),
+        )
+        .toBeLessThanOrEqual(1);
       await verifyCompactNavigation();
 
       await page.setViewportSize({ width: 767, height: 900 });
@@ -16704,9 +16721,15 @@ test("Roleplay setup agent category headers never cover agent rows while scrolli
       ((await writerHeader.boundingBox())?.height ?? 0) / 2,
     );
 
-    const [headerBox, rowBox] = await Promise.all([writerHeader.boundingBox(), firstWriterRow.boundingBox()]);
-    expect(headerBox).not.toBeNull();
-    expect(rowBox).not.toBeNull();
+    // Read both elements in one frame while the wizard's entrance animation is running.
+    const boxes = await writerHeader.or(firstWriterRow).evaluateAll((elements) =>
+      elements.map((element) => {
+        const { y, height } = element.getBoundingClientRect();
+        return { y, height };
+      }),
+    );
+    expect(boxes).toHaveLength(2);
+    const [headerBox, rowBox] = boxes;
     // 1px epsilon: sub-pixel scroll snapping can leave the sticky header a
     // fraction of a pixel into the row without visually covering it.
     expect(headerBox!.y + headerBox!.height).toBeLessThanOrEqual(rowBox!.y + 1);
