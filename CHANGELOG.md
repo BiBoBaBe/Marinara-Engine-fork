@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Stopping a Roleplay reply also stops its remaining text-reveal animation and releases the generation control promptly (#6173).
+
 - Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
 
 - Image API connections now accept custom JSON parameters, including provider-supported LoRA fields. Parameters persist with saved, copied, and exported connections and apply to generation requests using that connection's own defaults (#6167).
