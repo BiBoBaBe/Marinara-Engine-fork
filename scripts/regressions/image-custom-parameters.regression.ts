@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { logger } from "../../packages/server/src/lib/logger.js";
 import { generateImage } from "../../packages/server/src/services/image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../../packages/server/src/services/image/image-generation-defaults.js";
 
@@ -12,9 +13,48 @@ const custom = {
   prompt: "custom prompt",
   enabled: false,
   nullable: null,
-  headers: { Authorization: "body only" },
+  headers: { Authorization: "body-only-credential" },
+  api_key: "custom-api-credential",
+  accessToken: "custom-access-credential",
+  nested: [{ secret: "nested-credential", max_tokens: 256, token_count: 12 }],
+  serialized: JSON.stringify({ password: "serialized-credential", image: `data:image/png;base64,${png}` }),
+  imageDataUrl: `data:image/png;base64,${png}`,
+  rawImage: png,
+  max_tokens: 512,
   method: "DELETE",
 };
+const logs: unknown[][] = [];
+const priorWarn = logger.warn;
+const priorLevel = logger.level;
+logger.level = "warn";
+logger.warn = ((...args: unknown[]) => logs.push(args)) as typeof logger.warn;
+function assertSafeLogs() {
+  const payloadLogs = logs.filter(([message]) => String(message).includes("payload"));
+  assert.ok(payloadLogs.length > 0, "Explicit debug mode still logs the request");
+  const text = JSON.stringify(payloadLogs);
+  for (const sensitive of [
+    png,
+    "body-only-credential",
+    "custom-api-credential",
+    "custom-access-credential",
+    "nested-credential",
+    "serialized-credential",
+  ]) {
+    assert.ok(!text.includes(sensitive), "Image bytes and credentials must not enter debug logs");
+  }
+  assert.ok(text.includes("custom prompt"), "Prompt diagnostics remain readable");
+  const payloads = payloadLogs.map((entry) => JSON.parse(String(entry[1])));
+  const fields = payloads.flatMap((payload) => (Array.isArray(payload) ? payload : [payload]));
+  assert.ok(
+    fields.some((field) => Number(field.max_tokens) === 512),
+    "Ordinary token-limit diagnostics survive",
+  );
+  assert.ok(
+    fields.some((field) => field.nested?.[0]?.max_tokens === 256 && field.nested?.[0]?.token_count === 12),
+    "Nested token limits/counts survive",
+  );
+  logs.length = 0;
+}
 const requests: Array<{
   url: string;
   method: string;
@@ -40,7 +80,7 @@ const server = createServer(async (request, response) => {
   } else if (request.url!.includes("generate/async")) response.end(JSON.stringify({ id: "job" }));
   else if (request.url!.includes("generate/check")) response.end(JSON.stringify({ done: true }));
   else if (request.url!.includes("generate/status")) response.end(JSON.stringify({ generations: [{ img: png }] }));
-  else response.end(JSON.stringify({ data: [{ b64_json: png }] }));
+  else response.end(JSON.stringify({ data: [{ b64_json: png, url: `data:image/png;base64,${png}` }], images: [png] }));
 });
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
@@ -60,13 +100,15 @@ try {
   assert.equal(novelai?.seed, 17);
   assert.equal(novelai?.novelai?.steps, 31);
   assert.deepEqual(novelai?.customParameters, custom);
-  for (const backend of ["openai", "nanogpt", "xai", "togetherai", "openrouter"]) {
+  for (const backend of ["openai", "nanogpt", "xai", "togetherai", "openrouter", "venice", "zai", "arli"]) {
     requests.length = 0;
     const result = await generateImage(backend, baseUrl, "fixture-key", backend, {
       prompt: "default prompt",
+      referenceImage: backend === "nanogpt" || backend === "arli" ? png : undefined,
       model: backend === "openrouter" ? "openai/gpt-image-2" : "flux-2-pro",
       imageDefaults: defaults(backend),
       allowLocalUrls: true,
+      debugMode: true,
     });
     assert.equal(result.base64, png);
     assert.equal(requests.length, 1);
@@ -74,21 +116,30 @@ try {
     assert.equal(requests[0]!.authorization, "Bearer fixture-key");
     for (const [key, value] of Object.entries(custom))
       assert.deepEqual(requests[0]!.body[key], value, `${backend}: ${key}`);
+    assertSafeLogs();
   }
   requests.length = 0;
   await generateImage("openai", baseUrl, "fixture-key", "openai", {
     prompt: "default prompt",
     model: "gpt-image-2",
     referenceImage: png,
+    debugMode: true,
     imageDefaults: defaults("openai"),
     allowLocalUrls: true,
   });
   assert.match(requests[0]!.url, /\/images\/edits$/u);
-  assert.ok(requests[0]!.body["image[]"] instanceof Blob, "Reference file remains present");
+  const referenceFile = requests[0]!.body["image[]"];
+  assert.ok(referenceFile instanceof Blob, "Reference file remains present");
+  assert.deepEqual(
+    Buffer.from(await referenceFile.arrayBuffer()),
+    Buffer.from(png, "base64"),
+    "Logging preserves uploaded image bytes",
+  );
   for (const [key, value] of Object.entries(custom)) {
     assert.equal(requests[0]!.body[key], typeof value === "string" ? value : JSON.stringify(value));
   }
   assert.equal(requests[0]!.authorization, "Bearer fixture-key");
+  assertSafeLogs();
   requests.length = 0;
   await generateImage("horde", baseUrl, "fixture-key", "horde", {
     prompt: "default prompt",
@@ -126,6 +177,8 @@ try {
   assert.equal(requests[1]!.body.lora_url_1, undefined, "Primary fields do not leak into a fallback connection");
   assert.equal(requests[1]!.authorization, "Bearer fallback-key");
 } finally {
+  logger.warn = priorWarn;
+  logger.level = priorLevel;
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
 console.info(
