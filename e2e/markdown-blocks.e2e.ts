@@ -44,7 +44,8 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
             '<PRE title="Raw code"><CODE>First<br>&gt; literal code<br>---<br>***<br>Last</CODE></PRE>' +
             "\n\n```text\nFirst\n> fenced literal\n---\n***\nLast\n```" +
             '\n\n<div title="Adjacent blocks">\n---\n> Adjacent quote.\n***\n</div>' +
-            "\n**Bold `inline` continuation.**"
+            "\n**Bold `inline` continuation.**" +
+            '\n<div title="Adjacent headings">\n---\n# Heading after rule\n> Quote before heading.\n## Heading after quote\n---\n-# Caption after rule\n</div>'
           : `${markdown}\n\n> First quoted paragraph.\n>\n> Second quoted paragraph.\n\n\`\`\`text\n---\n\n> literal code\n\`\`\``;
       const message = await (
         await request.post(`/api/chats/${chat.id}/messages`, {
@@ -73,8 +74,8 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
       );
       await page.goto("/");
       const row = page.locator(`[data-message-id="${message.id}"]`);
-      await expect(row.locator(".mari-md-blockquote")).toHaveCount(3);
-      await expect(row.locator(".mari-md-rule")).toHaveCount(rendering === "plain Markdown" ? 2 : 4);
+      await expect(row.locator(".mari-md-blockquote")).toHaveCount(rendering === "plain Markdown" ? 3 : 4);
+      await expect(row.locator(".mari-md-rule")).toHaveCount(rendering === "plain Markdown" ? 2 : 6);
       await expect(row.locator(".mari-md-inline-code")).toHaveText(
         rendering === "plain Markdown" ? ["---", "> literal quote"] : ["---", "> literal quote", "inline"],
       );
@@ -92,6 +93,11 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
         await expect(row.locator(".mari-md-codeblock code")).toHaveText("First> fenced literal---***Last");
         await expect(row.locator('[title="Adjacent blocks"] .mari-md-blockquote')).toHaveText("Adjacent quote.");
         await expect(row.locator('[title="Adjacent blocks"] .mari-md-rule')).toHaveCount(2);
+        await expect(row.locator('[title="Adjacent headings"] .mari-md-heading')).toHaveText([
+          "Heading after rule",
+          "Heading after quote",
+        ]);
+        await expect(row.locator('[title="Adjacent headings"] .mari-md-subtext')).toHaveText("Caption after rule");
         await expect(row.locator("strong").filter({ has: page.locator("code") })).toHaveText(
           "Bold inline continuation.",
         );
