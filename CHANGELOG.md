@@ -181,6 +181,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- iPhone TTS playback preserves user-initiated audio access, and mobile Roleplay message controls keep the volume popup on screen without unwanted tap highlighting (#6166).
+
 - Mobile character reordering keeps Chat Settings still during the drag; swiping outside the handle continues to scroll normally (#6098).
 - Roleplay message actions keep their tapped state when opening menus on iPhone, suppress native tap flashes, and use direct tray buttons for recipient controls (#6092, #6094).
 - Community and Field Notes shortcuts fit within their widget padding, including Firefox desktop layouts (#6093).
