@@ -1687,14 +1687,8 @@ function renderContent(
     });
   })();
 
-  // Convert *** and --- horizontal rules to <hr> tags in HTML path
-  const withHr = withDialogue.replace(
-    /(?:^|(?<=<br[^>]*>))\s*(?:\*{3,}|-{3,})\s*(?:$|(?=<br[^>]*>))/g,
-    '<hr class="mari-md-rule">',
-  );
-
   // Apply markdown-style bold/italic in HTML path
-  const withMarkdown = applyInlineMarkdownHTML(withHr);
+  const withMarkdown = applyInlineMarkdownHTML(withDialogue);
   const finalHtml = sanitizeChatHtml(withMarkdown, { allowStyle: true });
   const scopedCss = scopeChatMessageCss(rawStyleBlocks, `.${htmlScopeClass}`);
   const html = scopedCss ? `<style>${scopedCss}</style>${finalHtml}` : finalHtml;
