@@ -192,6 +192,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- SwarmUI video downloads reject foreign output URLs before sending the server's authentication cookie (#6158).
+
 - Storyboard planning retries explicitly local connections behind proxies once without reasoning, and reports empty final answers or exhausted output limits when planning still fails (#6165).
 
 - World generation reserves context for its reply schema, preserves selected lore after macro expansion or refuses it clearly, and no longer counts unnamed outlets as injected (#6145, #6146, #6152).

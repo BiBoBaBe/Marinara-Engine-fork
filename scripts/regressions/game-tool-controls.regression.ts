@@ -49,6 +49,8 @@ let emptyNarrator = false;
 let refusedCommand = "";
 let nativeDraft = "";
 let nativeRollTotal = 0;
+const nativeNotation = "2d2";
+const originalRandom = Math.random;
 let stateBaseline: { id: string; chatId: string } | undefined;
 const originalPlanner = OpenAIProvider.prototype.chatComplete;
 OpenAIProvider.prototype.chatComplete = async (messages, options) => {
@@ -65,7 +67,11 @@ OpenAIProvider.prototype.chatComplete = async (messages, options) => {
     return {
       content: null,
       toolCalls: [
-        { id: "native-roll", type: "function", function: { name: "roll_dice", arguments: '{"notation":"2d2"}' } },
+        {
+          id: "native-roll",
+          type: "function",
+          function: { name: "roll_dice", arguments: JSON.stringify({ notation: nativeNotation }) },
+        },
       ],
       finishReason: "tool_calls",
     };
@@ -158,12 +164,16 @@ async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGe
   if (outcomeRewrite) {
     assert.match(
       messages.at(-1)!.content,
-      /2d2 = [2-4]/,
+      /2d[12] = [2-4]/,
       "native/planner roll is present even when not echoed by narration",
     );
     assert.match(messages.at(-1)!.content, /d1 = 1/);
     assert.doesNotMatch(messages.at(-1)!.content, /No dice were rolled/);
-    if (nativeDraft) assert.match(messages.at(-1)!.content, new RegExp(`2d2 = ${nativeRollTotal}`));
+    if (nativeDraft) assert.match(messages.at(-1)!.content, new RegExp(`${nativeNotation} = ${nativeRollTotal}`));
+    if (nativeDraft.includes("Coincidence")) {
+      assert.match(messages.at(-1)!.content, /Coincidence/);
+      assert.match(messages.at(-1)!.content, /🎲 2d2 = 2/, "distinct rolls with identical values are not deduplicated");
+    }
   }
   if (!emptyNarrator)
     yield refusedCommand ||
@@ -483,7 +493,12 @@ try {
     apiKey: "synthetic",
     maxContext: 32768,
   });
-  for (nativeDraft of ["The attack is resolved. [dice: d1]", "The attack is resolved. [dice: 4d6kh3]"]) {
+  for (nativeDraft of [
+    "The attack is resolved. [dice: d1]",
+    "The attack is resolved. [dice: 4d6kh3]",
+    'The attack is resolved. [skill_check: skill="Coincidence" dc="2" dice="2d2"] [dice: d1]',
+  ]) {
+    Math.random = nativeDraft.includes("Coincidence") ? () => 0 : originalRandom;
     const chat = (await chats.create({
       name: "Native and text rolls",
       mode: "game",
@@ -503,7 +518,13 @@ try {
     const extra = JSON.parse((await chats.listMessages(chat.id)).at(-1)!.extra);
     assert.equal(extra.diceRollResults[0].total, nativeRollTotal);
     assert.equal(extra.diceRollResults.length, nativeDraft.includes("kh3") ? 1 : 2);
+    assert.equal(
+      extra.gameOutcomeNarrationFailed,
+      false,
+      "provider assertions must not be swallowed by rewrite recovery",
+    );
   }
+  Math.random = originalRandom;
   nativeDraft = "";
 
   const refusalChat = (await chats.create({
@@ -700,6 +721,7 @@ try {
     new Set(["Elena", "Smuggler tunnels", "Secret ledger", "Docks ledger"]),
   );
 } finally {
+  Math.random = originalRandom;
   OpenAIProvider.prototype.chatComplete = originalPlanner;
   [
     ClaudeSubscriptionProvider.prototype.chat,

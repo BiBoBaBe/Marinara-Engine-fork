@@ -57,7 +57,6 @@ import {
   DEFAULT_GENERATION_PARAMS,
   extractLeadingThinkingBlocks,
   formatSkillCheckResultSummary,
-  parseDiceNotation,
   unwrapConversationInstructions,
   findKnownModel,
   isOpenAIGpt6AstraModel,
@@ -8008,19 +8007,7 @@ export async function generateRoutes(app: FastifyInstance) {
               const checks = [...(rolled.results ?? []), ...generalRolls.checkResults];
               const resolvedSummary = [
                 ...checks.map(formatSkillCheckResultSummary),
-                ...toolDiceRollResults
-                  .filter(
-                    (result) =>
-                      !checks.some(
-                        (check) =>
-                          parseDiceNotation(check.dice ?? "1d20")?.sides ===
-                            parseDiceNotation(result.notation)?.sides &&
-                          check.modifier === result.modifier &&
-                          check.rolls.length === result.rolls.length &&
-                          check.rolls.every((value, index) => value === result.rolls[index]),
-                      ),
-                  )
-                  .map((result) => `🎲 ${result.notation} = ${result.total}`),
+                ...toolDiceRollResults.map((result) => `🎲 ${result.notation} = ${result.total}`),
               ].join("\n");
               const continuationMessages = await fitPromptForSend([
                 ...narratorMessages,
