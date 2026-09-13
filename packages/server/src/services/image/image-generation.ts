@@ -1195,6 +1195,35 @@ async function fetchImageWithSizeFallback(
   return imageFetch(url, { ...init, body: JSON.stringify({ ...body, size: nextSize }) }, policy);
 }
 
+/** Format only the log copy; provider payloads and prompt text remain untouched. */
+function imagePayloadForLog(payload: unknown): string {
+  return JSON.stringify(
+    payload,
+    (key, value: unknown) => {
+      const normalizedKey = key.replace(/[_-]/g, "");
+      // Keep diagnostic token limits/counts, while hiding actual token credentials.
+      if (/(secret|password|apikey|authorization|cookie|credential|token$)/i.test(normalizedKey)) {
+        return "[REDACTED]";
+      }
+      if (value instanceof Blob) return `[file: ${value.type || "unknown"}, ${value.size} bytes]`;
+      if (typeof value !== "string" || /prompt|^(?:text|content)$/i.test(key)) return value;
+      const trimmed = value.trim();
+      const mediaType = /^data:([^;,]+)/i.exec(trimmed)?.[1] ?? detectImageMimeType(trimmed);
+      if (mediaType) return `[redacted ${mediaType}: ${trimmed.length} encoded characters]`;
+      // Form fields and ComfyUI workflows can contain serialized objects with the same secrets.
+      if (/^[{[]/.test(trimmed)) {
+        try {
+          return JSON.parse(trimmed) as unknown;
+        } catch {
+          // Ordinary non-JSON parameter text remains useful in diagnostics.
+        }
+      }
+      return value;
+    },
+    2,
+  );
+}
+
 function withImageCustomParameters(request: ImageGenRequest, body: Record<string, unknown>): Record<string, unknown> {
   const custom = request.imageDefaults?.customParameters;
   if (!custom || !Object.keys(custom).length) return body;
@@ -1203,7 +1232,7 @@ function withImageCustomParameters(request: ImageGenRequest, body: Record<string
   logDebugOverride(
     request.debugMode === true,
     "[debug/image] final custom request payload:\n%s",
-    JSON.stringify(merged, null, 2),
+    imagePayloadForLog(merged),
   );
   return merged;
 }
@@ -1217,11 +1246,7 @@ function applyImageCustomFormParameters(request: ImageGenRequest, body: FormData
   logDebugOverride(
     request.debugMode === true,
     "[debug/image] final custom form payload:\n%s",
-    JSON.stringify(
-      [...body.entries()].map(([key, value]) => [key, typeof value === "string" ? value : `[file: ${value.name}]`]),
-      null,
-      2,
-    ),
+    imagePayloadForLog([...body.entries()].map(([key, value]) => ({ [key]: value }))),
   );
 }
 
@@ -1409,7 +1434,7 @@ async function generateVenice(baseUrl: string, apiKey: string, request: ImageGen
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/venice] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildVeniceApiUrl(baseUrl, "image/generate"),
@@ -1444,7 +1469,7 @@ async function generateZai(baseUrl: string, apiKey: string, request: ImageGenReq
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/zai] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildZaiImageUrl(baseUrl),
@@ -1493,7 +1518,7 @@ async function generateAtlasCloudImage(
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/atlas-cloud] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const outputUrl = await runAtlasCloudPrediction({
     baseUrl,
@@ -1530,7 +1555,11 @@ async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGe
     body.kontext_max_mode = true;
   }
   const requestBody = serializeNanoGPTImageRequest(body, references, request.imageDefaults?.customParameters);
-  logDebugOverride(request.debugMode === true, "[debug/image/nanogpt] final request payload:\n%s", requestBody);
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/nanogpt] final request payload:\n%s",
+    imagePayloadForLog(requestBody),
+  );
 
   const resp = await fetchImageWithSizeFallback(url, apiKey, requestBody, request);
 
@@ -2005,7 +2034,7 @@ async function generateArli(baseUrl: string, apiKey: string, request: ImageGenRe
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/arli] final request payload:\n%s",
-    JSON.stringify({ ...body, ...(useImg2Img ? { init_images: "[1 reference image]" } : {}) }, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildArliImageUrl(baseUrl, useImg2Img ? "img2img" : "txt2img"),
@@ -2851,16 +2880,7 @@ async function generateOpenRouterImageApi(
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/openrouter-images] final request payload:\n%s",
-    JSON.stringify(
-      {
-        ...body,
-        ...(Array.isArray(body.input_references)
-          ? { input_references: `[${body.input_references.length} reference image(s)]` }
-          : {}),
-      },
-      null,
-      2,
-    ),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     openRouterImagesUrl(baseUrl),
@@ -3685,7 +3705,7 @@ async function generateSwarmUI(baseUrl: string, apiKey: string, request: ImageGe
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/swarmui] final request payload:\n%s",
-    JSON.stringify(debugBody, null, 2),
+    imagePayloadForLog(debugBody),
   );
   const imageReference = await generateSwarmUiImageReference(base, apiKey, body, imageRequestSignal(request));
   if (imageReference.startsWith("data:")) return decodeImageDataUrl(imageReference);

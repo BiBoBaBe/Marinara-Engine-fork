@@ -8,15 +8,19 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
   page,
   request,
 }, testInfo) => {
-  const character = await (
-    await request.post("/api/characters", { data: { data: { name: "Volume fixture" } } })
-  ).json();
-  const chat = await (
-    await request.post("/api/chats", {
-      data: { name: "Roleplay volume controls", mode: "roleplay", characterIds: [character.id] },
-    })
-  ).json();
+  let characterId = "";
+  let chatId = "";
   try {
+    const character = await (
+      await request.post("/api/characters", { data: { data: { name: "Volume fixture" } } })
+    ).json();
+    characterId = character.id;
+    const chat = await (
+      await request.post("/api/chats", {
+        data: { name: "Roleplay volume controls", mode: "roleplay", characterIds: [character.id] },
+      })
+    ).json();
+    chatId = chat.id;
     const message = await (
       await request.post(`/api/chats/${chat.id}/messages`, {
         data: { role: "assistant", characterId: character.id, content: "The volume control should stay within reach." },
@@ -113,8 +117,8 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
       await expect(copy).toHaveCSS("color", beforeReveal.find((button) => button.label === "Copy")!.color);
     }
   } finally {
-    await request.delete(`/api/chats/${chat.id}?force=true`);
-    await request.delete(`/api/characters/${character.id}`);
+    if (chatId) await request.delete(`/api/chats/${chatId}?force=true`).catch(() => undefined);
+    if (characterId) await request.delete(`/api/characters/${characterId}`).catch(() => undefined);
   }
 });
 

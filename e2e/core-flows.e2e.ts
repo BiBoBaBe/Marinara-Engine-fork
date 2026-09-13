@@ -1138,40 +1138,40 @@ test("Game dice outcome narration can be disabled and stays disabled after reloa
   });
   expect(chatResponse.ok()).toBeTruthy();
   const chat = (await chatResponse.json()) as { id: string };
-  expect(
-    (
-      await request.patch(`/api/chats/${chat.id}/metadata`, {
-        data: { gameId: "dice-settings-fixture", gameSessionStatus: "active", gameIntroPresented: true },
-      })
-    ).ok(),
-  ).toBeTruthy();
-  expect(
-    (
-      await request.post(`/api/chats/${chat.id}/messages`, {
-        data: { role: "assistant", content: "The dice settings session begins." },
-      })
-    ).ok(),
-  ).toBeTruthy();
-  await page.addInitScript((chatId) => localStorage.setItem("marinara-active-chat-id", chatId), chat.id);
-  const readMetadata = async () => {
-    const response = await request.get(`/api/chats/${chat.id}`);
-    const stored = (await response.json()) as { metadata: string | Record<string, unknown> };
-    return typeof stored.metadata === "string"
-      ? (JSON.parse(stored.metadata) as Record<string, unknown>)
-      : stored.metadata;
-  };
-  const section = page.locator('[data-chat-settings-section="function-calling"]');
-  const openSection = async () => {
-    if (!(await section.isVisible())) {
-      if ((page.viewportSize()?.width ?? 0) < 768)
-        await page.getByRole("button", { name: "Game actions", exact: true }).click();
-      await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
-    }
-    const heading = section.locator('[role="button"][aria-expanded]');
-    if ((await heading.getAttribute("aria-expanded")) !== "true") await heading.click();
-  };
-  const narration = section.getByLabel("Narrate dice outcomes immediately", { exact: true });
   try {
+    expect(
+      (
+        await request.patch(`/api/chats/${chat.id}/metadata`, {
+          data: { gameId: "dice-settings-fixture", gameSessionStatus: "active", gameIntroPresented: true },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await request.post(`/api/chats/${chat.id}/messages`, {
+          data: { role: "assistant", content: "The dice settings session begins." },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    await page.addInitScript((chatId) => localStorage.setItem("marinara-active-chat-id", chatId), chat.id);
+    const readMetadata = async () => {
+      const response = await request.get(`/api/chats/${chat.id}`);
+      const stored = (await response.json()) as { metadata: string | Record<string, unknown> };
+      return typeof stored.metadata === "string"
+        ? (JSON.parse(stored.metadata) as Record<string, unknown>)
+        : stored.metadata;
+    };
+    const section = page.locator('[data-chat-settings-section="function-calling"]');
+    const openSection = async () => {
+      if (!(await section.isVisible())) {
+        if ((page.viewportSize()?.width ?? 0) < 768)
+          await page.getByRole("button", { name: "Game actions", exact: true }).click();
+        await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+      }
+      const heading = section.locator('[role="button"][aria-expanded]');
+      if ((await heading.getAttribute("aria-expanded")) !== "true") await heading.click();
+    };
+    const narration = section.getByLabel("Narrate dice outcomes immediately", { exact: true });
     await page.goto("/");
     await openSection();
     await expect(narration).toBeChecked();
