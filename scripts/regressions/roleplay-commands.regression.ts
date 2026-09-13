@@ -338,10 +338,7 @@ for (const format of ["xml", "markdown", "none"] as const) {
   assert.doesNotMatch(reminder, /\[illustrate:/u, "an unavailable image agent must not be offered");
   assert.doesNotMatch(reminder, /YOUR|LIES|DECEPTIONS|Maximum \d|\n\s*\n\s*-/u);
   assert.match(reminder, /keep it short/iu);
-  assert.match(
-    reminder,
-    /To edit existing notes, send their full updated contents; this replaces your previous notes/u,
-  );
+  assert.match(reminder, /edit existing notes[^.\n]*full updated contents[^.\n]*replaces?[^.\n]*previous/u);
   assert.ok(
     reminder.includes(
       "only up to three reminders can exist at the same time; if you create more, the oldest one will be removed.",

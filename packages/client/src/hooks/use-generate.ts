@@ -1609,7 +1609,14 @@ export function useGenerate() {
         typewriterRemainder = 0;
         lastTypewriterPaintAt = 0;
         roleplayTypewriterCharsPerSecond = null;
-        if (streamingEnabled && shouldDisplayRawStream && fullBuffer) setStreamBuffer(fullBuffer, params.chatId);
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          fullBuffer &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
+          setStreamBuffer(fullBuffer, params.chatId);
+        }
         if (typewriterDone) {
           const done = typewriterDone;
           typewriterDone = null;
@@ -1650,6 +1657,13 @@ export function useGenerate() {
         if (typingActive) return;
         typingActive = true;
         const tick = (now = performance.now()) => {
+          if (
+            abortController.signal.aborted ||
+            useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+          ) {
+            flushTypewriterBuffer();
+            return;
+          }
           if (pendingText.length === 0) {
             typingActive = false;
             lastTypewriterPaintAt = 0;
@@ -1735,8 +1749,17 @@ export function useGenerate() {
         document.addEventListener("visibilitychange", recordBackgroundedStream);
         window.addEventListener("pagehide", markPageHidden);
       }
+      // Stop must also release a local drain after the network stream finishes.
+      abortController.signal.addEventListener("abort", flushTypewriterBuffer, { once: true });
 
       const waitForTypewriterDrain = async () => {
+        if (
+          abortController.signal.aborted ||
+          useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+        ) {
+          flushTypewriterBuffer();
+          return;
+        }
         if (!streamingEnabled || !shouldDisplayRawStream || (pendingText.length === 0 && !typingActive)) return;
         if (canInspectPageFocus && document.visibilityState !== "visible") {
           recordBackgroundedStream();
@@ -3116,7 +3139,11 @@ export function useGenerate() {
           await waitForTypewriterDrain();
         }
         // Final flush — ensure full content is set (only for the viewed chat)
-        if (streamingEnabled && shouldDisplayRawStream) {
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
           setStreamBuffer(normalizeLineBreakSpacing(fullBuffer + pendingText), params.chatId);
         }
       } catch (error) {
@@ -3245,6 +3272,7 @@ export function useGenerate() {
         }
         // Cancel any pending animation frame to prevent leaks
         cancelAnimationFrame(rafId);
+        abortController.signal.removeEventListener("abort", flushTypewriterBuffer);
         if (canInspectPageFocus) {
           document.removeEventListener("visibilitychange", recordBackgroundedStream);
           window.removeEventListener("pagehide", markPageHidden);
@@ -3336,12 +3364,6 @@ export function useGenerate() {
               : uiState.convoNotificationSound;
           playConfiguredNotificationPing(soundEnabled, uiState.notificationSoundsOnlyWhenUnfocused);
         }
-        // Only clean up global streaming state if this generation still
-        // "owns" it. We check AbortController identity rather than chatId
-        // because two generations can target the same chat (e.g. autonomous
-        // + user send). The latest generation replaces the AbortController,
-        // so the superseded one knows it no longer owns the state.
-        const stillOwner = stillOwnerAtCleanupStart;
         const partialContent = normalizeLineBreakSpacing(fullBuffer + pendingText).trim();
         let unpersistedPartialMessage: Message | null = null;
         if (
@@ -3407,51 +3429,31 @@ export function useGenerate() {
         const refreshMessagesInBackground = () => {
           void refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
         };
-        if (stillOwner) {
-          // Only clear global streaming/UI state if this chat is still the one
-          // being displayed, to avoid corrupting another chat's active generation.
-          if (useChatStore.getState().streamingChatId === params.chatId) {
-            if (isGameGeneration) {
-              // Game mode still needs the authoritative refresh before release
-              // because the scene/HUD pipeline depends on the final snapshot.
-              await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-              setStreaming(false);
-              clearStreamBuffer(params.chatId);
-            } else {
-              if (receivedContent && persistedForRefresh.length === 0) {
-                await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-              } else {
-                primeMessagesFromSaved();
-              }
-              // Prime the durable message before releasing the live stream so
-              // React never renders an empty frame or the wrong full response.
-              setStreaming(false);
-              clearStreamBuffer(params.chatId);
-              if (persistedForRefresh.length > 0) refreshMessagesInBackground();
-            }
-          } else {
-            if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
-              await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-            } else {
-              primeMessagesFromSaved();
-              refreshMessagesInBackground();
-            }
-            clearStreamBuffer(params.chatId);
+        if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
+          await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
+        } else {
+          primeMessagesFromSaved();
+          if (
+            persistedForRefresh.length > 0 ||
+            !stillOwnerAtCleanupStart ||
+            useChatStore.getState().streamingChatId !== params.chatId
+          ) {
+            refreshMessagesInBackground();
           }
+        }
+        // Persistence and history refresh can yield after this request released
+        // its controller. Prime the saved row, then recheck ownership before any
+        // presentation reset so a newer generation keeps its live state.
+        const cleanupController = useChatStore.getState().abortControllers.get(params.chatId);
+        if (stillOwnerAtCleanupStart && (!cleanupController || cleanupController === abortController)) {
+          if (useChatStore.getState().streamingChatId === params.chatId) setStreaming(false);
+          clearStreamBuffer(params.chatId);
           setStreamedMessageId(params.chatId, null);
           if (isActiveChat()) {
             setRegenerateMessageId(null);
             setStreamingCharacterId(null);
             setTypingCharacterName(null);
             setDelayedCharacterInfo(null);
-          }
-        } else {
-          // Not the owner but still need messages up to date
-          if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
-            await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-          } else {
-            primeMessagesFromSaved();
-            refreshMessagesInBackground();
           }
         }
         setProcessingRun(agentProcessingRunId, false, params.chatId);
