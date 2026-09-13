@@ -1960,6 +1960,11 @@ export function useGenerate() {
               break;
             }
 
+            case "game_outcome_narration_failed": {
+              if (isActiveChat()) toast.warning(translate("ui.game.gamenarration.outcomeNarrationFailed"));
+              break;
+            }
+
             case "progress": {
               if (!isActiveChat()) break;
               const phase = (event.data as { phase?: string })?.phase;
