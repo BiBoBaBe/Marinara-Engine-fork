@@ -1,5 +1,6 @@
 import { Languages, RotateCcw } from "lucide-react";
-import { DEFAULT_TRANSLATION_SYSTEM_PROMPT } from "@marinara-engine/shared";
+import { DEFAULT_TRANSLATION_SYSTEM_PROMPT, estimateTextTokens } from "@marinara-engine/shared";
+import { formatEstimatedTokens } from "../../../lib/character-token-count";
 import { HelpTooltip } from "../../../components/ui/HelpTooltip";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
 import { ChatSettingsSection } from "../ChatSettingsSection";
@@ -272,6 +273,9 @@ function TranslationPromptField({
         rows={5}
         className="min-h-28 w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-2 font-mono text-xs leading-relaxed outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
       />
+      <p className="mt-0.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
+        {formatEstimatedTokens(estimateTextTokens(customPrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT), localizeUi)}
+      </p>
     </div>
   );
 }

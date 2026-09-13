@@ -110,6 +110,16 @@ test("Game translation follows changed narration and remains manually accessible
     await request.post(`/api/chats/${otherChat.id}/messages`, {
       data: { role: "assistant", content: "A different story." },
     });
+    let releasePersistedTranslation: (() => Promise<void>) | undefined;
+    await page.route(`**/api/chats/${chat.id}/messages/${message.id}/extra`, async (route) => {
+      if (route.request().postDataJSON().translation !== "Opóźnione tłumaczenie.") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      // The server has saved the result, but the inactive chat's query cache is still stale.
+      releasePersistedTranslation = () => route.fulfill({ response });
+    });
     let pendingTranslation: Route | undefined;
     await page.route(
       "**/api/translate",
@@ -138,6 +148,7 @@ test("Game translation follows changed narration and remains manually accessible
     await switchChat(otherChat.id);
     await expect(panel).toContainText("A different story.");
     await pendingTranslation!.fulfill({ json: { translatedText: "Opóźnione tłumaczenie." } });
+    await expect.poll(() => Boolean(releasePersistedTranslation)).toBe(true);
     await expect.poll(async () => (await extra()).translation).toBe("Opóźnione tłumaczenie.");
     expect(
       await page.evaluate(async (id) => {
@@ -151,6 +162,8 @@ test("Game translation follows changed narration and remains manually accessible
       }, message.id),
     ).toEqual({ translation: undefined, source: undefined, translating: undefined });
     await switchChat(chat.id);
+    await expect(panel).toContainText("The river is deep.");
+    await releasePersistedTranslation!();
     await expect(panel).toContainText("Opóźnione tłumaczenie.");
     await request.patch(`/api/chats/${chat.id}/metadata`, { data: { autoTranslate: false } });
     await request.post(`/api/chats/${chat.id}/messages`, {

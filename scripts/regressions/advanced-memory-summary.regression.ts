@@ -79,6 +79,7 @@ const { createConnectionsStorage } = await import("../../packages/server/src/ser
 const { createAdvancedMemoryService } = await import("../../packages/server/src/services/advanced-memory.js");
 const { createConnectionSchema } = await import("../../packages/shared/src/schemas/connection.schema.ts");
 const { DEFAULT_ADVANCED_MEMORY_SETTINGS } = await import("../../packages/shared/src/types/advanced-memory.ts");
+const { measureContextBudget } = await import("../../packages/server/src/services/llm/base-provider.js");
 const require = createRequire(new URL("../../packages/server/package.json", import.meta.url));
 const app = require("fastify")();
 const db = await createFileNativeDB();
@@ -145,6 +146,41 @@ try {
   assert(
     records.some((record) => record.kind === "excerpt" && record.content.includes("The frogs sang")),
     "only historical excerpts retain verbatim source text",
+  );
+  const cjkChat = await createChat("CJK scene detection and complete summary chunks");
+  const cjkSource = await chats.listMessages(cjkChat.id);
+  const cjkText = "漢あ한𠀀😀".repeat(4000);
+  await chats.updateMessageContent(cjkSource[0]!.id, cjkText);
+  await chats.updateMessageContent(cjkSource[1]!.id, `The following morning,${cjkText}`);
+  const cjkRequestStart = requests.length;
+  await memory.initialize(cjkChat.id);
+  const cjkRequests = requests.slice(cjkRequestStart);
+  let summarizedSource = "";
+  for (const request of cjkRequests) {
+    const input = (request.input as Array<{ content: string | Array<{ text: string }> }>)
+      .flatMap((item) => (typeof item.content === "string" ? item.content : item.content.map((part) => part.text)))
+      .join("\n");
+    assert(
+      measureContextBudget(
+        [
+          { role: "system", content: request.instructions ?? "" },
+          { role: "user", content: input },
+        ],
+        { maxContext: settings.maxContextTokens, maxTokens: request.max_output_tokens },
+      ).fits,
+      "every CJK classification and summary request must fit without provider trimming",
+    );
+    assert.doesNotMatch(input, /\p{Surrogate}/u, "CJK and emoji fragments must preserve surrogate pairs");
+    if (!request.instructions?.startsWith("Identify scene transitions")) {
+      summarizedSource += (input.match(/[漢あ한𠀀😀]/gu) ?? []).join("");
+    }
+  }
+  assert.equal(summarizedSource, cjkText, "all original CJK source fragments reach the summarizer exactly once");
+  assert.equal(
+    (await memory.status(cjkChat.id)).records.find((record) => record.kind === "scene" && record.status === "closed")
+      ?.content,
+    summary,
+    "large CJK history completes preparation rather than repeatedly failing its context guard",
   );
   const chatSource = await chats.listMessages(chat.id);
   const prepared = await memory.prepare({

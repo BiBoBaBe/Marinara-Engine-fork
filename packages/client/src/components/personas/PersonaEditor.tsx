@@ -170,10 +170,6 @@ const PERSONA_CARD_SECTIONS = [
   { id: "persona-card-scenario", label: "Scenario" },
 ] as const;
 
-function formatPersonaTextTokens(value: string): string {
-  return formatEstimatedTokens(estimateTextTokens(value));
-}
-
 const PERSONA_METADATA_HELP =
   "Use metadata for identity, sharing, and library organization. Name is injected as your persona name, creator/version help track authorship and revisions, tags make the persona searchable, and creator notes stay private.";
 
@@ -4427,7 +4423,7 @@ function DescriptionTab({
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-emerald-400/40 focus:ring-1 focus:ring-emerald-400/20"
       />
       <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-        {formatPersonaTextTokens(formData.description)}
+        {formatEstimatedTokens(estimateTextTokens(formData.description), localizeUi)}
       </p>
     </div>
   );
@@ -4472,6 +4468,7 @@ function TextareaTab({
   placeholder: string;
   rows?: number;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <div className="mari-editor-panel space-y-3 p-3">
       <SectionHeader title={title} subtitle={subtitle} helpText={helpText} />
@@ -4485,7 +4482,7 @@ function TextareaTab({
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-emerald-400/40 focus:ring-1 focus:ring-emerald-400/20"
       />
       <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-        {formatPersonaTextTokens(value)}
+        {formatEstimatedTokens(estimateTextTokens(value), localizeUi)}
       </p>
     </div>
   );

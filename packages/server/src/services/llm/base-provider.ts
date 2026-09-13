@@ -9,7 +9,12 @@ import {
   isProviderLocalUrlsEnabled,
 } from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
-import type { GenerationParameterSendKey, GenerationParameterSendMap } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+  type GenerationParameterSendKey,
+  type GenerationParameterSendMap,
+} from "@marinara-engine/shared";
 
 /**
  * Shared undici Agent settings. The headers timeout (time to first byte) follows
@@ -298,7 +303,6 @@ type ContextFitOptions = Pick<
   "maxContext" | "maxTokens" | "tools" | "suppressModelParameters" | "preserveContext"
 >;
 
-const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const IMAGE_TOKEN_ESTIMATE = 256;
 const MIN_FILE_TOKEN_ESTIMATE = 1_500;
@@ -307,7 +311,6 @@ const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 const MIN_INPUT_BUDGET_TOKENS = 128;
 const MIN_OUTPUT_BUDGET_TOKENS = 128;
 const OUTPUT_BUDGET_REDUCTION_HEADROOM_TOKENS = 64;
-const MIN_CONTENT_CHARS = 48;
 const TRUNCATION_MARKER = "\n\n[Truncated to fit context window]";
 
 function normalizePositiveInteger(value: unknown): number | undefined {
@@ -331,9 +334,7 @@ function minDefined(...values: Array<number | undefined>): number | undefined {
   return result;
 }
 
-export function estimateTextTokens(text: string): number {
-  return Math.ceil(Array.from(text).length / CHARS_PER_TOKEN);
-}
+export { estimateTextTokens };
 
 function estimateStructuredTokens(value: unknown): number {
   try {
@@ -411,23 +412,13 @@ function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 function truncateContent(content: string, targetTokens: number, preserveStartOnly: boolean): string {
-  const targetChars = Math.max(MIN_CONTENT_CHARS, Math.floor(targetTokens * CHARS_PER_TOKEN));
-  if (Array.from(content).length <= targetChars) return content;
-
-  if (targetChars <= TRUNCATION_MARKER.length + MIN_CONTENT_CHARS) {
-    return Array.from(content).slice(0, targetChars).join("");
-  }
-
-  const availableChars = targetChars - TRUNCATION_MARKER.length;
-  const chars = Array.from(content);
-
-  if (preserveStartOnly) {
-    return chars.slice(0, availableChars).join("") + TRUNCATION_MARKER;
-  }
-
-  const headChars = Math.ceil(availableChars * 0.65);
-  const tailChars = Math.floor(availableChars * 0.35);
-  return chars.slice(0, headChars).join("") + TRUNCATION_MARKER + chars.slice(-tailChars).join("");
+  if (estimateTextTokens(content) <= targetTokens) return content;
+  const availableTokens = Math.floor(targetTokens) - estimateTextTokens(TRUNCATION_MARKER);
+  if (availableTokens <= 0) return sliceTextToTokenBudget(content, targetTokens);
+  if (preserveStartOnly) return sliceTextToTokenBudget(content, availableTokens) + TRUNCATION_MARKER;
+  const head = sliceTextToTokenBudget(content, Math.ceil(availableTokens * 0.65));
+  const tail = sliceTextToTokenBudget(content, availableTokens - estimateTextTokens(head), true);
+  return head + TRUNCATION_MARKER + tail;
 }
 
 function findOldestRemovableConversationBlock(
