@@ -542,6 +542,7 @@ try {
   ]) {
     const refused = parseAndStripGmVerbCalls(`Before. ${bad} After.`, live);
     assert.equal(refused.calls.length, 0, `must refuse ${bad}`);
+    assert.match(refused.refusals[0]!, /Game command .* was refused:/, "the caller can explain the rejected command");
     assert.equal(refused.matched, true);
     assert.equal(refused.content.replace(/\s+/g, " ").trim(), "Before. After.", `must still strip ${bad}`);
   }

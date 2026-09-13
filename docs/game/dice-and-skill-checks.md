@@ -73,6 +73,8 @@ A skill check tests whether you succeed at something risky, such as sneaking, sp
 
 A text-requested check begins with the attempt. The engine resolves the dice, then makes one additional model request with the actual results so the Game Master can finish the outcome in the same turn. This also corrects a draft that guessed an outcome before the roll existed. The extra request sends the prompt again and uses more input and output tokens. If it fails, the turn keeps the resolved results in its log without saving a guessed or partial outcome. A notice remains on the turn with a **Regenerate turn** button, including after reloading the chat.
 
+Turn off **Narrate dice outcomes immediately** in **Chat Settings → Function Calling** to keep the real results for the next turn without this extra request. This setting is on by default. Requests that produce no actual rolls never trigger the extra narration request.
+
 On a connection that supports the dice tool, the Game Master can instead obtain a real roll during generation. The dice card appears as soon as the tool returns; the completed check records that result without rolling again. Every resolved skill check receives its own banner, following any queued dice cards.
 
 The banner shows the skill and the target number, for example **Stealth Check** with **DC 15** next to it. DC stands for Difficulty Class. It is the number your roll must reach or beat.
@@ -101,7 +103,7 @@ The Game Master can specify another notation, such as `[skill_check: skill="Endu
 
 Success pools must state both the per-die threshold and the number of successes needed: `[skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]` rolls six d10s, counts each die showing at least 6 once, and succeeds with at least four successes. The engine does not guess a missing threshold or implement exploding dice, botches, or other special pool rules. A pool without a valid threshold stays unresolved, with any model-invented numbers removed.
 
-Unsupported requests such as `4d6kh3`, `3d6!`, or `4dF` are not rolled. The engine logs the unsupported notation and removes invented numbers from check records. The same additional narration request tells the Game Master to leave these outcomes open and explain what needs clarification in supported notation; it does not silently substitute a different dice system.
+Unsupported requests such as `4d6kh3`, `3d6!`, or `4dF` are not rolled. The engine logs the unsupported notation and removes invented numbers from check records. These outcomes remain open; the engine does not silently substitute a different dice system.
 
 ### Advantage and disadvantage
 

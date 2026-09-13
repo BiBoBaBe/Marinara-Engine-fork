@@ -337,10 +337,15 @@ class RegressionAudio {
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
 
-  constructor(_url: string) {}
+  src = "";
+  constructor(_url?: string) {}
+  removeAttribute(name: string): void {
+    if (name === "src") this.src = "";
+  }
+  load(): void {}
 
   play(): Promise<void> {
-    setTimeout(() => this.onended?.(), 0);
+    if (!this.src.startsWith("data:audio/")) setTimeout(() => this.onended?.(), 0);
     return Promise.resolve();
   }
 

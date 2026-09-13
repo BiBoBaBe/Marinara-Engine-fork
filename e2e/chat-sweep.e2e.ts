@@ -4,6 +4,120 @@ import { seedUIState } from "./ui-state-fixture";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+test("Roleplay line volume stays on screen and touch reveal preserves action colors", async ({
+  page,
+  request,
+}, testInfo) => {
+  const character = await (
+    await request.post("/api/characters", { data: { data: { name: "Volume fixture" } } })
+  ).json();
+  const chat = await (
+    await request.post("/api/chats", {
+      data: { name: "Roleplay volume controls", mode: "roleplay", characterIds: [character.id] },
+    })
+  ).json();
+  try {
+    const message = await (
+      await request.post(`/api/chats/${chat.id}/messages`, {
+        data: { role: "assistant", characterId: character.id, content: "The volume control should stay within reach." },
+      })
+    ).json();
+    const config = await (await request.get("/api/tts/config")).json();
+    await page.route("**/api/tts/config", (route) => route.fulfill({ json: { ...config, enabled: true } }));
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["roleplay"],
+      appAccentPulseMode: false,
+      theme: "dark",
+      chatChromeTextColor: "#14b8a6",
+      ttsLineVolume: 75,
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chat.id, version },
+    );
+    await page.goto("/");
+    const row = page.locator(`[data-message-id="${message.id}"]`);
+    const copy = row.getByRole("button", { name: "Copy", exact: true });
+    const volume = row.getByRole("button", { name: /^Line volume: \d+%$/u });
+    const actions = row.locator(".mari-message-actions");
+    const actionAppearance = () =>
+      actions.locator("button").evaluateAll((elements) =>
+        elements.map((element) => {
+          const style = getComputedStyle(element);
+          return {
+            label: element.getAttribute("aria-label"),
+            color: style.color,
+            background: style.backgroundColor,
+            shadow: style.boxShadow,
+          };
+        }),
+      );
+    await row.scrollIntoViewIfNeeded();
+    await expect(volume).toBeAttached();
+    const beforeReveal = await actionAppearance();
+    if (testInfo.project.use.hasTouch) await row.getByText("The volume control should stay within reach.").tap();
+    else await row.hover();
+    await expect(actions).toHaveCSS("opacity", "1");
+    await expect.poll(actionAppearance).toEqual(beforeReveal);
+    await expect(copy).toHaveCSS("-webkit-tap-highlight-color", "rgba(0, 0, 0, 0)");
+    await expect(row).toHaveCSS("-webkit-tap-highlight-color", "rgba(0, 0, 0, 0)");
+
+    for (const direction of ["ltr", "rtl"] as const) {
+      await page.evaluate(
+        async (theme) => {
+          const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+          useUIStore.getState().setTheme(theme);
+        },
+        direction === "ltr" ? "dark" : "light",
+      );
+      await row.evaluate((element, direction) => {
+        element.setAttribute("dir", direction);
+      }, direction);
+      if (testInfo.project.use.hasTouch) await volume.tap();
+      else await volume.click();
+      const panel = page.getByRole("dialog", { name: "Line volume", exact: true });
+      await expect(panel).toBeVisible();
+      const bounds = await panel.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: innerWidth,
+          height: innerHeight,
+        };
+      });
+      expect(bounds.left).toBeGreaterThanOrEqual(0);
+      expect(bounds.right).toBeLessThanOrEqual(bounds.width);
+      expect(bounds.top).toBeGreaterThanOrEqual(0);
+      expect(bounds.bottom).toBeLessThanOrEqual(bounds.height);
+      const slider = panel.getByRole("slider", { name: "Line volume", exact: true });
+      await expect(slider).toBeFocused();
+      await slider.press("Home");
+      await slider.press("ArrowRight");
+      await expect(slider).toHaveValue("1");
+      await expect(volume).toHaveAttribute("aria-label", "Line volume: 1%");
+      await page.screenshot({ path: testInfo.outputPath(`line-volume-${direction}.png`) });
+      await slider.press("Escape");
+      await expect(panel).toHaveCount(0);
+      await expect(volume).toBeFocused();
+      await expect(actions).toHaveCSS("opacity", "1");
+      await expect(copy).toHaveCSS("color", beforeReveal.find((button) => button.label === "Copy")!.color);
+    }
+  } finally {
+    await request.delete(`/api/chats/${chat.id}?force=true`);
+    await request.delete(`/api/characters/${character.id}`);
+  }
+});
+
 test("Game translation follows changed narration and remains manually accessible", async ({ page, request }) => {
   page.setDefaultTimeout(10_000);
   const chat = await (

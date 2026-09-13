@@ -118,13 +118,7 @@ async function* scriptedChat(messages: ChatMessage[], options: ChatOptions): Asy
     }
   } else if (messages.at(-1)?.content.includes("The engine has now rolled the requested dice:")) {
     assert.equal(options.tools, undefined, "outcome continuation needs no native tools schema");
-    if (unsupportedOnly) {
-      assert.match(messages.at(-1)!.content, /No dice were rolled/);
-      assert.match(messages.at(-1)!.content, /4d6kh3/);
-      assert.match(messages.at(-1)!.content, /Unresolved requests/);
-      yield "The outcome is still open: use supported NdM notation to request this roll.";
-      return { promptTokens: 10, completionTokens: 5, totalTokens: 15, finishReason: "stop" };
-    }
+    assert.equal(unsupportedOnly, false, "unsupported requests have no real outcome to rewrite");
     assert.match(messages.at(-1)!.content, /Stealth/);
     assert.match(messages.at(-1)!.content, /3d1\+2 = 5/);
     if (failContinuation) {
@@ -212,12 +206,27 @@ try {
     calls.length = 0;
     const unsupported = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
     assert.ok(!unsupported.body.includes('"type":"error"'), unsupported.body);
-    assert.equal(calls.length, 2, "even an unsupported-only request gets one bounded clarification pass");
+    assert.equal(calls.length, 1, "unsupported-only requests do not pay for an outcome rewrite when nothing rolled");
     const unresolved = (await chats.listMessages(chat.id)).at(-1)!;
-    assert.match(unresolved.content, /outcome is still open/);
-    assert.doesNotMatch(unresolved.content, /fabricated total/);
+    assert.match(
+      unresolved.content,
+      /\[dice: 4d6kh3\]/,
+      "the unsupported request remains available for the user to correct",
+    );
     assert.ok(!unsupported.body.includes('"diceRollResult":'), "unsupported notation is never silently substituted");
     unsupportedOnly = false;
+
+    await chats.patchMetadata(chat.id, { gameDiceOutcomeNarration: false });
+    calls.length = 0;
+    const optOut = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
+    assert.ok(!optOut.body.includes('"type":"error"'), optOut.body);
+    assert.equal(calls.length, 1, "turning off immediate narration saves the extra model request");
+    const retained = (await chats.listMessages(chat.id)).at(-1)!;
+    assert.match(retained.content, /\[dice: 3d1\+2 = 5/);
+    assert.match(retained.content, /result="failure"/);
+    assert.equal(JSON.parse(retained.extra).diceRollResults[0].total, 5);
+    assert.equal(JSON.parse((await chats.getById(chat.id))!.metadata).gameDiceOutcomeNarration, false);
+    await chats.patchMetadata(chat.id, { gameDiceOutcomeNarration: true });
 
     roleplay = true;
     const character = await createCharactersStorage(db).create(characterDataSchema.parse({ name: "Mari" }));
