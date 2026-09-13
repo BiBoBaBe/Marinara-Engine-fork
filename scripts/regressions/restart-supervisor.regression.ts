@@ -86,7 +86,7 @@ try {
   assert.notEqual(replacement, original);
   assert.throws(() => process.kill(original, 0), "The old process must be gone before its replacement serves");
   assert.ok(!output.includes("writer lease"), output);
-  for (const launcher of ["start.sh", "start.bat", "start-termux.sh"]) {
+  for (const launcher of ["start.sh", "start.bat", "start-local.bat", "start-termux.sh"]) {
     assert.ok(readFileSync(join(root, launcher), "utf8").includes("node ../../scripts/run-server.mjs dist/index.js"));
   }
   for (const manifest of ["package.json", "packages/server/package.json"]) {

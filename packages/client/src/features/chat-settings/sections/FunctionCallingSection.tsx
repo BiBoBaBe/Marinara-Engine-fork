@@ -21,6 +21,8 @@ interface FunctionCallingSectionProps {
   onToolConnectionChange: (id: string | null) => void;
   gameLorebookSearch: boolean;
   onGameLorebookSearchChange: (enabled: boolean) => void;
+  gameDiceOutcomeNarration: boolean;
+  onGameDiceOutcomeNarrationChange: (enabled: boolean) => void;
   enableTools: boolean | undefined;
   forceToolCall: boolean | undefined;
   activeToolIds: string[];
@@ -46,6 +48,8 @@ export function FunctionCallingSection({
   onToolConnectionChange,
   gameLorebookSearch,
   onGameLorebookSearchChange,
+  gameDiceOutcomeNarration,
+  onGameDiceOutcomeNarrationChange,
   enableTools,
   forceToolCall,
   activeToolIds,
@@ -119,6 +123,15 @@ export function FunctionCallingSection({
             <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
               {localizeUi("chat.settings.tools.connectionHelp")}
             </p>
+            <SettingsSwitch
+              label={localizeUi("chat.settings.tools.diceOutcomeNarration")}
+              description={localizeUi("chat.settings.tools.diceOutcomeNarrationHelp")}
+              checked={gameDiceOutcomeNarration}
+              onChange={onGameDiceOutcomeNarrationChange}
+              labelPosition="start"
+              className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+              labelClassName="text-xs font-medium"
+            />
             <SettingsSwitch
               label={localizeUi("chat.settings.tools.loreSearch")}
               description={localizeUi("chat.settings.tools.loreSearchHelp")}

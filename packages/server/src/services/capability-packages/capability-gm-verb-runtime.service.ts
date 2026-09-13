@@ -50,6 +50,8 @@ export type GmVerbParseResult = {
   content: string;
   /** Validated calls, at most one per verb name. */
   calls: GmVerbCall[];
+  /** Recognized commands rejected by their declared argument contract. */
+  refusals: string[];
   /** True when anything was stripped, so the caller knows the content changed. */
   matched: boolean;
 };
@@ -209,7 +211,7 @@ function verbExamplePayload(verb: GmVerb): string {
 }
 
 /** Validate one tag's payload against its verb's declared arguments. Returns the refusal reason
- *  rather than throwing, because a refusal is a log line and a stripped tag — never a failed turn. */
+ *  rather than throwing, so the caller can explain a refusal without executing it. */
 export function validateGmVerbArgs(
   verb: GmVerb,
   rawPayload: string | null,
@@ -272,6 +274,7 @@ export function parseAndStripGmVerbCalls(content: string, table: ResolvedGmVerbT
   const verbsByName = new Map(table.verbs.map((verb) => [verb.name.toLowerCase(), verb]));
   const seen = new Set<string>();
   const calls: GmVerbCall[] = [];
+  const refusals: string[] = [];
   let matched = false;
 
   const stripped = content.replace(createCapabilityCommandTagRegex(), (match, name: string, payload?: string) => {
@@ -292,13 +295,14 @@ export function parseAndStripGmVerbCalls(content: string, table: ResolvedGmVerbT
     const validated = validateGmVerbArgs(verb, payload?.trim() || null);
     if (!validated.ok) {
       logger.warn("[capability/gm-verbs] Verb %s refused: %s", verb.name, validated.reason);
+      refusals.push(`Game command "${verb.name}" was refused: ${validated.reason}.`);
       return "";
     }
     calls.push({ verb, args: validated.args });
     return "";
   });
 
-  return { content: stripped, calls, matched };
+  return { content: stripped, calls, refusals, matched };
 }
 
 /** Write a state verb's arguments wholesale under its package's metadata key.

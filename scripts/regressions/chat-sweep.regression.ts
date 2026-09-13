@@ -12,7 +12,10 @@ import {
   splitRuntimeHandledAgentInjections,
   clearUnusedRuntimeAgentSections,
 } from "../../packages/server/src/services/generation/runtime-agent-sections.js";
-import { completeStoryboardPlan } from "../../packages/server/src/services/game/storyboard-planner-fallback.js";
+import {
+  completeStoryboardPlan,
+  shouldRetryStoryboardWithoutReasoning,
+} from "../../packages/server/src/services/game/storyboard-planner-fallback.js";
 import type {
   BaseLLMProvider,
   ChatMessage,
@@ -45,9 +48,16 @@ assert.equal(normalizeGameStoryboardKeyframeCount(10000), 200);
 assert.equal(normalizeGameStoryboardKeyframeCount(undefined), 3);
 const validPlan = { keyframes: Array.from({ length: 12 }, (_, index) => ({ imagePrompt: `Frame ${index}` })) };
 const attempts: boolean[] = [];
+const proxiedLocal = { provider: "custom", baseUrl: "https://inference.example.test/v1", treatAsLocalEndpoint: "true" };
+assert.equal(shouldRetryStoryboardWithoutReasoning(proxiedLocal, "high"), true);
+assert.equal(shouldRetryStoryboardWithoutReasoning({ ...proxiedLocal, treatAsLocalEndpoint: true }), true);
+assert.equal(shouldRetryStoryboardWithoutReasoning({ ...proxiedLocal, treatAsLocalEndpoint: "false" }), false);
+assert.equal(shouldRetryStoryboardWithoutReasoning(proxiedLocal, "none"), false);
+assert.equal(shouldRetryStoryboardWithoutReasoning({ ...proxiedLocal, provider: "openrouter" }), false);
+assert.equal(shouldRetryStoryboardWithoutReasoning({ provider: "custom", baseUrl: "http://kobold:5001/v1" }), true);
 assert.deepEqual(
   await completeStoryboardPlan({
-    retryWithoutReasoning: true,
+    retryWithoutReasoning: shouldRetryStoryboardWithoutReasoning(proxiedLocal, "high"),
     generate: async (withoutReasoning) => {
       attempts.push(withoutReasoning);
       return { content: withoutReasoning ? JSON.stringify(validPlan) : "<think>Budget spent thinking</think>" };
@@ -80,6 +90,13 @@ await assert.rejects(
   /no usable keyframes/,
 );
 assert.equal(calls, 1);
+await assert.rejects(
+  completeStoryboardPlan({
+    retryWithoutReasoning: false,
+    generate: async () => ({ content: "", finishReason: "length" }),
+  }),
+  /empty final answer; output token limit reached/,
+);
 calls = 0;
 await assert.rejects(
   completeStoryboardPlan({

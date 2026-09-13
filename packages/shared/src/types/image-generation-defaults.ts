@@ -48,8 +48,10 @@ export interface NovelAiDefaults {
 
 export interface ImageGenerationDefaultsProfile {
   version: 1;
-  service: ImageDefaultsService;
+  service: ImageDefaultsService | "api";
   seed: number;
+  /** Extra top-level fields for API image-generation requests. */
+  customParameters?: Record<string, unknown>;
   /** Optional connection-scoped image style profile override. */
   styleProfileId?: string | null;
   automatic1111?: Automatic1111Defaults;

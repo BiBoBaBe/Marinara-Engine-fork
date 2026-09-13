@@ -1212,6 +1212,7 @@ export function TTSConfigCard() {
         return;
       }
 
+      ttsService.preparePlayback();
       try {
         try {
           await saveNow(payload);

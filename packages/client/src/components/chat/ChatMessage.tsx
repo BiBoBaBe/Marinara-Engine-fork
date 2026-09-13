@@ -4450,39 +4450,21 @@ function TTSLineVolumeControl({
   dark?: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const { open, setOpen, buttonRef, menuRef, position } = useMessageActionMenu("right");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const muted = volume <= 0;
-  const label = `Line volume: ${volume}%`;
+  const label = `${localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}: ${volume}%`;
 
   useEffect(() => {
     if (!open) return;
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (wrapperRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    requestAnimationFrame(() => inputRef.current?.focus());
+    const frame = requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   return (
-    <div ref={wrapperRef} className="relative inline-flex">
+    <div className="inline-flex">
       <ActionBtn
+        buttonRef={buttonRef}
         icon={muted ? <VolumeX size={MESSAGE_ACTION_ICON_SIZE} /> : <Volume2 size={MESSAGE_ACTION_ICON_SIZE} />}
         onClick={() => setOpen((value) => !value)}
         title={label}
@@ -4491,45 +4473,49 @@ function TTSLineVolumeControl({
           open ? (dark ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : "bg-[var(--accent)] text-[var(--foreground)]") : undefined
         }
       />
-      {open && (
-        <div
-          role="dialog"
-          aria-label={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
-          className={cn(
-            "absolute bottom-full left-1/2 z-40 mb-2 flex w-44 max-w-[calc(100vw-1.5rem)] -translate-x-1/2 flex-col gap-2.5 rounded-lg border p-2.5 shadow-xl",
-            dark
-              ? "border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] text-[var(--marinara-chat-chrome-panel-title)] shadow-black/30"
-              : "border-[var(--border)] bg-[var(--popover)] text-[var(--popover-foreground)] shadow-black/20",
-          )}
-        >
-          <div className="flex items-center justify-between gap-2 text-[0.6875rem]">
-            <span className={dark ? "text-[var(--marinara-chat-chrome-panel-title)]" : "text-[var(--foreground)]"}>
-              {localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
-            </span>
-            <span
-              className={cn(
-                "tabular-nums",
-                dark ? "text-[var(--marinara-chat-chrome-panel-muted)]" : "text-[var(--muted-foreground)]",
-              )}
-            >
-              {volume}%
-            </span>
-          </div>
-          <input
-            ref={inputRef}
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={volume}
-            onChange={(event) => onVolumeChange(Number(event.currentTarget.value))}
-            className="mari-tts-line-volume-slider w-full"
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={position}
+            role="dialog"
             aria-label={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
-            title={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
-            style={{ "--range-progress": `${volume}%` } as React.CSSProperties}
-          />
-        </div>
-      )}
+            className={cn(
+              "marinara-chat-popover fixed z-[9999] flex w-44 max-w-[calc(100vw-1.5rem)] flex-col gap-2.5 rounded-lg border p-2.5 shadow-xl",
+              dark
+                ? "border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] text-[var(--marinara-chat-chrome-panel-title)] shadow-black/30"
+                : "border-[var(--border)] bg-[var(--popover)] text-[var(--popover-foreground)] shadow-black/20",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2 text-[0.6875rem]">
+              <span className={dark ? "text-[var(--marinara-chat-chrome-panel-title)]" : "text-[var(--foreground)]"}>
+                {localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+              </span>
+              <span
+                className={cn(
+                  "tabular-nums",
+                  dark ? "text-[var(--marinara-chat-chrome-panel-muted)]" : "text-[var(--muted-foreground)]",
+                )}
+              >
+                {volume}%
+              </span>
+            </div>
+            <input
+              ref={inputRef}
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={volume}
+              onChange={(event) => onVolumeChange(Number(event.currentTarget.value))}
+              className="mari-tts-line-volume-slider w-full"
+              aria-label={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+              title={localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+              style={{ "--range-progress": `${volume}%` } as React.CSSProperties}
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

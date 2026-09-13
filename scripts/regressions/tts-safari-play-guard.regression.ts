@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { playWhenAvailable } from "../../packages/client/src/lib/tts-service.js";
+import { playWhenAvailable, ttsService } from "../../packages/client/src/lib/tts-service.js";
 import {
   __readTTSAudioFromMemoryForTests,
   __rememberTTSAudioInMemoryForTests,
@@ -45,8 +45,9 @@ const documentStub: {
   addEventListener() {},
   removeEventListener() {},
 };
-function dispatchGesture() {
-  for (const fn of [...(gestureListeners.get("pointerdown") ?? [])]) fn();
+function dispatchGesture(type = "pointerdown", properties: Record<string, unknown> = {}) {
+  const event = { type, pointerType: "mouse", isTrusted: true, ...properties };
+  for (const fn of [...(gestureListeners.get(type) ?? [])]) fn(event);
 }
 function notAllowed(): Error {
   const err = new Error("play() blocked by autoplay policy");
@@ -74,13 +75,111 @@ try {
     await sleep(300);
     assert.equal(plays, 1, "a blocked visible tab must NOT retry until a gesture arrives");
     assert.equal(blocked, 1, "the blocked callback fires so the UI can say 'tap to play'");
-    dispatchGesture();
+    dispatchGesture("pointerdown", { pointerType: "touch" });
+    dispatchGesture("pointerup", { pointerType: "mouse" });
+    dispatchGesture("keydown", { key: "Escape" });
+    dispatchGesture("touchend", { isTrusted: false });
+    await sleep(0);
+    assert.equal(plays, 1, "touch-down, non-activating keys and synthetic events do not consume a retry");
+    dispatchGesture("pointerup", { pointerType: "touch" });
     await sleep(50);
-    assert.equal(plays, 2, "a gesture earns exactly one retry");
+    assert.equal(plays, 2, "touch release earns exactly one retry");
     dispatchGesture();
     await done;
     assert.equal(plays, 3, "the retry inside the gesture's activation succeeds");
     assert.equal(blocked, 2);
+  }
+
+  // A manual tap must unlock the actual element before a slow provider returns;
+  // later dialogue clips and messages must retain that element's permission.
+  {
+    const previousAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+    const previousFetch = globalThis.fetch;
+    let inGesture = true;
+    let silentPlays = 0;
+    let clipPlays = 0;
+    let releasePrime!: () => void;
+    const primeGate = new Promise<void>((resolve) => {
+      releasePrime = resolve;
+    });
+    let firstClipStarted!: () => void;
+    const firstClip = new Promise<void>((resolve) => {
+      firstClipStarted = resolve;
+    });
+    const instances: GestureAudio[] = [];
+    class GestureAudio {
+      src = "";
+      volume = 1;
+      muted = false;
+      paused = true;
+      unlocked = false;
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(src = "") {
+        this.src = src;
+        instances.push(this);
+      }
+      play() {
+        if (inGesture && !this.muted) this.unlocked = true;
+        if (!this.unlocked) return Promise.reject(notAllowed());
+        this.paused = false;
+        if (this.src.startsWith("data:audio/")) {
+          silentPlays += 1;
+          return primeGate;
+        }
+        clipPlays += 1;
+        if (clipPlays === 1) firstClipStarted();
+        else setTimeout(() => this.onended?.(), 0);
+        return Promise.resolve();
+      }
+      pause() {
+        this.paused = true;
+      }
+      removeAttribute(name: string) {
+        if (name === "src") this.src = "";
+      }
+      load() {}
+    }
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    Object.defineProperty(globalThis, "Audio", { configurable: true, value: GestureAudio });
+    globalThis.fetch = async () => {
+      await fetchGate;
+      return new Response(new Blob(["audio"]), { headers: { "Content-Type": "audio/wav" } });
+    };
+    try {
+      const first = ttsService.speakSequence([{ text: "First." }, { text: "Second." }], "gesture-sequence");
+      inGesture = false;
+      assert.equal(silentPlays, 1, "the manual tap primes audio before awaiting synthesis");
+      releaseFetch();
+      await firstClip;
+      releasePrime();
+      await sleep(0);
+      assert.equal(instances[0]?.paused, false, "late silent-play completion must not pause the real voice");
+      instances[0]?.onended?.();
+      await first;
+      assert.equal(clipPlays, 2, "both delayed dialogue clips play without another tap");
+      assert.equal(instances.length, 1, "dialogue chunks share the unlocked element");
+      assert.equal(ttsService.getState(), "idle");
+      inGesture = true;
+      const second = ttsService.speakSequence([{ text: "Another message." }], "gesture-next-message");
+      inGesture = false;
+      await second;
+      assert.equal(clipPlays, 3);
+      assert.equal(instances.length, 1, "stop/new messages keep the same media permission");
+      assert.equal(instances[0]?.src, "", "finished playback releases its blob source");
+      assert.equal(instances[0]?.onended, null);
+      assert.equal(instances[0]?.onerror, null);
+    } finally {
+      ttsService.stop();
+      releaseFetch();
+      releasePrime();
+      globalThis.fetch = previousFetch;
+      if (previousAudio) Object.defineProperty(globalThis, "Audio", previousAudio);
+      else Reflect.deleteProperty(globalThis, "Audio");
+    }
   }
 
   // ── The attempt cap ends a hopeless loop with the real error ──────────────
