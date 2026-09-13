@@ -451,10 +451,10 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
   }
 });
 
-test("Advanced Memory keeps background errors quiet and opens the drawer for errors without a blocking flag", async ({
+test("Advanced Memory keeps routine normal and guided replies quiet while preserving settings actions", async ({
   page,
   request,
-}) => {
+}, info) => {
   const fixture = await createFixture(request);
   const status: AdvancedMemoryStatus = {
     settings: { ...DEFAULT_ADVANCED_MEMORY_SETTINGS, enabled: true },
@@ -465,23 +465,50 @@ test("Advanced Memory keeps background errors quiet and opens the drawer for err
     summaryModel: "Mock summaries",
     warnings: [],
   };
+  const cases: Array<{ text: string; job: Partial<AdvancedMemoryStatus["job"]>; opens: boolean }> = [
+    { text: "Remember the blue notebook.", job: { status: "running", blocking: true }, opens: false },
+    { text: "/guided Keep the blue notebook in the scene.", job: { status: "running" }, opens: false },
+    { text: "Check the background memory job", job: { status: "error", blocking: false }, opens: false },
+    { text: "Check the blocking memory job", job: { status: "error" }, opens: true },
+    { text: "Check knowledge confirmation", job: { status: "needs_confirmation", blocking: true }, opens: true },
+  ];
   let generationRequests = 0;
   await page.route(`**/api/chats/${fixture.chat.id}/advanced-memory`, (route) => route.fulfill({ json: status }));
-  await page.route("**/api/generate", (route) => {
+  await page.route("**/api/generate", async (route) => {
+    const current = cases[generationRequests];
+    if (!current) throw new Error("Unexpected memory fixture generation");
+    const payload = route.request().postDataJSON();
+    if (generationRequests === 1) {
+      expect(payload.generationGuide).toContain("Keep the blue notebook in the scene.");
+      expect(payload.generationGuideSource).toBe("narrator");
+    } else {
+      expect(payload.userMessage).toBe(current.text);
+    }
     generationRequests += 1;
     status.job = {
-      id: `error-${generationRequests}`,
-      status: "error",
-      stage: "idle",
-      completed: 0,
-      total: 0,
-      error: "Synthetic memory preparation failed",
-      ...(generationRequests === 1 ? { blocking: false } : {}),
+      id: `memory-${generationRequests}`,
+      status: "running",
+      stage: "compacting",
+      completed: 1,
+      total: 2,
+      error: current.job.status === "error" ? "Synthetic memory preparation failed" : null,
+      ...current.job,
     };
-    return route.fulfill({
+    const saved = await request.post(`/api/chats/${fixture.chat.id}/messages`, {
+      data: {
+        role: "assistant",
+        content: `Memory fixture reply ${generationRequests}.`,
+        characterId: fixture.character.id,
+      },
+    });
+    expect(saved.ok()).toBeTruthy();
+    const message = await saved.json();
+    await route.fulfill({
       contentType: "text/event-stream",
       body: [
         { type: "advanced_memory_status", data: { chatId: fixture.chat.id, job: status.job } },
+        { type: "message_saved", data: message },
+        { type: "assistant_message_ready", data: message },
         { type: "done", data: {} },
       ]
         .map((event) => `data: ${JSON.stringify(event)}\n\n`)
@@ -493,19 +520,42 @@ test("Advanced Memory keeps background errors quiet and opens the drawer for err
     const drawer = page.locator(".mari-chat-settings-drawer");
     await drawer.getByRole("button", { name: "Close chat settings", exact: true }).click();
     const composer = page.locator("textarea[data-chat-composer]");
-    await composer.fill("Check the background memory job");
-    await page.locator("button.mari-chat-send-btn").click();
-    await expect.poll(() => generationRequests).toBe(1);
-    await expect(drawer).toBeHidden();
-    await expect(page.locator("button.mari-chat-send-btn .lucide-send")).toBeVisible();
-    await composer.fill("Check the blocking memory job");
-    await page.locator("button.mari-chat-send-btn").click();
-    await expect.poll(() => generationRequests).toBe(2);
-    await expect(drawer).toBeVisible();
-    await expect(drawer.locator('[data-component="AdvancedMemoryProgress"]')).toContainText(
-      "Synthetic memory preparation failed",
-    );
+    for (const [index, current] of cases.entries()) {
+      await composer.fill(current.text);
+      await page.locator("button.mari-chat-send-btn").click();
+      await expect.poll(() => generationRequests).toBe(index + 1);
+      await expect(page.locator("button.mari-chat-send-btn .lucide-send")).toBeVisible();
+      if (index < 2) {
+        await page.screenshot({ path: info.outputPath(`routine-memory-${index === 0 ? "normal" : "guided"}.png`) });
+      }
+      if (current.opens) {
+        await expect(drawer).toBeVisible();
+        if (current.job.status === "error") {
+          await expect(drawer.locator('[data-component="AdvancedMemoryProgress"]')).toContainText(
+            "Synthetic memory preparation failed",
+          );
+        }
+        await drawer.getByRole("button", { name: "Close chat settings", exact: true }).click();
+      } else {
+        await expect(drawer).toBeHidden();
+      }
+      if (index === 1) {
+        // Quiet progress remains available through the normal settings action.
+        if ((page.viewportSize()?.width ?? 0) < 768) {
+          await page.getByRole("button", { name: "More options", exact: true }).click();
+        }
+        await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+        const section = drawer.locator('[data-chat-settings-section="roleplay-memory-recall"]');
+        const header = section.locator(':scope > [role="button"]');
+        if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
+        const progress = section.locator('[data-component="AdvancedMemoryProgress"]');
+        await expect(progress).toContainText("Updating continuity");
+        await expect(progress.getByRole("progressbar")).toHaveAttribute("value", "1");
+        await drawer.getByRole("button", { name: "Close chat settings", exact: true }).click();
+      }
+    }
   } finally {
+    await page.close().catch(() => undefined);
     await fixture.cleanup();
   }
 });
