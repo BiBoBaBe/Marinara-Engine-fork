@@ -712,45 +712,54 @@ export function applyInlineMarkdownHTML(html: string): string {
     // for this path comes from the .mari-md-codeblock/.mari-md-inline-code CSS.
     .replace(/`([^`\n]+)`/g, '<code class="mari-md-inline-code">$1</code>');
 
+  // Preserve literal code through every inline substitution, including markers
+  // in separate code regions that could otherwise pair across their HTML tags.
+  let codeMarker = "\u0000";
+  while (next.includes(codeMarker)) codeMarker += "\u0000";
+  const codeRegions: string[] = [];
+  next = next.replace(/<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>/gi, (code) => {
+    const index = codeRegions.push(code) - 1;
+    return `${codeMarker}${index}${codeMarker}`;
+  });
+
   if (shouldConvertLatexSymbols()) {
     next = convertBasicLatexSymbolsInHtml(next);
   }
 
-  return (
-    next
-      // Fences and inline code have already become HTML. Keep those regions
-      // literal while consuming the boundary break of a Markdown rule.
-      .replace(
-        /(<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>)|(?:^|(?<=<br[^>]*>))\s*(?:\*{3,}|-{3,})\s*(?:<br[^>]*>|$)/gi,
-        (_match, code: string | undefined) => code ?? '<hr class="mari-md-rule">',
-      )
-      // Highlight: ==text==
-      .replace(/==(.+?)==/g, '<mark class="mari-md-highlight">$1</mark>')
-      // Strikethrough: ~~text~~
-      .replace(/~~(.+?)~~/g, '<del class="mari-md-strikethrough">$1</del>')
-      // Headings: # through ######
-      .replace(/(?:^|(?<=<br[^>]*>))\s*(#{1,6})\s+(.+?)(?=<br|$)/g, (_m, hashes: string, content: string) => {
-        const level = hashes.length;
-        return `<h${level} class="mari-md-heading">${content.trim()}</h${level}>`;
-      })
-      // Bold-italic: ***text*** (must precede bold)
-      .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
-      // Bold: **text**
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      // Underline: __text__
-      .replace(/__(.+?)__/g, '<u class="mari-md-underline">$1</u>')
-      // Italic: *text* (single asterisk, not part of **)
-      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
-      // Italic: _text_ (not inside a word)
-      .replace(/(?<![_\w])_([^_]+?)_(?![_\w])/g, "<em>$1</em>")
-      // Blockquote lines: > text (after <br>). The block supplies its ending
-      // line break, so consume that delimiter without removing extra breaks.
-      .replace(
-        /(<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>)|(?:^|(?<=<br[^>]*>))\s*&gt;\s?(.+?)(?:<br[^>]*>|$)/gi,
-        (_match, code: string | undefined, content: string | undefined) =>
-          code ?? `<blockquote class="mari-md-blockquote">${content}</blockquote>`,
-      )
-      // Discord-style subtext: -# text
-      .replace(/(?:^|(?<=<br[^>]*>))[ \t]*-#(?:[ \t]+(.*?))?(?=<br|$)/g, '<small class="mari-md-subtext">$1</small>')
+  const formatted = next
+    // The block supplies its ending line break. Convert both kinds together
+    // so adjacent blocks still see their original line boundaries.
+    .replace(
+      /(?:^|(?<=<br[^>]*>))\s*(?:(?:\*{3,}|-{3,})\s*|&gt;\s?(.+?))(?:<br[^>]*>|$)/g,
+      (_match, quote: string | undefined) =>
+        quote === undefined
+          ? '<hr class="mari-md-rule">'
+          : `<blockquote class="mari-md-blockquote">${quote}</blockquote>`,
+    )
+    // Highlight: ==text==
+    .replace(/==(.+?)==/g, '<mark class="mari-md-highlight">$1</mark>')
+    // Strikethrough: ~~text~~
+    .replace(/~~(.+?)~~/g, '<del class="mari-md-strikethrough">$1</del>')
+    // Headings: # through ######
+    .replace(/(?:^|(?<=<br[^>]*>))\s*(#{1,6})\s+(.+?)(?=<br|$)/g, (_m, hashes: string, content: string) => {
+      const level = hashes.length;
+      return `<h${level} class="mari-md-heading">${content.trim()}</h${level}>`;
+    })
+    // Bold-italic: ***text*** (must precede bold)
+    .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    // Bold: **text**
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    // Underline: __text__
+    .replace(/__(.+?)__/g, '<u class="mari-md-underline">$1</u>')
+    // Italic: *text* (single asterisk, not part of **)
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
+    // Italic: _text_ (not inside a word)
+    .replace(/(?<![_\w])_([^_]+?)_(?![_\w])/g, "<em>$1</em>")
+    // Discord-style subtext: -# text
+    .replace(/(?:^|(?<=<br[^>]*>))[ \t]*-#(?:[ \t]+(.*?))?(?=<br|$)/g, '<small class="mari-md-subtext">$1</small>');
+
+  return formatted.replace(
+    new RegExp(`${codeMarker}(\\d+)${codeMarker}`, "g"),
+    (_match, index: string) => codeRegions[Number(index)]!,
   );
 }

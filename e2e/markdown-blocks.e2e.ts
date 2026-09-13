@@ -42,7 +42,9 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
             '<div><hr title="Raw rule"><br><br><span>Authored rule breaks.</span></div>' +
             '<div><blockquote title="Raw quote">Authored quote.</blockquote><br><br><span>Authored quote breaks.</span></div>' +
             '<PRE title="Raw code"><CODE>First<br>&gt; literal code<br>---<br>***<br>Last</CODE></PRE>' +
-            "\n\n```text\nFirst\n> fenced literal\n---\n***\nLast\n```"
+            "\n\n```text\nFirst\n> fenced literal\n---\n***\nLast\n```" +
+            '\n\n<div title="Adjacent blocks">\n---\n> Adjacent quote.\n***\n</div>' +
+            "\n**Bold `inline` continuation.**"
           : `${markdown}\n\n> First quoted paragraph.\n>\n> Second quoted paragraph.\n\n\`\`\`text\n---\n\n> literal code\n\`\`\``;
       const message = await (
         await request.post(`/api/chats/${chat.id}/messages`, {
@@ -71,9 +73,11 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
       );
       await page.goto("/");
       const row = page.locator(`[data-message-id="${message.id}"]`);
-      await expect(row.locator(".mari-md-blockquote")).toHaveCount(rendering === "plain Markdown" ? 3 : 2);
-      await expect(row.locator(".mari-md-rule")).toHaveCount(2);
-      await expect(row.locator(".mari-md-inline-code")).toHaveText(["---", "> literal quote"]);
+      await expect(row.locator(".mari-md-blockquote")).toHaveCount(3);
+      await expect(row.locator(".mari-md-rule")).toHaveCount(rendering === "plain Markdown" ? 2 : 4);
+      await expect(row.locator(".mari-md-inline-code")).toHaveText(
+        rendering === "plain Markdown" ? ["---", "> literal quote"] : ["---", "> literal quote", "inline"],
+      );
       if (rendering === "plain Markdown") {
         await expect(row.locator("pre code")).toHaveText("---\n\n> literal code");
         await expect(row.locator("blockquote").last()).toHaveText(
@@ -82,10 +86,15 @@ for (const rendering of ["plain Markdown", "mixed HTML"] as const) {
       } else {
         for (const code of [row.locator('[title="Raw code"]'), row.locator(".mari-md-codeblock")]) {
           await expect(code.locator("br")).toHaveCount(4);
-          await expect(code.locator("hr, blockquote")).toHaveCount(0);
+          await expect(code.locator("hr, blockquote, strong, em")).toHaveCount(0);
         }
-        await expect(row.locator('[title="Raw code"]')).toContainText("> literal code");
-        await expect(row.locator(".mari-md-codeblock")).toContainText("> fenced literal");
+        await expect(row.locator('[title="Raw code"] code')).toHaveText("First> literal code---***Last");
+        await expect(row.locator(".mari-md-codeblock code")).toHaveText("First> fenced literal---***Last");
+        await expect(row.locator('[title="Adjacent blocks"] .mari-md-blockquote')).toHaveText("Adjacent quote.");
+        await expect(row.locator('[title="Adjacent blocks"] .mari-md-rule')).toHaveCount(2);
+        await expect(row.locator("strong").filter({ has: page.locator("code") })).toHaveText(
+          "Bold inline continuation.",
+        );
         const rawBreaks = await row
           .locator('[title="Raw rule"], [title="Raw quote"]')
           .evaluateAll((elements) =>
