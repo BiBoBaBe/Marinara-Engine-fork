@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Roleplay notes now explicitly carry decisions into future turns and clarify that updated notes replace their previous contents (#6175).
+
 - Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
 - Mixed HTML messages preserve literal code, and empty Markdown quote lines no longer absorb the following text (#6170).
 
