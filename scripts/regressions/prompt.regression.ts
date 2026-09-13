@@ -11276,6 +11276,31 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(legacyMatches.has("resort-card"), true);
       assert.deepEqual(legacyBatch, [legacyTitle]);
 
+      // The same replacement rule applies to a cast inferred from this batch or remembered from history.
+      for (const rememberedCast of [false, true]) {
+        const inferredBatch: Array<Record<string, unknown>> = [
+          { ...legacyTitle },
+          { characterId: "resort-card", name: "Ana", mood: "Calm" },
+          ...(rememberedCast ? [] : [{ characterId: "resort-card", name: "Julia", mood: "Sleeping" }]),
+        ];
+        const inferredMatches = applyTrackerCharacterCardIdentity(inferredBatch, [castCard], {
+          previousCharacters: rememberedCast ? [{ characterId: "resort-card:cast:julia", name: "Julia" }] : [],
+        });
+        assert.equal(inferredMatches.has("resort-card"), false);
+        assert.deepEqual(inferredBatch, [
+          { characterId: "resort-card:cast:ana", name: "Ana", mood: "Calm" },
+          ...(rememberedCast ? [] : [{ characterId: "resort-card:cast:julia", name: "Julia", mood: "Sleeping" }]),
+        ]);
+      }
+
+      const ordinaryAliasBatch: Array<Record<string, unknown>> = [
+        { ...legacyTitle },
+        { characterId: "resort-card", name: "Ana" },
+      ];
+      assert.equal(applyTrackerCharacterCardIdentity(ordinaryAliasBatch, [castCard]).has("resort-card"), true);
+      assert.equal(ordinaryAliasBatch.length, 1, "A lone alias does not establish a multi-character card");
+      assert.equal(ordinaryAliasBatch[0]?.name, "Vacation Resort");
+
       assert.equal(
         canonicalizeGamePartySpeakerLabels(
           '[Marisol "Mari"] [main] [happy]: "Ready."\n\nMarisol "Mari" crosses the room.',

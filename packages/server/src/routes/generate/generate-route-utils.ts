@@ -1627,7 +1627,7 @@ export function parseTrackerCastCharacterId(value: unknown): { cardId: string; n
  * `extractCharacterCardCastMembers`), when the batch carries two or more
  * distinctly named members for it, or when `previousCharacters` already holds
  * a cast id for it. An entry that merely repeats the title of a card with a
- * declared cast is dropped once this result supplies an individual member.
+ * known cast is dropped once this result supplies an individual member.
  * Cast members keep their own name under a `<cardId>:cast:<name>` id, do not
  * inherit the card avatar, and are not reported in the returned card-id set,
  * so the NPC avatar path (library, stored, or generated portraits) applies.
@@ -1745,7 +1745,7 @@ export function applyTrackerCharacterCardIdentity(
       continue;
     }
 
-    if (declaredCastCardIds.has(card.id) && isCardName && (memberNamesByCard.get(card.id)?.size ?? 0) > 0) {
+    if (castCardIds.has(card.id) && isCardName && (memberNamesByCard.get(card.id)?.size ?? 0) > 0) {
       // Replace the old merged title only when this result includes a member, preserving legacy state otherwise.
       continue;
     }
