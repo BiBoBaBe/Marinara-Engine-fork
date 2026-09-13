@@ -1129,12 +1129,29 @@ test("Function Calling can require the first tool round per chat", async ({ page
   }
 });
 
-test("Game dice outcome narration can be disabled and stays disabled after reload", async ({ page, request }) => {
+test("Game dice outcome narration can be disabled and stays disabled after reload", async ({
+  page,
+  request,
+}, testInfo) => {
   const chatResponse = await request.post("/api/chats", {
     data: { name: "Dice Narration Settings", mode: "game", characterIds: [] },
   });
   expect(chatResponse.ok()).toBeTruthy();
   const chat = (await chatResponse.json()) as { id: string };
+  expect(
+    (
+      await request.patch(`/api/chats/${chat.id}/metadata`, {
+        data: { gameId: "dice-settings-fixture", gameSessionStatus: "active", gameIntroPresented: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await request.post(`/api/chats/${chat.id}/messages`, {
+        data: { role: "assistant", content: "The dice settings session begins." },
+      })
+    ).ok(),
+  ).toBeTruthy();
   await page.addInitScript((chatId) => localStorage.setItem("marinara-active-chat-id", chatId), chat.id);
   const readMetadata = async () => {
     const response = await request.get(`/api/chats/${chat.id}`);
@@ -1145,7 +1162,11 @@ test("Game dice outcome narration can be disabled and stays disabled after reloa
   };
   const section = page.locator('[data-chat-settings-section="function-calling"]');
   const openSection = async () => {
-    await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+    if (!(await section.isVisible())) {
+      if ((page.viewportSize()?.width ?? 0) < 768)
+        await page.getByRole("button", { name: "Game actions", exact: true }).click();
+      await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+    }
     const heading = section.locator('[role="button"][aria-expanded]');
     if ((await heading.getAttribute("aria-expanded")) !== "true") await heading.click();
   };
@@ -1160,6 +1181,8 @@ test("Game dice outcome narration can be disabled and stays disabled after reloa
     await page.reload();
     await openSection();
     await expect(narration).not.toBeChecked();
+    await narration.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath("game-dice-narration-setting.png") });
     await section.getByText("Narrate dice outcomes immediately", { exact: true }).click();
     await expect.poll(async () => (await readMetadata()).gameDiceOutcomeNarration).toBe(true);
   } finally {

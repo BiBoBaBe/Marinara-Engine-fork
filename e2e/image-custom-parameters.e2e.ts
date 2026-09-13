@@ -48,10 +48,10 @@ test("Image API custom parameters validate, save, export, and survive copying", 
     const field = editor.getByRole("textbox", { name: "Custom Parameters", exact: true });
     await expect(field).toBeVisible();
     await field.fill("[");
-    await field.press("Tab");
+    await field.press("Control+Enter");
     await expect(field).toHaveAttribute("aria-invalid", "true");
     await field.fill(JSON.stringify(custom, null, 2));
-    await field.press("Tab");
+    await field.press("Control+Enter");
     await expect(field).not.toHaveAttribute("aria-invalid", "true");
     await editor.getByRole("button", { name: "Save", exact: true }).click();
     const stored = async (id: string) => {
@@ -79,7 +79,7 @@ test("Image API custom parameters validate, save, export, and survive copying", 
     await open(duplicate.id);
     await expect.poll(async () => JSON.parse(await field.inputValue())).toEqual(custom);
     await field.fill("{}");
-    await field.press("Tab");
+    await field.press("Control+Enter");
     await editor.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => stored(duplicate.id)).toBeUndefined();
     expect(await stored(connection.id)).toEqual(custom);

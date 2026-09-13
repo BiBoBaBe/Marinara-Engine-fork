@@ -11,7 +11,7 @@ interface PlaybackProof {
   gesture: boolean;
   primed: number;
   played: number;
-  blocked: number;
+  rejected: { source: string; stack: string }[];
   elements: HTMLMediaElement[];
   finish: () => void;
 }
@@ -73,7 +73,7 @@ test("Roleplay speech keeps tap permission through delayed synthesis and later c
           gesture: false,
           primed: 0,
           played: 0,
-          blocked: 0,
+          rejected: [],
           elements: [],
           finish: () => proof.elements.at(-1)?.dispatchEvent(new Event("ended")),
         };
@@ -87,9 +87,11 @@ test("Roleplay speech keeps tap permission through delayed synthesis and later c
           true,
         );
         HTMLMediaElement.prototype.play = function () {
-          if (proof.gesture && !this.muted) authorized.add(this);
+          // Muted global primers may play, but cannot authorize later audible TTS.
+          if (this.muted) return Promise.resolve();
+          if (proof.gesture) authorized.add(this);
           if (!authorized.has(this)) {
-            proof.blocked += 1;
+            proof.rejected.push({ source: this.src, stack: new Error().stack ?? "" });
             return Promise.reject(new DOMException("The browser blocked audio playback", "NotAllowedError"));
           }
           if (!proof.elements.includes(this)) proof.elements.push(this);
@@ -105,7 +107,7 @@ test("Roleplay speech keeps tap permission through delayed synthesis and later c
     const second = page.locator(`[data-message-id="${messages[1].id}"]`);
     const speak = first.getByRole("button", { name: "Speak", exact: true });
     await first.scrollIntoViewIfNeeded();
-    if (testInfo.project.use.hasTouch) await first.tap();
+    if (testInfo.project.use.hasTouch) await first.getByText('"First line."', { exact: true }).tap();
     else await first.hover();
     if (testInfo.project.use.hasTouch) await speak.tap();
     else await speak.click();
@@ -120,7 +122,7 @@ test("Roleplay speech keeps tap permission through delayed synthesis and later c
     await page.evaluate(() => window.__ttsPlaybackProof.finish());
     await expect(speak).toBeVisible();
     await second.scrollIntoViewIfNeeded();
-    if (testInfo.project.use.hasTouch) await second.tap();
+    if (testInfo.project.use.hasTouch) await second.getByText('"Another message."', { exact: true }).tap();
     else await second.hover();
     const secondSpeak = second.getByRole("button", { name: "Speak", exact: true });
     if (testInfo.project.use.hasTouch) await secondSpeak.tap();
@@ -128,7 +130,7 @@ test("Roleplay speech keeps tap permission through delayed synthesis and later c
     await expect(second.getByRole("button", { name: "Stop speaking", exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.__ttsPlaybackProof.played)).toBe(3);
     expect(await page.evaluate(() => window.__ttsPlaybackProof.elements.length)).toBe(1);
-    expect(await page.evaluate(() => window.__ttsPlaybackProof.blocked)).toBe(0);
+    expect(await page.evaluate(() => window.__ttsPlaybackProof.rejected)).toEqual([]);
     await page.screenshot({ path: testInfo.outputPath("roleplay-voice-playing.png") });
     const stop = second.getByRole("button", { name: "Stop speaking", exact: true });
     if (testInfo.project.use.hasTouch) await stop.tap();
