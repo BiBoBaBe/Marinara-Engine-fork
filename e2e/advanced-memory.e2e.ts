@@ -132,6 +132,7 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
       summaryBudgetTokens: 4096,
       helperConnectionId: null,
       initialProcessingModel: "helper",
+      sceneCheckInterval: 5,
       retrieveMinMessages: 3,
       retrieveMaxMessages: 10,
       narratorCharacterId: null,
@@ -147,15 +148,28 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
   };
   const initializeBodies: Array<{ settings?: Record<string, unknown> }> = [];
   let reindexRequests = 0;
+  let resetRequests = 0;
+  let releaseResume: (() => void) | undefined;
   await page.route(`**/api/chats/${fixture.chat.id}/advanced-memory**`, async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     const method = route.request().method();
+    if (method === "DELETE") {
+      resetRequests += 1;
+      status.records = [];
+      status.job = { status: "idle", stage: "idle", completed: 0, total: 0, error: null };
+      delete status.latestReceipt;
+      return route.fulfill({ json: status });
+    }
     if (pathname.endsWith("/sources")) return route.fulfill({ json: fixture.messages });
     if (method === "PATCH" && pathname.endsWith("/settings")) {
       Object.assign(status.settings, route.request().postDataJSON());
     } else if (method === "POST" && pathname.endsWith("/initialize")) {
       const body = route.request().postDataJSON();
       initializeBodies.push(body);
+      if (initializeBodies.length === 2)
+        await new Promise<void>((resolve) => {
+          releaseResume = resolve;
+        });
       Object.assign(status.settings, body.settings);
       status.missingKnowledgeCharacterIds = [];
       status.job = {
@@ -203,10 +217,42 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     await expect(advancedToggle).not.toBeChecked();
     await settings.getByText("Advanced Memory Recall (Alpha)", { exact: true }).click();
     await expect(advancedToggle).toBeChecked();
-    await expect(settings.getByLabel("Maximum context (tokens)")).toHaveValue("65000");
-    await expect(settings.getByLabel("Preferred minimum messages")).toHaveValue("3");
+    await expect(settings.getByLabel("Maximum allowed context before compression (tokens)")).toHaveValue("65000");
+    await expect(settings.getByLabel("Minimum messages per excerpt")).toHaveValue("3");
     await expect(settings.getByLabel("Maximum messages per excerpt")).toHaveValue("10");
     await expect(settings.getByLabel("Narrator", { exact: true })).toHaveValue("");
+    await expect(settings).toContainText("Moving context");
+    const minimum = settings.getByLabel("Minimum messages per excerpt");
+    const maximum = settings.getByLabel("Maximum messages per excerpt");
+    await minimum.fill("0");
+    await Promise.all([
+      page.waitForResponse(
+        (response) => response.url().endsWith("/advanced-memory/settings") && response.request().method() === "PATCH",
+      ),
+      minimum.press("Tab"),
+    ]);
+    await expect(maximum).toBeEnabled();
+    await expect.poll(() => status.settings.retrieveMinMessages).toBe(0);
+    await maximum.fill("0");
+    await Promise.all([
+      page.waitForResponse(
+        (response) => response.url().endsWith("/advanced-memory/settings") && response.request().method() === "PATCH",
+      ),
+      maximum.press("Tab"),
+    ]);
+    await expect(maximum).toBeEnabled();
+    await expect.poll(() => status.settings.retrieveMaxMessages).toBe(0);
+    await expect(minimum).toHaveValue("0");
+    await maximum.fill("5");
+    await Promise.all([
+      page.waitForResponse(
+        (response) => response.url().endsWith("/advanced-memory/settings") && response.request().method() === "PATCH",
+      ),
+      maximum.press("Tab"),
+    ]);
+    await expect(maximum).toBeEnabled();
+    await expect.poll(() => status.settings.retrieveMaxMessages).toBe(5);
+    await expect(minimum).toHaveValue("0");
     await expect(settings).toContainText("Mock helper");
     await settings.getByLabel("Initial scene processing model").selectOption("main");
     await settings.getByRole("button", { name: "Prepare existing history", exact: true }).click();
@@ -262,6 +308,13 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     await expect(progress).toContainText("Memory processing paused");
     await progress.getByRole("button", { name: "Resume processing", exact: true }).click();
     await expect.poll(() => initializeBodies.length).toBe(2);
+    await expect(progress).toContainText("Starting memory processing…");
+    await expect(progress).toHaveAttribute("aria-busy", "true");
+    const resumeButton = progress.getByRole("button", { name: "Resume processing", exact: true });
+    await expect(resumeButton).toBeDisabled();
+    await resumeButton.evaluate((button: HTMLButtonElement) => button.click());
+    expect(initializeBodies).toHaveLength(2);
+    releaseResume?.();
     await expect(progress.getByRole("progressbar")).toHaveAttribute("value", "1");
     status.job = { ...status.job, total: 1 };
     await expect(progress).toContainText("1 of 1 work unit completed");
@@ -292,6 +345,11 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
       },
     ];
     await expect(progress).toContainText("Memory is ready");
+    const toggleWidth = await advancedToggle
+      .locator("xpath=ancestor::div[1]")
+      .evaluate((element) => element.getBoundingClientRect().width);
+    const progressWidth = await progress.evaluate((element) => element.getBoundingClientRect().width);
+    expect(Math.abs(toggleWidth - progressWidth)).toBeLessThan(2);
     await settings.getByRole("button", { name: "Review character knowledge", exact: true }).click();
     await expect(confirmation.getByRole("combobox", { name: "Dottore", exact: true })).toHaveValue("historical-2");
     await expect(confirmation.getByRole("combobox", { name: "Narrator", exact: true })).toHaveValue("historical-0");
@@ -309,7 +367,39 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     await expect(drawer.getByText("memory chunks", { exact: true })).toHaveCount(0);
     await expect(drawer.getByText(/No recall memories have been created for this chat/)).toHaveCount(0);
     await expect(drawer.getByRole("button", { name: "Re-vectorize All Memories", exact: true })).toHaveCount(0);
-    await inspector.getByRole("button").filter({ hasText: "The laboratory promise" }).click();
+    status.records.push(
+      {
+        ...status.records[0]!,
+        id: "excerpt-proof",
+        kind: "excerpt",
+        content: "Exact words from the notebook conversation.",
+      },
+      {
+        ...status.records[0]!,
+        id: "later-scene",
+        sceneId: "later-scene",
+        startIndex: 3,
+        endIndex: 4,
+        content: "A later experiment with a silver vial.",
+        timeline: null,
+      },
+    );
+    await expect(inspector.getByRole("button", { name: /Scene #2/ })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: /Scene #2/ })).toContainText(
+      "Story timeframe: Not specified in the story",
+    );
+    const search = inspector.getByRole("searchbox", { name: "Search scenes and memories…" });
+    await search.fill("silver vial");
+    await expect(inspector.locator("ul > li")).toHaveCount(1);
+    await expect(inspector.getByRole("button", { name: /Scene #2/ })).toBeVisible();
+    await search.fill("not found anywhere");
+    await expect(inspector).toContainText("No matching scenes or memories.");
+    await search.fill("");
+    await expect(inspector.locator("ul > li")).toHaveCount(2);
+    await expect(inspector.getByText("Exact words from the notebook conversation.")).toHaveCount(0);
+    await inspector.getByRole("button", { name: /Scene #1/ }).click();
+    await expect(inspector).toContainText("Story timeframe: Before the experiment");
+    await expect(inspector.getByText("Closed", { exact: true })).toBeVisible();
     await inspector
       .getByRole("textbox", { name: "Summary text", exact: true })
       .fill("Correction: the notebook is green.");
@@ -318,7 +408,16 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     await inspector.getByText("Include in recall", { exact: true }).click();
     await expect(inspector.getByRole("checkbox", { name: "Include in recall", exact: true })).not.toBeChecked();
     await expect.poll(() => status.records[0]?.enabled).toBe(false);
-    await inspector.getByRole("button", { name: "Inspect source messages", exact: true }).click();
+    const saveButton = inspector.getByRole("button", { name: "Save correction", exact: true });
+    const sourceButton = inspector.getByRole("button", { name: "Inspect source messages", exact: true });
+    const saveBounds = await saveButton.boundingBox();
+    const sourceBounds = await sourceButton.boundingBox();
+    expect(saveBounds).not.toBeNull();
+    expect(sourceBounds).not.toBeNull();
+    expect(Math.abs(saveBounds!.x - sourceBounds!.x)).toBeLessThan(1);
+    expect(Math.abs(saveBounds!.width - sourceBounds!.width)).toBeLessThan(1);
+    expect(sourceBounds!.y).toBeGreaterThanOrEqual(saveBounds!.y + saveBounds!.height);
+    await sourceButton.click();
     await expect(inspector).toContainText("I will remember the blue notebook.");
     await inspector.getByRole("button", { name: "Back to scenes", exact: true }).click();
     await inspector.getByRole("button", { name: "Reindex", exact: true }).click();
@@ -326,12 +425,23 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     expect(status.records[0]?.enabled).toBe(false);
     await inspector.scrollIntoViewIfNeeded();
     await captureThemes(page, info, "advanced-memory-inspector");
+    await inspector.getByRole("button", { name: "Delete all memories", exact: true }).click();
+    const resetDialog = page.getByRole("dialog", { name: "Delete all memories", exact: true });
+    await expect(resetDialog).toContainText("Original chat messages and your settings will stay intact.");
+    await resetDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(resetRequests).toBe(0);
+    await expect(inspector.locator("ul > li")).toHaveCount(2);
+    await inspector.getByRole("button", { name: "Delete all memories", exact: true }).click();
+    await resetDialog.getByRole("button", { name: "Delete all memories", exact: true }).click();
+    await expect.poll(() => resetRequests).toBe(1);
+    await expect(inspector).toContainText("Prepared scenes and continuity summaries will appear here.");
+    await expect(settings.getByRole("button", { name: "Prepare existing history", exact: true })).toBeVisible();
     await settings.getByRole("button", { name: "Review character knowledge", exact: true }).click();
     await expect(confirmation).toBeVisible();
     await settings.getByText("Advanced Memory Recall (Alpha)", { exact: true }).click();
     await expect(advancedToggle).not.toBeChecked();
     await expect(confirmation).toHaveCount(0);
-    await expect(settings.getByLabel("Maximum context (tokens)")).toHaveCount(0);
+    await expect(settings.getByLabel("Maximum allowed context before compression (tokens)")).toHaveCount(0);
     await expect(inspector).toHaveCount(0);
     await expect(drawer.getByRole("checkbox", { name: /^Enable Memory Recall/ })).not.toBeChecked();
     await drawer.getByRole("button", { name: "Access memories for this chat", exact: true }).click();

@@ -155,7 +155,7 @@ try {
     chatId: chat.id,
     role: "assistant",
     characterId: first.id,
-    content: "PRIVATE_SCENE_SECRET",
+    content: "Date: PRIVATE_SCENE_SECRET_DATE\nPRIVATE_SCENE_SECRET",
     extra: { hiddenFromAICharacterIds: [second.id] },
   });
   assert.ok(hidden);
@@ -164,7 +164,7 @@ try {
       chatId: chat.id,
       role: index % 2 ? "assistant" : "user",
       characterId: index % 2 ? first.id : null,
-      content: `HISTORY_${index}: ${"A long ongoing scene. ".repeat(200)}`,
+      content: `${index === 0 ? "Date: Spring 14\n" : ""}HISTORY_${index}: ${"A long ongoing scene. ".repeat(200)}`,
     });
   const generate = async (regenerateMessageId?: string) => {
     const result = await app.inject({
@@ -352,12 +352,24 @@ try {
     content: "FUTURE_RESET_SECRET",
     extra: { isConversationStart: true },
   });
-  await generate(target.id);
-  assert.ok(
-    !prompts.at(-1)!.includes("FUTURE_RESET_SECRET"),
-    "historical regeneration uses the prefix before later manual starts",
-  );
-  assert.ok(prompts.at(-1)!.includes("HISTORY_9"));
+  for (const wrapFormat of ["xml", "markdown", "none"] as const) {
+    await presets.update(preset.id, { wrapFormat });
+    await generate(target.id);
+    assert.ok(
+      !prompts.at(-1)!.includes("FUTURE_RESET_SECRET"),
+      "historical regeneration uses the prefix before later manual starts",
+    );
+    assert.ok(prompts.at(-1)!.includes("HISTORY_9"));
+    assert.ok(
+      prompts.at(-1)!.includes("story timeframe: Spring 14"),
+      `${wrapFormat} main-provider prompt retains known story time`,
+    );
+    assert.ok(prompts.at(-1)!.includes("Messages #2–#"), `${wrapFormat} memory has canonical source positions`);
+    assert.ok(
+      !prompts.at(-1)!.includes("PRIVATE_SCENE_SECRET_DATE"),
+      `${wrapFormat} memory cannot borrow another character's hidden date`,
+    );
+  }
 } finally {
   if (chatId) {
     await chats.patchMetadata(chatId, { advancedMemory: { ...DEFAULT_ADVANCED_MEMORY_SETTINGS, enabled: false } });

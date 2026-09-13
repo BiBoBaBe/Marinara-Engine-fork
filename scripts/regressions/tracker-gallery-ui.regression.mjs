@@ -202,10 +202,18 @@ assert.match(
   /<SettingsSwitch\s+label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.addTurnToPrompt"\)\}/u,
   "Add Turn To Prompt must use the shared Settings toggle",
 );
+const memoryRecallAccessButton =
+  chatSettingsDrawer.match(/<button\b(?:(?!<button\b)[\s\S])*?accessMemoriesForThisChat[\s\S]*?<\/button>/u)?.[0] ?? "";
 assert.match(
-  chatSettingsDrawer,
-  /<AgentSettingsActionButton[\s\S]*accessMemoriesForThisChat/u,
-  "Memory Recall must use the shared Chat Settings action button",
+  memoryRecallAccessButton,
+  /className="mari-chrome-control\b/u,
+  "Memory Recall access must retain the shared Chat Settings control styling",
+);
+assert.match(memoryRecallAccessButton, /onClick=\{[\s\S]*?setMemoryView/u, "Memory Recall access must open its view");
+assert.match(
+  memoryRecallAccessButton,
+  /aria-expanded=\{advancedMemoryEnabled \? memoryView === "advanced" : undefined\}/u,
+  "Memory Recall access must expose its inline Advanced Memory disclosure state",
 );
 assert.doesNotMatch(
   chatSettingsDrawer,

@@ -1,6 +1,6 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Download, RefreshCw, Upload } from "lucide-react";
+import { Download, RefreshCw, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import type { AdvancedMemoryRecord } from "@marinara-engine/shared";
 import {
@@ -10,6 +10,7 @@ import {
   useExportAdvancedMemory,
 } from "../../hooks/use-advanced-memory";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
+import { showConfirmDialog } from "../../lib/app-dialogs";
 import type { MemoryCharacterOption } from "./AdvancedMemorySettings";
 
 const buttonClass =
@@ -37,8 +38,24 @@ export function AdvancedMemoryInspector({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [showSources, setShowSources] = useState(false);
+  const [search, setSearch] = useState("");
   const sources = useAdvancedMemorySources(chatId, showSources ? selectedId : null);
-  const records = status.data?.records ?? [];
+  const records = useMemo(
+    () =>
+      (status.data?.records ?? [])
+        .filter((record) => record.kind !== "excerpt")
+        .sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex),
+    [status.data?.records],
+  );
+  const sceneNumbers = new Map(
+    [...new Set(records.filter((record) => record.kind === "scene").map((record) => record.sceneId))].map(
+      (id, index) => [id, index + 1],
+    ),
+  );
+  const recordTitle = (record: AdvancedMemoryRecord) =>
+    record.kind === "scene"
+      ? t("chat.advancedMemory.sceneNumber", { number: sceneNumbers.get(record.sceneId) })
+      : t(`chat.advancedMemory.kind.${record.kind}`);
   const selected = records.find((record) => record.id === selectedId);
   const receipt = status.data?.latestReceipt;
   const pending = action.isPending || status.data?.job.status === "running";
@@ -47,6 +64,33 @@ export function AdvancedMemoryInspector({
     record.audienceCharacterIds.length > 0
       ? record.audienceCharacterIds.map(characterName).join(", ")
       : t("chat.advancedMemory.sharedAudience");
+  const query = search.trim().toLocaleLowerCase();
+  const filteredRecords = records.filter((record) =>
+    [recordTitle(record), record.title, record.content, record.timeline, audience(record)]
+      .join(" ")
+      .toLocaleLowerCase()
+      .includes(query),
+  );
+  const resetMemory = async () => {
+    const confirmed = await showConfirmDialog({
+      title: t("chat.advancedMemory.deleteAll"),
+      message: t("chat.advancedMemory.deleteAllConfirm"),
+      confirmLabel: t("chat.advancedMemory.deleteAll"),
+      cancelLabel: t("chat.advancedMemory.cancelSetup"),
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+    action.mutate(
+      { action: "reset" },
+      {
+        onSuccess: () => {
+          setSelectedId(null);
+          setShowSources(false);
+          setSearch("");
+        },
+      },
+    );
+  };
   const openRecord = (record: AdvancedMemoryRecord) => {
     setSelectedId(record.id);
     setDraft(record.content);
@@ -80,7 +124,7 @@ export function AdvancedMemoryInspector({
           <button
             type="button"
             className={buttonClass}
-            disabled={records.length === 0 || exportMemory.isPending}
+            disabled={!status.data?.records.length || exportMemory.isPending}
             onClick={() => exportMemory.mutate()}
           >
             <Upload size="0.75rem" />
@@ -100,11 +144,25 @@ export function AdvancedMemoryInspector({
           <button
             type="button"
             className={buttonClass}
-            disabled={pending || records.length === 0}
+            disabled={pending || !status.data?.records.length}
             onClick={() => action.mutate({ action: "reindex" })}
           >
             <RefreshCw size="0.75rem" />
             {t("chat.advancedMemory.reindex")}
+          </button>
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={
+              action.isPending ||
+              status.isLoading ||
+              status.isError ||
+              (!status.data?.records.length && status.data?.job.status === "idle")
+            }
+            onClick={() => void resetMemory()}
+          >
+            <Trash2 size="0.75rem" />
+            {t("chat.advancedMemory.deleteAll")}
           </button>
         </div>
       </div>
@@ -174,12 +232,18 @@ export function AdvancedMemoryInspector({
           >
             {t("chat.advancedMemory.backToArchive")}
           </button>
-          <h5 className="break-words text-sm font-semibold">
-            {selected.title || t(`chat.advancedMemory.kind.${selected.kind}`)}
-          </h5>
+          <h5 className="break-words text-sm font-semibold">{recordTitle(selected)}</h5>
+          {selected.kind === "scene" && (
+            <p className="text-xs text-[var(--muted-foreground)]">
+              {t(selected.status === "open" ? "chat.advancedMemory.sceneOpen" : "chat.advancedMemory.sceneClosed")}
+            </p>
+          )}
           <p className="text-xs text-[var(--muted-foreground)]">
             {t("chat.advancedMemory.range", { start: selected.startIndex, end: selected.endIndex })} ·{" "}
             {audience(selected)}
+          </p>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            {t("chat.advancedMemory.timeframe")}: {selected.timeline || t("chat.advancedMemory.timeframeUnknown")}
           </p>
           <SettingsSwitch
             label={t("chat.advancedMemory.includeInRecall")}
@@ -198,10 +262,13 @@ export function AdvancedMemoryInspector({
               className="mari-chrome-field min-h-40 w-full resize-y rounded-lg px-3 py-2 text-xs leading-relaxed"
             />
           </label>
+          {selected.kind === "scene" && !selected.content && selected.status === "open" && (
+            <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("chat.advancedMemory.openSceneHelp")}</p>
+          )}
           <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("chat.advancedMemory.editHelp")}</p>
           <button
             type="button"
-            className={buttonClass}
+            className={`${buttonClass} w-full`}
             disabled={pending || !draft.trim() || draft === selected.content}
             onClick={() => action.mutate({ action: "record", recordId: selected.id, patch: { content: draft } })}
           >
@@ -209,7 +276,7 @@ export function AdvancedMemoryInspector({
           </button>
           <button
             type="button"
-            className={`${buttonClass} ml-2`}
+            className={`${buttonClass} w-full`}
             aria-expanded={showSources}
             onClick={() => setShowSources((value) => !value)}
           >
@@ -243,35 +310,67 @@ export function AdvancedMemoryInspector({
           )}
         </div>
       ) : (
-        <ul className="space-y-2">
-          {records.map((record) => (
-            <li key={record.id}>
-              <button
-                type="button"
-                onClick={() => openRecord(record)}
-                className="w-full space-y-1 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-left hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              >
-                <span className="block break-words text-xs font-semibold">
-                  {record.title || t(`chat.advancedMemory.kind.${record.kind}`)}
-                </span>
-                <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
-                  {t(`chat.advancedMemory.kind.${record.kind}`)} ·{" "}
-                  {t("chat.advancedMemory.range", { start: record.startIndex, end: record.endIndex })}
-                </span>
-                <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
-                  {audience(record)}
-                  {record.timeline ? <> · {record.timeline}</> : null}
-                </span>
-                <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
-                  {t(record.manualOverride ? "chat.advancedMemory.manual" : "chat.advancedMemory.generated")} ·{" "}
-                  {t(`chat.advancedMemory.embedding.${record.embeddingStatus}`)}
-                  {!record.enabled ? <> · {t("chat.advancedMemory.disabled")}</> : null}
-                </span>
-                <span className="line-clamp-3 block text-xs leading-relaxed">{record.content}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          {records.length > 0 && (
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t("chat.advancedMemory.searchScenes")}
+              aria-label={t("chat.advancedMemory.searchScenes")}
+              className="mari-chrome-field min-h-9 w-full rounded-lg px-3 py-2 text-xs"
+            />
+          )}
+          {records.length > 0 && filteredRecords.length === 0 && (
+            <p role="status" className="text-xs text-[var(--muted-foreground)]">
+              {t("chat.advancedMemory.noSearchResults")}
+            </p>
+          )}
+          <ul className="space-y-2">
+            {filteredRecords.map((record) => (
+              <li key={record.id}>
+                <button
+                  type="button"
+                  onClick={() => openRecord(record)}
+                  className="w-full space-y-1 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-left hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  <span className="block break-words text-xs font-semibold">{recordTitle(record)}</span>
+                  <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
+                    {t(`chat.advancedMemory.kind.${record.kind}`)} ·{" "}
+                    {t("chat.advancedMemory.range", { start: record.startIndex, end: record.endIndex })}
+                    {record.kind === "scene" && (
+                      <>
+                        {" "}
+                        ·{" "}
+                        {t(
+                          record.status === "open"
+                            ? "chat.advancedMemory.sceneOpen"
+                            : "chat.advancedMemory.sceneClosed",
+                        )}
+                      </>
+                    )}
+                  </span>
+                  <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">{audience(record)}</span>
+                  <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
+                    {t("chat.advancedMemory.timeframe")}: {record.timeline || t("chat.advancedMemory.timeframeUnknown")}
+                  </span>
+                  {record.kind === "scene" && !record.content && record.status === "open" ? (
+                    <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
+                      {t("chat.advancedMemory.openSceneHelp")}
+                    </span>
+                  ) : (
+                    <span className="block text-[0.6875rem] text-[var(--muted-foreground)]">
+                      {t(record.manualOverride ? "chat.advancedMemory.manual" : "chat.advancedMemory.generated")} ·{" "}
+                      {t(`chat.advancedMemory.embedding.${record.embeddingStatus}`)}
+                      {!record.enabled ? <> · {t("chat.advancedMemory.disabled")}</> : null}
+                    </span>
+                  )}
+                  <span className="line-clamp-3 text-xs leading-relaxed">{record.content}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );

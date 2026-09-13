@@ -31,12 +31,16 @@ export function AdvancedMemorySettings({
   individual,
   characters,
   connections,
+  hasHistory = false,
+  variant = "drawer",
 }: {
   chatId: string;
   metadataSettings: unknown;
   individual: boolean;
   characters: MemoryCharacterOption[];
   connections: Array<{ id: string; name: string; model?: string }>;
+  hasHistory?: boolean;
+  variant?: "drawer" | "wizard";
 }) {
   const { t } = useTranslation();
   const status = useAdvancedMemoryStatus(chatId);
@@ -63,8 +67,11 @@ export function AdvancedMemorySettings({
   const lastKnowledgeMessage = messages.data?.at(-1);
   const missing = status.data?.missingKnowledgeCharacterIds ?? [];
   const running = status.data?.job.status === "running";
-  const disabled = action.isPending || running || status.isLoading || status.isError;
-  const save = (patch: Partial<MemorySettings>) => action.mutate({ action: "settings", settings: patch });
+  const numberInputsDisabled =
+    running || status.isLoading || status.isError || (action.isPending && action.variables?.action !== "settings");
+  const disabled = action.isPending || numberInputsDisabled;
+  const save = (patch: Partial<MemorySettings> | ((current: MemorySettings) => Partial<MemorySettings>)) =>
+    action.mutate({ action: "settings", settings: patch });
   const initialize = () => {
     if (individual && missing.length > 0) {
       setKnowledgeCharacterIds(missing);
@@ -108,8 +115,10 @@ export function AdvancedMemorySettings({
   return (
     <div className="space-y-3 border-t border-[var(--border)] pt-3" data-component="AdvancedMemorySettings">
       <SettingsSwitch
-        label={t("chat.advancedMemory.title")}
-        description={t("chat.advancedMemory.description")}
+        label={t(variant === "wizard" ? "chat.advancedMemory.wizardTitle" : "chat.advancedMemory.title")}
+        description={t(
+          variant === "wizard" ? "chat.advancedMemory.wizardDescription" : "chat.advancedMemory.description",
+        )}
         checked={settings.enabled}
         disabled={disabled}
         onChange={(enabled) => save({ enabled })}
@@ -126,11 +135,20 @@ export function AdvancedMemorySettings({
         </p>
       )}
       {settings.enabled && (
-        <div className="space-y-3 px-1">
-          {status.data && <AdvancedMemoryProgress chatId={chatId} status={status.data} onResume={initialize} />}
-          <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
-            {t("chat.advancedMemory.summaryHelp")}
-          </p>
+        <div className="space-y-3">
+          {status.data && (
+            <AdvancedMemoryProgress
+              chatId={chatId}
+              status={status.data}
+              onResume={initialize}
+              pending={action.isPending && action.variables?.action === "initialize"}
+            />
+          )}
+          {hasHistory && (status.data?.job.status === "idle" || status.data?.job.status === "needs_confirmation") && (
+            <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+              {t("chat.advancedMemory.prepareHistoryHelp")}
+            </p>
+          )}
           {status.data?.warnings?.length ? (
             <ul className="list-disc space-y-1 pl-4 text-xs text-[var(--muted-foreground)]">
               {status.data.warnings.map((warning, index) => (
@@ -145,12 +163,12 @@ export function AdvancedMemorySettings({
                 value={settings.maxContextTokens}
                 min={1024}
                 max={10_000_000}
-                disabled={disabled}
+                disabled={numberInputsDisabled}
                 onCommit={(maxContextTokens) =>
-                  save({
+                  save((current) => ({
                     maxContextTokens,
-                    summaryBudgetTokens: Math.min(settings.summaryBudgetTokens, maxContextTokens - 1),
-                  })
+                    summaryBudgetTokens: Math.min(current.summaryBudgetTokens, maxContextTokens - 1),
+                  }))
                 }
                 ariaLabel={t("chat.advancedMemory.contextCap")}
                 className={fieldClass}
@@ -161,9 +179,13 @@ export function AdvancedMemorySettings({
               <DraftNumberInput
                 value={settings.summaryBudgetTokens}
                 min={64}
-                max={Math.min(131_072, settings.maxContextTokens - 1)}
-                disabled={disabled}
-                onCommit={(summaryBudgetTokens) => save({ summaryBudgetTokens })}
+                max={131_072}
+                disabled={numberInputsDisabled}
+                onCommit={(summaryBudgetTokens) =>
+                  save((current) => ({
+                    summaryBudgetTokens: Math.min(summaryBudgetTokens, current.maxContextTokens - 1),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.summaryBudget")}
                 className={fieldClass}
               />
@@ -190,21 +212,46 @@ export function AdvancedMemorySettings({
               ))}
             </select>
           </label>
+          <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+            {t("chat.advancedMemory.summaryHelp")}
+          </p>
           <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
             {t("chat.advancedMemory.resolvedModels", {
               helper: status.data?.helperModel ?? t("chat.advancedMemory.unavailable"),
               summary: status.data?.summaryModel ?? t("chat.advancedMemory.unavailable"),
             })}
           </p>
+          <label className="block space-y-1 text-xs">
+            <span>{t("chat.advancedMemory.sceneCheckInterval")}</span>
+            <DraftNumberInput
+              value={settings.sceneCheckInterval}
+              min={1}
+              max={100}
+              disabled={numberInputsDisabled}
+              onCommit={(sceneCheckInterval) => save({ sceneCheckInterval })}
+              ariaLabel={t("chat.advancedMemory.sceneCheckInterval")}
+              className={fieldClass}
+            />
+            <span className="block text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]">
+              {t("chat.advancedMemory.sceneCheckIntervalHelp")}
+            </span>
+          </label>
+          <h4 className="text-xs font-medium">{t("chat.advancedMemory.movingContext")}</h4>
+          <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("chat.advancedMemory.windowHelp")}</p>
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1 text-xs">
               <span>{t("chat.advancedMemory.minimumMessages")}</span>
               <DraftNumberInput
                 value={settings.retrieveMinMessages}
-                min={1}
-                max={settings.retrieveMaxMessages}
-                disabled={disabled}
-                onCommit={(retrieveMinMessages) => save({ retrieveMinMessages })}
+                min={0}
+                max={50}
+                disabled={numberInputsDisabled}
+                onCommit={(retrieveMinMessages) =>
+                  save((current) => ({
+                    retrieveMinMessages,
+                    retrieveMaxMessages: Math.max(retrieveMinMessages, current.retrieveMaxMessages),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.minimumMessages")}
                 className={fieldClass}
               />
@@ -213,16 +260,20 @@ export function AdvancedMemorySettings({
               <span>{t("chat.advancedMemory.maximumMessages")}</span>
               <DraftNumberInput
                 value={settings.retrieveMaxMessages}
-                min={settings.retrieveMinMessages}
+                min={0}
                 max={50}
-                disabled={disabled}
-                onCommit={(retrieveMaxMessages) => save({ retrieveMaxMessages })}
+                disabled={numberInputsDisabled}
+                onCommit={(retrieveMaxMessages) =>
+                  save((current) => ({
+                    retrieveMaxMessages,
+                    retrieveMinMessages: Math.min(retrieveMaxMessages, current.retrieveMinMessages),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.maximumMessages")}
                 className={fieldClass}
               />
             </label>
           </div>
-          <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("chat.advancedMemory.windowHelp")}</p>
           <label className="block space-y-1 text-xs">
             <span>{t("chat.advancedMemory.initialModel")}</span>
             <select

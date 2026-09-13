@@ -3672,6 +3672,8 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
   const createdChatIds = new Set<string>();
   const createdCharacterIds = new Set([character.id]);
   let createdGroupId: string | null = null;
+  const presetSaveGate = createDeferred();
+  const presetSaved = createDeferred();
   const mobile = testInfo.project.name.includes("mobile");
   const rightPanel = page.locator(`[data-component="${mobile ? "RightPanelMobile" : "RightPanelDesktop"}"]`);
 
@@ -3956,22 +3958,34 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
         return { backgroundColor: style.backgroundColor, color: style.color };
       }),
     ).toEqual(connectionListboxStyle);
+    await page.route(`**/api/chats/${roleplayChatId}`, async (route) => {
+      const request = route.request();
+      if (request.method() === "PATCH" && request.postDataJSON()?.promptPresetId === null) {
+        const response = await route.fetch();
+        presetSaved.resolve();
+        await presetSaveGate.promise;
+        await route.fulfill({ response });
+        return;
+      }
+      await route.continue();
+    });
     await presetListbox.getByRole("option", { name: "None", exact: true }).click();
+    await presetSaved.promise;
+    await expect(roleplayWizard.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+    presetSaveGate.resolve();
     await roleplayWizard.getByRole("button", { name: "Next", exact: true }).click();
     const participantsHeading = roleplayWizard.getByRole("heading", {
       name: "Persona & Characters",
       exact: true,
     });
     const presetVariables = page.getByRole("dialog", { name: "Configure Preset Variables" });
-    await expect(presetVariables.or(participantsHeading).first()).toBeVisible();
-    if (await presetVariables.isVisible()) {
-      await presetVariables.getByRole("button", { name: "Skip", exact: true }).click();
-    }
     await expect(participantsHeading).toBeVisible();
+    await expect(presetVariables).toBeHidden();
     await expect(roleplayWizard.getByText(characterName, { exact: true }).first()).toBeVisible();
     await roleplayWizard.getByRole("button", { name: "Close setup", exact: true }).click();
     await expect(roleplayWizard).toHaveCount(0);
   } finally {
+    presetSaveGate.resolve();
     await Promise.all(
       [...createdChatIds].map((chatId) => request.delete(`/api/chats/${chatId}`).catch(() => undefined)),
     );
