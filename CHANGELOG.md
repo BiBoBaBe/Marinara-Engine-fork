@@ -4,7 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
-- Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks. Code remains literal in mixed HTML messages, including Markdown-like markers (#6170).
+- Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
+- Mixed HTML messages preserve literal code, and empty Markdown quote lines no longer absorb the following text (#6170).
 
 - Image API connections now accept custom JSON parameters, including provider-supported LoRA fields. Parameters persist with saved, copied, and exported connections and apply to generation requests using that connection's own defaults (#6167).
 - Image-generation debug logs redact credentials and embedded image data while preserving prompts and request settings for troubleshooting (#6167).
