@@ -184,6 +184,8 @@
   "chat.advancedMemory.retry": "Retry",
   "chat.advancedMemory.reviewKnowledge": "Review character knowledge",
   "chat.advancedMemory.save": "Save correction",
+  "chat.advancedMemory.sceneCheckInterval": "Standalone scene check interval (messages)",
+  "chat.advancedMemory.sceneCheckIntervalHelp": "After generation, run standalone scene checks every set number of chat messages, reading only that window. Checks grouped with trackers follow tracker calls instead.",
   "chat.advancedMemory.sceneClosed": "Closed",
   "chat.advancedMemory.sceneNumber": "Scene #{{number}}",
   "chat.advancedMemory.sceneOpen": "Ongoing",

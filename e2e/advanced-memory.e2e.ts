@@ -132,6 +132,7 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
       summaryBudgetTokens: 4096,
       helperConnectionId: null,
       initialProcessingModel: "helper",
+      sceneCheckInterval: 5,
       retrieveMinMessages: 3,
       retrieveMaxMessages: 10,
       narratorCharacterId: null,

@@ -40,6 +40,7 @@ export function useAdvancedMemoryAction(chatId: string) {
   const qc = useQueryClient();
   const { t } = useTranslation();
   return useMutation({
+    scope: { id: `advanced-memory:${chatId}` },
     mutationFn: (request: AdvancedMemoryAction) => {
       const base = `/chats/${chatId}/advanced-memory`;
       switch (request.action) {

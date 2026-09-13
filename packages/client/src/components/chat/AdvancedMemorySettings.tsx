@@ -67,7 +67,9 @@ export function AdvancedMemorySettings({
   const lastKnowledgeMessage = messages.data?.at(-1);
   const missing = status.data?.missingKnowledgeCharacterIds ?? [];
   const running = status.data?.job.status === "running";
-  const disabled = action.isPending || running || status.isLoading || status.isError;
+  const numberInputsDisabled =
+    running || status.isLoading || status.isError || (action.isPending && action.variables?.action !== "settings");
+  const disabled = action.isPending || numberInputsDisabled;
   const save = (patch: Partial<MemorySettings>) => action.mutate({ action: "settings", settings: patch });
   const initialize = () => {
     if (individual && missing.length > 0) {
@@ -160,7 +162,7 @@ export function AdvancedMemorySettings({
                 value={settings.maxContextTokens}
                 min={1024}
                 max={10_000_000}
-                disabled={disabled}
+                disabled={numberInputsDisabled}
                 onCommit={(maxContextTokens) =>
                   save({
                     maxContextTokens,
@@ -177,7 +179,7 @@ export function AdvancedMemorySettings({
                 value={settings.summaryBudgetTokens}
                 min={64}
                 max={Math.min(131_072, settings.maxContextTokens - 1)}
-                disabled={disabled}
+                disabled={numberInputsDisabled}
                 onCommit={(summaryBudgetTokens) => save({ summaryBudgetTokens })}
                 ariaLabel={t("chat.advancedMemory.summaryBudget")}
                 className={fieldClass}
@@ -214,6 +216,23 @@ export function AdvancedMemorySettings({
               summary: status.data?.summaryModel ?? t("chat.advancedMemory.unavailable"),
             })}
           </p>
+          <label className="block space-y-1 text-xs">
+            <span>{t("chat.advancedMemory.sceneCheckInterval")}</span>
+            <DraftNumberInput
+              value={settings.sceneCheckInterval}
+              min={1}
+              max={100}
+              disabled={numberInputsDisabled}
+              onCommit={(sceneCheckInterval) => {
+                if (sceneCheckInterval !== settings.sceneCheckInterval) save({ sceneCheckInterval });
+              }}
+              ariaLabel={t("chat.advancedMemory.sceneCheckInterval")}
+              className={fieldClass}
+            />
+            <span className="block text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]">
+              {t("chat.advancedMemory.sceneCheckIntervalHelp")}
+            </span>
+          </label>
           <h4 className="text-xs font-medium">{t("chat.advancedMemory.movingContext")}</h4>
           <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{t("chat.advancedMemory.windowHelp")}</p>
           <div className="grid grid-cols-2 gap-3">
@@ -223,7 +242,7 @@ export function AdvancedMemorySettings({
                 value={settings.retrieveMinMessages}
                 min={0}
                 max={50}
-                disabled={disabled}
+                disabled={numberInputsDisabled}
                 onCommit={(retrieveMinMessages) => {
                   if (retrieveMinMessages === settings.retrieveMinMessages) return;
                   save({
@@ -243,7 +262,7 @@ export function AdvancedMemorySettings({
                 value={settings.retrieveMaxMessages}
                 min={0}
                 max={50}
-                disabled={disabled}
+                disabled={numberInputsDisabled}
                 onCommit={(retrieveMaxMessages) => {
                   if (retrieveMaxMessages === settings.retrieveMaxMessages) return;
                   save({

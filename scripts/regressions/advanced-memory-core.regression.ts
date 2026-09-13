@@ -14,6 +14,7 @@ process.env.MARINARA_LITE = "true";
 
 const requests: Array<{ kind: string; text: string }> = [];
 let beforeSummary: (() => Promise<void>) | null = null;
+let sceneFinishReason = "stop";
 const server = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -61,7 +62,13 @@ const server = createServer(async (request, response) => {
     JSON.stringify({
       id: "memory-proof",
       object: "chat.completion",
-      choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content },
+          finish_reason: classification ? sceneFinishReason : "stop",
+        },
+      ],
       usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 },
     }),
   );
@@ -1422,6 +1429,288 @@ try {
     !(await memory.status(raceChat.id)).records.some((record) => record.kind === "scene" && record.content),
     "a stale model result is not committed",
   );
+  const cadenceChat = await chats.create({
+    name: "Post-generation scene cadence",
+    mode: "roleplay",
+    characterIds: [],
+    connectionId: connection!.id,
+  });
+  assert(cadenceChat);
+  await memory.updateSettings(cadenceChat.id, {
+    enabled: true,
+    maxContextTokens: 4096,
+    summaryBudgetTokens: 512,
+    sceneCheckInterval: 5,
+  });
+  await memory.initialize(cadenceChat.id);
+  const classifyCount = () => requests.filter((request) => request.kind === "classify").length;
+  const beforeOngoing = classifyCount();
+  await chats.createMessagesBatch(
+    cadenceChat.id,
+    Array.from({ length: 4 }, (_, index) => ({
+      role: index % 2 ? ("assistant" as const) : ("user" as const),
+      content: `Recent scene message ${index}.`,
+    })),
+  );
+  await memory.prepare({
+    chatId: cadenceChat.id,
+    messages: await chats.listMessages(cadenceChat.id),
+    audienceCharacterIds: [],
+    budgetTokens: 3000,
+  });
+  assert.equal(classifyCount(), beforeOngoing, "ongoing pre-generation preparation never calls the scene classifier");
+  assert.equal(
+    await memory.getSceneCheck(cadenceChat.id),
+    null,
+    "four new messages are below the default five-message cadence",
+  );
+  await chats.createMessage({
+    chatId: cadenceChat.id,
+    role: "assistant",
+    content: "The fifth message closes a later episode.",
+  });
+  const cadenceSource = await chats.listMessages(cadenceChat.id);
+  const sceneRequest = await memory.getSceneCheck(cadenceChat.id);
+  assert(sceneRequest);
+  assert.deepEqual(
+    sceneRequest.messages.map((message) => message.messageId),
+    cadenceSource.map((message) => message.id),
+  );
+  assert(
+    await memory.commitSceneCheck(cadenceChat.id, sceneRequest, {
+      starts: [{ messageId: cadenceSource[2]!.id }, { messageId: cadenceSource[4]!.id }],
+    }),
+  );
+  await memory.maintain(cadenceChat.id);
+  const cadenceRecords = (await memory.status(cadenceChat.id)).records;
+  assert.equal(
+    cadenceRecords.filter((record) => record.kind === "scene" && record.status === "closed").length,
+    2,
+    "one delayed decision retains multiple scene boundaries",
+  );
+  assert.equal(
+    classifyCount(),
+    beforeOngoing,
+    "tracker commits and archive maintenance do not launch another classifier",
+  );
+  const editedScene = cadenceRecords.find((record) => record.kind === "scene" && record.status === "closed")!;
+  await memory.updateRecord(cadenceChat.id, editedScene.id, { content: "CORRECTED_GOLD compass." });
+  await chats.createMessagesBatch(
+    cadenceChat.id,
+    Array.from({ length: 5 }, (_, index) => ({ role: "assistant" as const, content: `New window message ${index}.` })),
+  );
+  sceneFinishReason = "error";
+  await assert.rejects(memory.checkScenesAfterGeneration(cadenceChat.id), /did not complete/);
+  assert.equal(
+    JSON.parse((await chats.getById(cadenceChat.id))!.metadata as string).advancedMemoryState.sceneCheckMessageId,
+    cadenceSource[4]!.id,
+    "valid-looking JSON from an errored completion cannot advance the scene cursor",
+  );
+  sceneFinishReason = "stop";
+  const beforeConcurrentChecks = classifyCount();
+  await Promise.all([
+    memory.checkScenesAfterGeneration(cadenceChat.id),
+    memory.checkScenesAfterGeneration(cadenceChat.id),
+  ]);
+  assert.equal(
+    classifyCount() - beforeConcurrentChecks,
+    1,
+    "concurrent due checks share the committed cursor rather than rebilling the same window",
+  );
+  assert(
+    (await memory.status(cadenceChat.id)).records.some(
+      (record) => record.id === editedScene.id && record.content === "CORRECTED_GOLD compass." && record.manualOverride,
+    ),
+    "post-generation scaffolds preserve manual scene corrections",
+  );
+  const latestSceneSource = await chats.listMessages(cadenceChat.id);
+  const olderCheck = await memory.getSceneCheck(cadenceChat.id, { force: true, asOfMessageId: cadenceSource[4]!.id });
+  assert(olderCheck);
+  assert.equal(
+    await memory.commitSceneCheck(cadenceChat.id, olderCheck, { starts: [] }),
+    false,
+    "an older regenerated window cannot overwrite a later checked timeline",
+  );
+  assert.equal(
+    JSON.parse((await chats.getById(cadenceChat.id))!.metadata as string).advancedMemoryState.sceneCheckMessageId,
+    latestSceneSource.at(-1)!.id,
+  );
+  const staleCheck = await memory.getSceneCheck(cadenceChat.id, { force: true });
+  assert(staleCheck);
+  await chats.updateMessageContent(latestSceneSource.at(-1)!.id, "A changed latest swipe opens a new room.");
+  assert.equal(
+    await memory.commitSceneCheck(cadenceChat.id, staleCheck, { starts: [] }),
+    false,
+    "a changed source cannot commit an old scene decision",
+  );
+  const changedCheck = await memory.getSceneCheck(cadenceChat.id);
+  assert(changedCheck, "a changed checked source is due even without five new messages");
+  assert(
+    await memory.commitSceneCheck(cadenceChat.id, changedCheck, {
+      starts: [{ messageId: latestSceneSource.at(-1)!.id }],
+    }),
+  );
+  await memory.maintain(cadenceChat.id);
+  await chats.updateMessageContent(latestSceneSource.at(-1)!.id, "The rerolled reply stays in the same room.");
+  const rerolledCheck = await memory.getSceneCheck(cadenceChat.id);
+  assert(rerolledCheck);
+  assert(await memory.commitSceneCheck(cadenceChat.id, rerolledCheck, { starts: [] }));
+  assert(
+    !(await memory.status(cadenceChat.id)).records.some(
+      (record) => record.id === `scene-${latestSceneSource.at(-1)!.id}`,
+    ),
+    "the old swipe's boundary is removed when its replacement has none",
+  );
+  assert.equal(
+    (await chats.listMessages(cadenceChat.id)).length,
+    latestSceneSource.length,
+    "delayed and replaced decisions never delete source history",
+  );
+  const filteredCheck = await memory.getSceneCheck(cadenceChat.id, { force: true });
+  assert(filteredCheck);
+  await chats.createMessage({ chatId: cadenceChat.id, role: "user", content: "A further source message." });
+  const filteredNewCheck = await memory.getSceneCheck(cadenceChat.id, { force: true });
+  assert(filteredNewCheck);
+  const withheld = filteredNewCheck.messages[0]!;
+  await assert.rejects(
+    memory.commitSceneCheck(
+      cadenceChat.id,
+      { ...filteredNewCheck, messages: filteredNewCheck.messages.slice(1) },
+      { starts: [{ messageId: withheld.messageId }] },
+    ),
+    /invalid scene decision/,
+    "tracker output cannot use an ID omitted from its character-scoped payload",
+  );
+  const preservedBoundary = filteredNewCheck.messages[2]!.messageId;
+  assert(
+    await memory.commitSceneCheck(cadenceChat.id, filteredNewCheck, { starts: [{ messageId: preservedBoundary }] }),
+  );
+  await chats.createMessage({ chatId: cadenceChat.id, role: "assistant", content: "Another tracker-scoped reply." });
+  const partialWindow = await memory.getSceneCheck(cadenceChat.id, { force: true });
+  assert(partialWindow && partialWindow.windowStartMessageId !== preservedBoundary);
+  assert(
+    await memory.commitSceneCheck(
+      cadenceChat.id,
+      {
+        ...partialWindow,
+        messages: partialWindow.messages.filter((message) => message.messageId !== preservedBoundary),
+      },
+      { starts: [] },
+    ),
+  );
+  assert(
+    (await memory.status(cadenceChat.id)).records.some((record) => record.id === `scene-${preservedBoundary}`),
+    "a filtered tracker cannot erase a valid boundary whose source was never sent to it",
+  );
+
+  const deferredHistory = await chats.create({
+    name: "Explicit historical segmentation",
+    mode: "roleplay",
+    characterIds: [],
+    connectionId: connection!.id,
+  });
+  assert(deferredHistory);
+  await memory.updateSettings(deferredHistory.id, { enabled: true, maxContextTokens: 4096, summaryBudgetTokens: 512 });
+  await chats.createMessagesBatch(deferredHistory.id, [
+    { role: "user", content: "An older scene." },
+    { role: "assistant", content: "SCENE_CHANGE The party reaches another town." },
+  ]);
+  const beforeDeferred = classifyCount();
+  await memory.maintain(deferredHistory.id);
+  assert.equal(classifyCount(), beforeDeferred);
+  await memory.initialize(deferredHistory.id);
+  assert.equal(
+    classifyCount(),
+    beforeDeferred + 1,
+    "explicit initialization segments history previously refreshed without classification",
+  );
+  await chats.createMessage({
+    chatId: deferredHistory.id,
+    role: "assistant",
+    content: "SCENE_CHANGE Another episode begins.",
+  });
+  const pendingSource = await chats.listMessages(deferredHistory.id);
+  let signalInitialSummary!: () => void;
+  let releaseInitialSummary!: () => void;
+  const initialSummaryEntered = new Promise<void>((resolve) => {
+    signalInitialSummary = resolve;
+  });
+  const initialSummaryHeld = new Promise<void>((resolve) => {
+    releaseInitialSummary = resolve;
+  });
+  beforeSummary = async () => {
+    signalInitialSummary();
+    await initialSummaryHeld;
+  };
+  let signalResetTransaction!: () => void;
+  let releaseResetTransaction!: () => void;
+  const resetTransactionEntered = new Promise<void>((resolve) => {
+    signalResetTransaction = resolve;
+  });
+  const resetTransactionHeld = new Promise<void>((resolve) => {
+    releaseResetTransaction = resolve;
+  });
+  const originalTransaction = db.transaction.bind(db);
+  let holdResetTransaction = false;
+  db.transaction = (async (...args: Parameters<typeof originalTransaction>) => {
+    if (holdResetTransaction) {
+      holdResetTransaction = false;
+      signalResetTransaction();
+      await resetTransactionHeld;
+    }
+    return originalTransaction(...args);
+  }) as typeof db.transaction;
+  let queuedReset: ReturnType<typeof memory.reset> | undefined;
+  let pendingInitialization: Promise<void> | undefined;
+  try {
+    pendingInitialization = memory.initialize(deferredHistory.id, {
+      onProgress: (event) => {
+        if (event.status !== "ready" || queuedReset) return;
+        holdResetTransaction = true;
+        queuedReset = memory.reset(deferredHistory.id);
+      },
+    });
+    await initialSummaryEntered;
+    const pendingPreparation = memory.prepare({
+      chatId: deferredHistory.id,
+      messages: pendingSource,
+      audienceCharacterIds: [],
+      budgetTokens: 3000,
+    });
+    const rejectedPreparation = assert.rejects(pendingPreparation, /being reset|changed|abort/iu);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseInitialSummary();
+    await resetTransactionEntered;
+    await assert.rejects(
+      memory.initialize(deferredHistory.id),
+      /being reset/iu,
+      "pending prepare cannot overwrite the reset operation after its initialization wait",
+    );
+    const queuedPreview = memory.prepare({
+      chatId: deferredHistory.id,
+      messages: pendingSource,
+      audienceCharacterIds: [],
+      budgetTokens: 3000,
+      readOnly: true,
+    });
+    releaseResetTransaction();
+    await pendingInitialization;
+    await queuedReset;
+    await rejectedPreparation;
+    const postResetPreview = await queuedPreview;
+    await memory.validatePrepared(deferredHistory.id, pendingSource, postResetPreview.receipt);
+    assert.deepEqual(
+      (await memory.status(deferredHistory.id)).records,
+      [],
+      "read-only preparation waits for a consistent reset snapshot and never recreates records",
+    );
+  } finally {
+    releaseInitialSummary();
+    releaseResetTransaction();
+    db.transaction = originalTransaction;
+    await pendingInitialization?.catch(() => undefined);
+    await queuedReset?.catch(() => undefined);
+  }
 
   const resetChat = await chats.create({
     name: "Reset during preparation",

@@ -6,6 +6,8 @@ export const advancedMemorySettingsSchema = z.object({
   summaryBudgetTokens: z.number().int().min(64).max(131_072).default(4096),
   helperConnectionId: z.string().nullable().default(null),
   initialProcessingModel: z.enum(["main", "helper"]).default("helper"),
+  /** Cadence and recent-message window for standalone post-generation scene checks. */
+  sceneCheckInterval: z.number().int().min(1).max(100).default(5),
   retrieveMinMessages: z.number().int().min(0).max(50).default(3),
   retrieveMaxMessages: z.number().int().min(0).max(50).default(10),
   narratorCharacterId: z.string().nullable().default(null),

@@ -9095,6 +9095,63 @@ export async function generateRoutes(app: FastifyInstance) {
         const latestAssistantMessageId =
           (lastSavedMsg as any)?.role === "assistant" ? ((lastSavedMsg as any)?.id ?? "") : "";
 
+        const sceneTrackerIds = pipelineAgents
+          .filter(
+            (agent) =>
+              agent.phase === "post_processing" &&
+              (trackerAgentTypes.has(agent.type) ||
+                (customAgentHasCapability(agent.settings, "edit_trackers") &&
+                  [
+                    "game_state_update",
+                    "character_tracker_update",
+                    "persona_stats_update",
+                    "inventory_tracker_update",
+                    "custom_tracker_update",
+                    "quest_update",
+                  ].includes(resolveAgentResultType(agent)))),
+          )
+          .map((agent) => agent.id);
+        let sceneCheckRequest =
+          advancedMemoryEnabled &&
+          latestAssistantMessageId &&
+          completedResponse &&
+          !input.impersonate &&
+          !recoveredAlreadyAppliedOwnerTurn &&
+          !abortController.signal.aborted &&
+          sceneTrackerIds.length > 0
+            ? await advancedMemory
+                .getSceneCheck(input.chatId, {
+                  force: true,
+                  asOfMessageId: latestAssistantMessageId,
+                })
+                .catch((error) => {
+                  logger.warn(error, "[advanced-memory] Could not prepare the post-generation scene check");
+                  return null;
+                })
+            : null;
+        if (sceneCheckRequest) {
+          // A shared tracker call must retain the responding characters' visibility scope.
+          const sceneSources = await chats.listMessages(input.chatId);
+          const sceneEnd = sceneSources.findIndex((message) => message.id === sceneCheckRequest!.asOfMessageId);
+          const visibleIds = new Set(
+            selectAdvancedMemoryMessages(
+              sceneSources.slice(0, sceneEnd + 1),
+              advancedMemorySettings,
+              promptCharacterIds,
+              promptGroupChatMode === "individual",
+            ).map((message) => message.id),
+          );
+          sceneCheckRequest = {
+            ...sceneCheckRequest,
+            messages: sceneCheckRequest.messages.filter((message) => visibleIds.has(message.messageId)),
+          };
+          agentContext.sceneCheck = {
+            trackerAgentIds: sceneTrackerIds,
+            prompt: `${sceneCheckRequest.prompt}\nFor this scene decision, use only the following messages; ignore other tracker context.\n${JSON.stringify(sceneCheckRequest.messages)}`,
+            claimed: false,
+          };
+        }
+
         const runAutomaticRoleplaySummary = async () => {
           if (
             advancedMemoryEnabled ||
@@ -11822,9 +11879,29 @@ export async function generateRoutes(app: FastifyInstance) {
             charNameMap[ci.id] = ci.name;
           }
           if (advancedMemoryEnabled) {
-            void advancedMemory
-              .initialize(input.chatId, { debugMode: requestDebug, blocking: false })
-              .catch((error) => logger.error(error, "[advanced-memory] Background maintenance failed"));
+            void (async () => {
+              const options = { debugMode: requestDebug, blocking: false };
+              if (sceneCheckRequest && agentContext.sceneCheck?.claimed) {
+                if (agentContext.sceneCheck.result === undefined) {
+                  logger.warn(
+                    "[advanced-memory] Tracker call returned no usable scene decision; keeping the scene open",
+                  );
+                } else {
+                  await advancedMemory.commitSceneCheck(
+                    input.chatId,
+                    sceneCheckRequest,
+                    agentContext.sceneCheck.result,
+                    options,
+                  );
+                }
+                await advancedMemory.maintain(input.chatId, options);
+              } else if (latestAssistantMessageId && !input.impersonate) {
+                await advancedMemory.checkScenesAfterGeneration(input.chatId, {
+                  ...options,
+                  asOfMessageId: latestAssistantMessageId,
+                });
+              }
+            })().catch((error) => logger.error(error, "[advanced-memory] Background maintenance failed"));
           } else if (memoryRecallVectorizerAvailable) {
             chunkAndEmbedMessages(
               app.db,
