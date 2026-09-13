@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { AgentContext, AgentTaskProgress } from "@marinara-engine/shared";
 import { extractLeadingThinkingBlocks } from "@marinara-engine/shared";
-import type { BaseLLMProvider, ChatMessage, ChatOptions } from "../llm/base-provider.js";
+import {
+  measureContextBudget,
+  type BaseLLMProvider,
+  type ChatMessage,
+  type ChatOptions,
+} from "../llm/base-provider.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { tryParseJsonRecord } from "../../lib/json-repair.js";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import { normalizeGemma4Delimiters } from "../llm/textual-tool-call-parser.js";
+import { minContextLimit, normalizeMaxContext } from "../generation/generation-parameters.js";
 
 /** Observe an existing call while forwarding its explicit agent debug setting. */
 export async function completeAgentCall(
@@ -16,7 +22,7 @@ export async function completeAgentCall(
   options: ChatOptions,
 ) {
   if (context.agentDebug && options.debugMode !== true) options = { ...options, debugMode: true };
-  const sceneCheck =
+  let sceneCheck =
     context.sceneCheck &&
     !context.sceneCheck.claimed &&
     context.sceneCheck.prompt.trim() &&
@@ -27,8 +33,7 @@ export async function completeAgentCall(
       ? context.sceneCheck
       : undefined;
   if (sceneCheck) {
-    sceneCheck.claimed = true;
-    messages = [
+    const combinedMessages: ChatMessage[] = [
       ...messages,
       {
         role: "user",
@@ -36,6 +41,26 @@ export async function completeAgentCall(
         content: `${sceneCheck.prompt}\n\nKeep the requested tracker JSON unchanged and add one reserved top-level field: "__scene_check": {"starts": [{"messageId": "exact source message ID"}]}. Use an empty starts array when no new scene starts. For a batch, put this field beside the agent ID fields, not inside a tracker result.`,
       },
     ];
+    const maxContext = minContextLimit(
+      normalizeMaxContext(options.maxContext),
+      normalizeMaxContext(provider.maxContextValue),
+    );
+    const maxTokens = Math.min(
+      normalizeMaxContext(options.maxTokens) ?? 4096,
+      normalizeMaxContext(provider.maxTokensOverrideValue) ?? Infinity,
+    );
+    if (maxContext && measureContextBudget(combinedMessages, { ...options, maxContext, maxTokens }).fits) {
+      sceneCheck.claimed = true;
+      messages = combinedMessages;
+    } else {
+      logger.debug(
+        "[scene-check] Keeping tracker request unchanged: %s",
+        maxContext ? "scene window exceeds the context budget" : "tracker context cap is unknown",
+      );
+      sceneCheck = undefined;
+    }
+  }
+  if (sceneCheck) {
     logDebugOverride(
       Boolean(context.agentDebug) || options.debugMode === true || isDebugAgentsEnabled(),
       "[agent-debug] Tracker request with scene check:\n%s",

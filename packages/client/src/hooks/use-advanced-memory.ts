@@ -30,7 +30,12 @@ export function useAdvancedMemoryStatus(chatId: string, enabled = true) {
 }
 
 type AdvancedMemoryAction =
-  | { action: "settings"; settings: Partial<AdvancedMemorySettings> }
+  | {
+      action: "settings";
+      settings:
+        | Partial<AdvancedMemorySettings>
+        | ((current: AdvancedMemorySettings) => Partial<AdvancedMemorySettings>);
+    }
   | { action: "initialize"; settings?: Partial<AdvancedMemorySettings>; debugMode?: boolean }
   | { action: "cancel" | "reindex" | "reset" }
   | { action: "record"; recordId: string; patch: { content?: string; enabled?: boolean } }
@@ -41,11 +46,22 @@ export function useAdvancedMemoryAction(chatId: string) {
   const { t } = useTranslation();
   return useMutation({
     scope: { id: `advanced-memory:${chatId}` },
-    mutationFn: (request: AdvancedMemoryAction) => {
+    mutationFn: async (request: AdvancedMemoryAction) => {
       const base = `/chats/${chatId}/advanced-memory`;
       switch (request.action) {
-        case "settings":
-          return api.patch<AdvancedMemoryStatus>(`${base}/settings`, request.settings);
+        case "settings": {
+          // Scoped mutations run in order; derive coupled limits after earlier saves have settled.
+          const settings =
+            typeof request.settings === "function"
+              ? request.settings(
+                  (
+                    qc.getQueryData<AdvancedMemoryStatus>(advancedMemoryKeys.status(chatId)) ??
+                    (await api.get<AdvancedMemoryStatus>(base))
+                  ).settings,
+                )
+              : request.settings;
+          return api.patch<AdvancedMemoryStatus>(`${base}/settings`, settings);
+        }
         case "record":
           return api.patch<AdvancedMemoryStatus>(`${base}/records/${request.recordId}`, request.patch);
         case "initialize":
@@ -61,7 +77,9 @@ export function useAdvancedMemoryAction(chatId: string) {
           return api.post<AdvancedMemoryStatus>(`${base}/${request.action}`, {});
       }
     },
-    onSuccess: (status) => {
+    onSuccess: async (status) => {
+      // An older status fetch must not replace this save before the next queued edit reads it.
+      await qc.cancelQueries({ queryKey: advancedMemoryKeys.status(chatId), exact: true });
       qc.setQueryData(advancedMemoryKeys.status(chatId), status);
       void qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
       void qc.invalidateQueries({ queryKey: ["advanced-memory-sources", chatId] });

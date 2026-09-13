@@ -29,6 +29,28 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
   const contextSaved = new Promise<void>((resolve) => {
     acknowledgeContextSave = resolve;
   });
+  let releaseMinimumSave = () => {};
+  const minimumSaveGate = new Promise<void>((resolve) => {
+    releaseMinimumSave = resolve;
+  });
+  let acknowledgeMinimumSave = () => {};
+  const minimumSaved = new Promise<void>((resolve) => {
+    acknowledgeMinimumSave = resolve;
+  });
+  let releaseLargerContextSave = () => {};
+  const largerContextSaveGate = new Promise<void>((resolve) => {
+    releaseLargerContextSave = resolve;
+  });
+  let acknowledgeLargerContextSave = () => {};
+  const largerContextSaved = new Promise<void>((resolve) => {
+    acknowledgeLargerContextSave = resolve;
+  });
+  let releaseStaleStatus = () => {};
+  const staleStatusGate = new Promise<void>((resolve) => {
+    releaseStaleStatus = resolve;
+  });
+  let staleStatusCaptured = false;
+  let staleStatusAborted = false;
   const settingsPatches: Array<Record<string, unknown>> = [];
   try {
     expect(
@@ -44,6 +66,14 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
       if (patch.maxContextTokens === 16000) {
         acknowledgeContextSave();
         await contextSaveGate;
+      }
+      if (patch.maxContextTokens === 32000) {
+        acknowledgeLargerContextSave();
+        await largerContextSaveGate;
+      }
+      if (patch.retrieveMinMessages === 20) {
+        acknowledgeMinimumSave();
+        await minimumSaveGate;
       }
       await route.fulfill({ response });
     });
@@ -97,10 +127,34 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
     await expect.poll(async () => (await status()).settings.enabled).toBe(true);
     const context = memory.getByLabel("Maximum allowed context before compression (tokens)");
     await expect(context).toBeEnabled();
+    await page.route(`**/api/chats/${chat.id}/advanced-memory`, async (route) => {
+      if (route.request().method() !== "GET" || staleStatusCaptured) {
+        await route.continue();
+        return;
+      }
+      const pendingRequest = route.request();
+      page.on("requestfailed", (failedRequest) => {
+        if (failedRequest === pendingRequest) staleStatusAborted = true;
+      });
+      const response = await route.fetch();
+      staleStatusCaptured = true;
+      await staleStatusGate;
+      try {
+        await route.fulfill({ response });
+      } catch (error) {
+        if (!staleStatusAborted) throw error;
+      }
+    });
+    // Capture a normal status poll before saving, so its old response cannot overwrite the saved limits.
+    await expect.poll(() => staleStatusCaptured).toBe(true);
     await context.fill("16000");
     await context.press("Enter");
     await contextSaved;
-    // A slow autosave must not disable and erase a draft in the next field.
+    // A slow autosave must not disable or reject edits based on stale related limits.
+    const summaryBudget = memory.getByLabel("Maximum constant summary size (tokens)");
+    await expect(summaryBudget).toBeEnabled();
+    await summaryBudget.fill("20000");
+    await summaryBudget.press("Enter");
     const maximum = memory.getByLabel("Maximum messages per excerpt", { exact: true });
     await expect(maximum).toBeEnabled();
     await maximum.fill("0");
@@ -108,7 +162,23 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
     await expect(maximum).toHaveValue("0");
     expect(settingsPatches.some((patch) => Object.hasOwn(patch, "retrieveMaxMessages"))).toBe(false);
     releaseContextSave();
+    await expect.poll(() => staleStatusAborted).toBe(true);
+    releaseStaleStatus();
     await expect.poll(async () => (await status()).settings.maxContextTokens).toBe(16000);
+    await expect.poll(async () => (await status()).settings.summaryBudgetTokens).toBe(15999);
+    await context.fill("32000");
+    await context.press("Enter");
+    await largerContextSaved;
+    await summaryBudget.fill("20000");
+    await summaryBudget.press("Enter");
+    releaseLargerContextSave();
+    await expect.poll(async () => (await status()).settings.summaryBudgetTokens).toBe(20000);
+    await context.fill("16000");
+    await context.press("Enter");
+    await expect.poll(async () => (await status()).settings.maxContextTokens).toBe(16000);
+    await summaryBudget.fill("2048");
+    await summaryBudget.press("Enter");
+    await expect.poll(async () => (await status()).settings.summaryBudgetTokens).toBe(2048);
     const sceneInterval = memory.getByLabel("Standalone scene check interval (messages)", { exact: true });
     await expect(sceneInterval).toHaveValue("5");
     await expect(sceneInterval).toBeEnabled();
@@ -121,7 +191,39 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
         return [retrieveMinMessages, retrieveMaxMessages];
       })
       .toEqual([0, 0]);
-    await expect(memory.getByLabel("Minimum messages per excerpt", { exact: true })).toHaveValue("0");
+    const minimum = memory.getByLabel("Minimum messages per excerpt", { exact: true });
+    await expect(minimum).toHaveValue("0");
+    await maximum.fill("10");
+    await maximum.press("Enter");
+    await expect.poll(async () => (await status()).settings.retrieveMaxMessages).toBe(10);
+    await expect(toggle).toBeEnabled();
+    await minimum.fill("3");
+    await minimum.press("Enter");
+    await expect.poll(async () => (await status()).settings.retrieveMinMessages).toBe(3);
+    await expect(toggle).toBeEnabled();
+    const pairedEditsStart = settingsPatches.length;
+    await minimum.fill("20");
+    await minimum.press("Enter");
+    await minimumSaved;
+    await expect(maximum).toBeEnabled();
+    await maximum.fill("5");
+    await maximum.press("Enter");
+    expect(settingsPatches.slice(pairedEditsStart)).toEqual([{ retrieveMinMessages: 20, retrieveMaxMessages: 20 }]);
+    releaseMinimumSave();
+    await expect
+      .poll(async () => {
+        const settings = (await status()).settings;
+        return [settings.retrieveMinMessages, settings.retrieveMaxMessages];
+      })
+      .toEqual([5, 5]);
+    expect(settingsPatches.slice(pairedEditsStart)).toEqual([
+      { retrieveMinMessages: 20, retrieveMaxMessages: 20 },
+      { retrieveMaxMessages: 5, retrieveMinMessages: 5 },
+    ]);
+    await maximum.fill("0");
+    await maximum.press("Enter");
+    await expect.poll(async () => (await status()).settings.retrieveMaxMessages).toBe(0);
+    await expect(minimum).toHaveValue("0");
     await expect(memory.getByText(/^Turning this on in an existing chat/)).toHaveCount(0);
     await memory.getByText("Moving context", { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath("memory-wizard-enabled.png"), animations: "disabled" });
@@ -136,6 +238,9 @@ test("Roleplay wizard reuses automatic memory settings without downloaded agents
     await expect(agentsToggle).toHaveAttribute("aria-checked", "false");
   } finally {
     releaseContextSave();
+    releaseMinimumSave();
+    releaseLargerContextSave();
+    releaseStaleStatus();
     await request.delete(`/api/chats/${chat.id}?force=true`);
     await request.delete(`/api/connections/${connection.id}`);
   }

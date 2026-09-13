@@ -256,6 +256,141 @@ try {
     !JSON.stringify(calls.slice(beforeCustom)).includes("HIDDEN_SCENE_SECRET"),
     "The shared tracker request cannot receive the responding character's hidden history through the scene helper",
   );
+
+  const cadenceChat = await createChat();
+  const customSettings = JSON.parse(customTracker.settings);
+  await createAgentsStorage(db).update(customTracker.id, { settings: { ...customSettings, runInterval: 10 } });
+  await chats.patchMetadata(cadenceChat.id, { enableAgents: true, activeAgentIds: [customTracker.type] });
+  await generate(cadenceChat.id);
+  await waitForSceneCheck(cadenceChat.id);
+  const trackerAnchor = (await chats.listMessages(cadenceChat.id)).at(-1)!;
+  const addFourMessages = async (chatId: string) => {
+    for (let index = 0; index < 4; index++) {
+      await chats.createMessage({ chatId, role: index % 2 ? "assistant" : "user", content: `Journey ${index}` });
+    }
+  };
+  const waitForMaintenance = async (chatId: string) => {
+    const last = (await chats.listMessages(chatId)).at(-1)!;
+    await waitFor(async () => {
+      const saved = await chats.getById(chatId);
+      return JSON.parse(saved!.metadata).advancedMemoryState?.processedMessageId === last.id;
+    });
+  };
+  await addFourMessages(cadenceChat.id);
+  const beforeCadenceWait = calls.length;
+  await generate(cadenceChat.id);
+  await waitForMaintenance(cadenceChat.id);
+  assert.deepEqual(
+    calls.slice(beforeCadenceWait).map((call) => call.kind),
+    ["main"],
+    "An automatic tracker with a ten-message interval must not cause a separate scene call at five messages",
+  );
+  assert.equal(
+    JSON.parse((await chats.getById(cadenceChat.id))!.metadata).advancedMemoryState.sceneCheckMessageId,
+    trackerAnchor.id,
+    "Archive maintenance must not advance the scene-check cursor while its tracker is waiting",
+  );
+  await addFourMessages(cadenceChat.id);
+  const beforeCadenceDue = calls.length;
+  await generate(cadenceChat.id);
+  await waitForSceneCheck(cadenceChat.id);
+  assert.deepEqual(
+    calls.slice(beforeCadenceDue).map((call) => call.kind),
+    ["main", "tracker"],
+    "The scene check runs inside the tracker call when its ten-message interval is due",
+  );
+
+  await createAgentsStorage(db).update(customTracker.id, {
+    settings: { ...customSettings, activationKeywords: ["SCENE_KEYWORD"], activationScanDepth: 1 },
+  });
+  await addFourMessages(cadenceChat.id);
+  const beforeKeywordWait = calls.length;
+  await generate(cadenceChat.id);
+  await waitForMaintenance(cadenceChat.id);
+  assert.deepEqual(
+    calls.slice(beforeKeywordWait).map((call) => call.kind),
+    ["main"],
+    "A configured automatic tracker waits for its activation keywords without a standalone replacement",
+  );
+
+  for (const manualSettings of [{ manualTrackers: true }, { manualTrackerAgentTypes: { [tracker.type]: true } }]) {
+    const manualChat = await createChat();
+    await chats.patchMetadata(manualChat.id, {
+      enableAgents: true,
+      activeAgentIds: [tracker.type],
+      ...manualSettings,
+    });
+    await addFourMessages(manualChat.id);
+    const beforeManual = calls.length;
+    await generate(manualChat.id);
+    await waitForSceneCheck(manualChat.id);
+    assert.deepEqual(
+      calls.slice(beforeManual).map((call) => call.kind),
+      ["main", "scene"],
+      "Manual-only trackers leave the standalone scene cadence available",
+    );
+  }
+
+  const disabledChat = await createChat();
+  await chats.patchMetadata(disabledChat.id, { activeAgentIds: [tracker.type] });
+  await addFourMessages(disabledChat.id);
+  const beforeDisabled = calls.length;
+  await generate(disabledChat.id);
+  await waitForSceneCheck(disabledChat.id);
+  assert.deepEqual(
+    calls.slice(beforeDisabled).map((call) => call.kind),
+    ["main", "scene"],
+    "The disabled Agents switch must not suppress standalone scene checks",
+  );
+
+  const hiddenWindowChat = await createChat();
+  await chats.patchMetadata(hiddenWindowChat.id, {
+    enableAgents: true,
+    activeAgentIds: [tracker.type],
+    groupChatMode: "individual",
+    advancedMemory: {
+      ...DEFAULT_ADVANCED_MEMORY_SETTINGS,
+      enabled: true,
+      maxContextTokens: 8192,
+      helperConnectionId: connection.id,
+      sceneCheckInterval: 1,
+      knowledgeStarts: { [character.id]: null },
+    },
+  });
+  await chats.createMessage({ chatId: hiddenWindowChat.id, role: "user", content: "A visible earlier request." });
+  const hiddenReply = await chats.createMessage({
+    chatId: hiddenWindowChat.id,
+    role: "assistant",
+    characterId: character.id,
+    content: "A hidden previous response.",
+    extra: { hiddenFromAICharacterIds: [character.id] },
+  });
+  assert.ok(hiddenReply);
+  const beforeHiddenWindow = calls.length;
+  await generate(hiddenWindowChat.id, hiddenReply.id);
+  await waitForMaintenance(hiddenWindowChat.id);
+  const hiddenWindowCalls = calls.slice(beforeHiddenWindow);
+  assert.deepEqual(
+    hiddenWindowCalls.map((call) => call.kind),
+    ["main", "tracker"],
+    "An empty character-visible scene window neither adds a helper call nor skips its tracker",
+  );
+  assert.ok(
+    !JSON.stringify(hiddenWindowCalls[1]!.messages).includes("__scene_check"),
+    "An empty character-visible window must not be claimed as a tracker scene check",
+  );
+  assert.equal(
+    JSON.parse((await chats.getById(hiddenWindowChat.id))!.metadata).advancedMemoryState.sceneCheckMessageId,
+    null,
+    "An unevaluated empty window must not advance the scene cursor",
+  );
+  const hiddenWindowRequest = await memory.getSceneCheck(hiddenWindowChat.id, { force: true });
+  assert.ok(hiddenWindowRequest);
+  assert.equal(
+    await memory.commitSceneCheck(hiddenWindowChat.id, { ...hiddenWindowRequest, messages: [] }, { starts: [] }),
+    false,
+    "The service also rejects an empty scene payload without accepting its empty decision",
+  );
 } finally {
   for (const chatId of chatIds) {
     await memory.cancel(chatId);

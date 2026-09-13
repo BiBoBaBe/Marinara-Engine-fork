@@ -42,8 +42,10 @@ class RecordingProvider extends BaseLLMProvider {
   constructor(
     readonly response: Record<string, unknown> | string,
     readonly finishReason = "stop",
+    maxContext: number | null = 16384,
+    maxTokensOverride?: number,
   ) {
-    super("http://localhost", "");
+    super("http://localhost", "", maxContext ?? undefined, null, maxTokensOverride);
   }
 
   async *chat(): AsyncGenerator<string, void, unknown> {}
@@ -119,6 +121,51 @@ assert.deepEqual(
 assert.deepEqual(JSON.parse(quiet.content!), { location: "Road" });
 assert.equal(quietProvider.calls[0]!.options.onToken, undefined);
 
+for (const limits of [
+  { connection: 4096, request: 16384 },
+  { connection: 16384, request: 4096 },
+  { connection: null, request: undefined },
+]) {
+  const pending = context();
+  pending.sceneCheck!.prompt = `${sourcePrompt}\n${"long scene text ".repeat(1000)}`;
+  const originalSceneCheck = { ...pending.sceneCheck };
+  const provider = new RecordingProvider({ location: "Road" }, "stop", limits.connection);
+  const chunks: string[] = [];
+  provider.beforeComplete = () => assert.equal(chunks.length, 2, "skipped checks keep ordinary live streaming");
+  const options: ChatOptions = {
+    model: "fixture",
+    maxContext: limits.request,
+    maxTokens: 1024,
+    stream: true,
+    onToken: (chunk) => void chunks.push(chunk),
+  };
+  const result = await completeAgentCall(pending, [tracker], provider, baseMessages, options);
+  assert.equal(provider.calls.length, 1, "an oversized window must not add a fallback call");
+  assert.equal(provider.calls[0]!.messages, baseMessages, "the existing tracker prompt must remain untouched");
+  assert.equal(provider.calls[0]!.options, options, "skipped checks must preserve the original request options");
+  assert.deepEqual(pending.sceneCheck, originalSceneCheck, "skipped checks must neither claim nor advance the scene");
+  assert.deepEqual(JSON.parse(result.content!), { location: "Road" });
+
+  const largerProvider = new RecordingProvider({ location: "Road", __scene_check: sceneResult });
+  await completeAgentCall(pending, [tracker], largerProvider, baseMessages, { model: "fixture", maxTokens: 1024 });
+  assert.equal(largerProvider.calls.length, 1);
+  assert.equal(pending.sceneCheck!.claimed, true, "a later scheduled tracker with room may still claim the check");
+  assert.deepEqual(pending.sceneCheck!.result, sceneResult);
+}
+
+for (const outputCap of [undefined, 1024]) {
+  const reserved = context();
+  const provider = new RecordingProvider({ location: "Road", __scene_check: sceneResult }, "stop", 8192, outputCap);
+  await completeAgentCall(reserved, [tracker], provider, baseMessages, { model: "fixture", maxTokens: 8000 });
+  assert.equal(
+    reserved.sceneCheck!.claimed,
+    outputCap !== undefined,
+    "budgeting must retain the effective reply reserve",
+  );
+  assert.equal(provider.calls.length, 1);
+  assert.equal(provider.calls[0]!.messages.length, outputCap === undefined ? 1 : 2);
+}
+
 const shared = context();
 const parallelProvider = new RecordingProvider({ location: "Road", __scene_check: sceneResult });
 await Promise.all([
@@ -180,6 +227,7 @@ const missingResult = await completeAgentCall(
   missing,
   [tracker],
   {
+    maxContextValue: 16384,
     chatComplete: async () => ({ content: unchanged, toolCalls: [], finishReason: "stop" }),
   } as unknown as BaseLLMProvider,
   baseMessages,

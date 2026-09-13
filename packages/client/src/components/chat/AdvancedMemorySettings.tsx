@@ -70,7 +70,8 @@ export function AdvancedMemorySettings({
   const numberInputsDisabled =
     running || status.isLoading || status.isError || (action.isPending && action.variables?.action !== "settings");
   const disabled = action.isPending || numberInputsDisabled;
-  const save = (patch: Partial<MemorySettings>) => action.mutate({ action: "settings", settings: patch });
+  const save = (patch: Partial<MemorySettings> | ((current: MemorySettings) => Partial<MemorySettings>)) =>
+    action.mutate({ action: "settings", settings: patch });
   const initialize = () => {
     if (individual && missing.length > 0) {
       setKnowledgeCharacterIds(missing);
@@ -164,10 +165,10 @@ export function AdvancedMemorySettings({
                 max={10_000_000}
                 disabled={numberInputsDisabled}
                 onCommit={(maxContextTokens) =>
-                  save({
+                  save((current) => ({
                     maxContextTokens,
-                    summaryBudgetTokens: Math.min(settings.summaryBudgetTokens, maxContextTokens - 1),
-                  })
+                    summaryBudgetTokens: Math.min(current.summaryBudgetTokens, maxContextTokens - 1),
+                  }))
                 }
                 ariaLabel={t("chat.advancedMemory.contextCap")}
                 className={fieldClass}
@@ -178,9 +179,13 @@ export function AdvancedMemorySettings({
               <DraftNumberInput
                 value={settings.summaryBudgetTokens}
                 min={64}
-                max={Math.min(131_072, settings.maxContextTokens - 1)}
+                max={131_072}
                 disabled={numberInputsDisabled}
-                onCommit={(summaryBudgetTokens) => save({ summaryBudgetTokens })}
+                onCommit={(summaryBudgetTokens) =>
+                  save((current) => ({
+                    summaryBudgetTokens: Math.min(summaryBudgetTokens, current.maxContextTokens - 1),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.summaryBudget")}
                 className={fieldClass}
               />
@@ -223,9 +228,7 @@ export function AdvancedMemorySettings({
               min={1}
               max={100}
               disabled={numberInputsDisabled}
-              onCommit={(sceneCheckInterval) => {
-                if (sceneCheckInterval !== settings.sceneCheckInterval) save({ sceneCheckInterval });
-              }}
+              onCommit={(sceneCheckInterval) => save({ sceneCheckInterval })}
               ariaLabel={t("chat.advancedMemory.sceneCheckInterval")}
               className={fieldClass}
             />
@@ -243,15 +246,12 @@ export function AdvancedMemorySettings({
                 min={0}
                 max={50}
                 disabled={numberInputsDisabled}
-                onCommit={(retrieveMinMessages) => {
-                  if (retrieveMinMessages === settings.retrieveMinMessages) return;
-                  save({
+                onCommit={(retrieveMinMessages) =>
+                  save((current) => ({
                     retrieveMinMessages,
-                    ...(retrieveMinMessages > settings.retrieveMaxMessages
-                      ? { retrieveMaxMessages: retrieveMinMessages }
-                      : {}),
-                  });
-                }}
+                    retrieveMaxMessages: Math.max(retrieveMinMessages, current.retrieveMaxMessages),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.minimumMessages")}
                 className={fieldClass}
               />
@@ -263,15 +263,12 @@ export function AdvancedMemorySettings({
                 min={0}
                 max={50}
                 disabled={numberInputsDisabled}
-                onCommit={(retrieveMaxMessages) => {
-                  if (retrieveMaxMessages === settings.retrieveMaxMessages) return;
-                  save({
+                onCommit={(retrieveMaxMessages) =>
+                  save((current) => ({
                     retrieveMaxMessages,
-                    ...(retrieveMaxMessages < settings.retrieveMinMessages
-                      ? { retrieveMinMessages: retrieveMaxMessages }
-                      : {}),
-                  });
-                }}
+                    retrieveMinMessages: Math.min(retrieveMaxMessages, current.retrieveMinMessages),
+                  }))
+                }
                 ariaLabel={t("chat.advancedMemory.maximumMessages")}
                 className={fieldClass}
               />

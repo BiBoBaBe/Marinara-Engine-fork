@@ -3590,6 +3590,32 @@ export async function generateRoutes(app: FastifyInstance) {
 
         const builtInAgentTypes = new Set(BUILT_IN_AGENTS.map((agent) => agent.id));
         const createsAssistantMessage = !input.impersonate && !input.regenerateMessageId && !input.continueMessageId;
+        const trackerAgentTypes = getTrackerAgentTypes();
+        const manualTrackers = chatMeta.manualTrackers === true;
+        const manualTrackerAgentTypes = normalizeManualTrackerAgentTypes(chatMeta.manualTrackerAgentTypes);
+        const isSceneTrackerAgent = (agent: AgentExecConfig) =>
+          agent.phase === "post_processing" &&
+          (trackerAgentTypes.has(agent.type) ||
+            (customAgentHasCapability(agent.settings, "edit_trackers") &&
+              [
+                "game_state_update",
+                "character_tracker_update",
+                "persona_stats_update",
+                "inventory_tracker_update",
+                "custom_tracker_update",
+                "quest_update",
+              ].includes(resolveAgentResultType(agent))));
+        // Keep automatic tracker availability before cadence/keyword gates: scene checks follow their calls.
+        const hasAutomaticSceneTrackers = resolvedAgents.some(
+          (agent) =>
+            isSceneTrackerAgent(agent) &&
+            resolveAgentResultType(agent) !== "text_rewrite" &&
+            agent.type !== "lorebook-keeper" &&
+            (!roleplayCommandAgentIds.has(agent.type) ||
+              (agent.type === "combat" && chatMeta.encounterActive === true)) &&
+            (agent.type !== "combat" || chatMeta.encounterActive !== false) &&
+            (!trackerAgentTypes.has(agent.type) || (!manualTrackers && manualTrackerAgentTypes[agent.type] !== true)),
+        );
 
         for (let index = resolvedAgents.length - 1; index >= 0; index--) {
           const agent = resolvedAgents[index]!;
@@ -5110,13 +5136,10 @@ export async function generateRoutes(app: FastifyInstance) {
               ? !skipAutomaticIllustrator
               : !roleplayCommandAgentIds.has(a.type) || (a.type === "combat" && chatMeta.encounterActive === true)),
         );
-        const trackerAgentTypes = getTrackerAgentTypes();
         const attachLorebooksToTrackers = chatMode === "roleplay" && chatMeta.attachLorebooksToTrackers === true;
 
         // Manual tracker agents are stripped from the automatic pipeline — the
         // user will trigger them manually via retry-agents.
-        const manualTrackers = chatMeta.manualTrackers === true;
-        const manualTrackerAgentTypes = normalizeManualTrackerAgentTypes(chatMeta.manualTrackerAgentTypes);
         if (manualTrackers || Object.keys(manualTrackerAgentTypes).length > 0) {
           pipelineAgents = pipelineAgents.filter(
             (a) => !trackerAgentTypes.has(a.type) || (!manualTrackers && manualTrackerAgentTypes[a.type] !== true),
@@ -9095,22 +9118,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const latestAssistantMessageId =
           (lastSavedMsg as any)?.role === "assistant" ? ((lastSavedMsg as any)?.id ?? "") : "";
 
-        const sceneTrackerIds = pipelineAgents
-          .filter(
-            (agent) =>
-              agent.phase === "post_processing" &&
-              (trackerAgentTypes.has(agent.type) ||
-                (customAgentHasCapability(agent.settings, "edit_trackers") &&
-                  [
-                    "game_state_update",
-                    "character_tracker_update",
-                    "persona_stats_update",
-                    "inventory_tracker_update",
-                    "custom_tracker_update",
-                    "quest_update",
-                  ].includes(resolveAgentResultType(agent)))),
-          )
-          .map((agent) => agent.id);
+        const sceneTrackerIds = pipelineAgents.filter(isSceneTrackerAgent).map((agent) => agent.id);
         let sceneCheckRequest =
           advancedMemoryEnabled &&
           latestAssistantMessageId &&
@@ -9145,11 +9153,15 @@ export async function generateRoutes(app: FastifyInstance) {
             ...sceneCheckRequest,
             messages: sceneCheckRequest.messages.filter((message) => visibleIds.has(message.messageId)),
           };
-          agentContext.sceneCheck = {
-            trackerAgentIds: sceneTrackerIds,
-            prompt: `${sceneCheckRequest.prompt}\nFor this scene decision, use only the following messages; ignore other tracker context.\n${JSON.stringify(sceneCheckRequest.messages)}`,
-            claimed: false,
-          };
+          if (sceneCheckRequest.messages.length) {
+            agentContext.sceneCheck = {
+              trackerAgentIds: sceneTrackerIds,
+              prompt: `${sceneCheckRequest.prompt}\nFor this scene decision, use only the following messages; ignore other tracker context.\n${JSON.stringify(sceneCheckRequest.messages)}`,
+              claimed: false,
+            };
+          } else {
+            sceneCheckRequest = null;
+          }
         }
 
         const runAutomaticRoleplaySummary = async () => {
@@ -11894,6 +11906,8 @@ export async function generateRoutes(app: FastifyInstance) {
                     options,
                   );
                 }
+                await advancedMemory.maintain(input.chatId, options);
+              } else if (hasAutomaticSceneTrackers) {
                 await advancedMemory.maintain(input.chatId, options);
               } else if (latestAssistantMessageId && !input.impersonate) {
                 await advancedMemory.checkScenesAfterGeneration(input.chatId, {

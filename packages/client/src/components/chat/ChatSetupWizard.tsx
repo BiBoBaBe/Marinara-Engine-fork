@@ -2526,9 +2526,9 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
     setCharacterPickerLimit(CHARACTER_PICKER_PAGE_SIZE);
   }, [charSearch]);
 
-  // On the preset step, wait for full preset data before allowing advance
+  // Wait for the selected preset to save and load before deciding whether it has choices.
   const isPresetStep = currentStep.key === "preset";
-  const nextDisabled = isPresetStep && !!chat.promptPresetId && presetFullLoading;
+  const nextDisabled = isPresetStep && (updateChat.isPending || (!!chat.promptPresetId && presetFullLoading));
 
   const next = useCallback(() => {
     if (isLast) {

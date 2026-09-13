@@ -1394,7 +1394,7 @@ export function createAdvancedMemoryService(db: DB) {
     abortIfNeeded(options.signal);
     const full = await context(chatId);
     const end = full.messages.findIndex((message) => message.id === request.asOfMessageId);
-    if (!full.settings.enabled || request.chatId !== chatId || end < 0) return false;
+    if (!full.settings.enabled || request.chatId !== chatId || end < 0 || !request.messages.length) return false;
     const ctx = { ...full, messages: full.messages.slice(0, end + 1) };
     const state = object(ctx.metadata.advancedMemoryState);
     const checkedEnd = full.messages.findIndex((message) => message.id === state.sceneCheckMessageId);
