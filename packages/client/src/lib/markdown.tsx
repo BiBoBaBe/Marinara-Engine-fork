@@ -737,7 +737,7 @@ export function applyInlineMarkdownHTML(html: string): string {
     // The block supplies its ending line break. Convert both kinds together
     // so adjacent blocks still see their original line boundaries.
     .replace(
-      /(?:^|(?<=<br[^>]*>))\s*(?:(?:\*{3,}|-{3,})\s*|&gt;\s?(.+?))(?:<br[^>]*>|$)/g,
+      /(?:^|(?<=<br[^>]*>))\s*(?:(?:\*{3,}|-{3,})\s*|&gt;\s?(.*?))(?:<br[^>]*>|$)/g,
       (_match, quote: string | undefined) =>
         quote === undefined
           ? '<hr class="mari-md-rule">'
