@@ -4,7 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
-- Stopping a Roleplay reply also stops its remaining text-reveal animation and releases the generation control promptly (#6173).
+- Stopping a Roleplay reply also stops its remaining text-reveal animation and releases the generation control promptly; an older reply cannot overwrite a newer generation's text (#6173).
 
 - Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
 - Mixed HTML messages preserve literal code, and empty Markdown quote lines no longer absorb the following text (#6170).

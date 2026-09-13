@@ -1657,7 +1657,10 @@ export function useGenerate() {
         if (typingActive) return;
         typingActive = true;
         const tick = (now = performance.now()) => {
-          if (abortController.signal.aborted) {
+          if (
+            abortController.signal.aborted ||
+            useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+          ) {
             flushTypewriterBuffer();
             return;
           }
@@ -1750,7 +1753,10 @@ export function useGenerate() {
       abortController.signal.addEventListener("abort", flushTypewriterBuffer, { once: true });
 
       const waitForTypewriterDrain = async () => {
-        if (abortController.signal.aborted) {
+        if (
+          abortController.signal.aborted ||
+          useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+        ) {
           flushTypewriterBuffer();
           return;
         }
