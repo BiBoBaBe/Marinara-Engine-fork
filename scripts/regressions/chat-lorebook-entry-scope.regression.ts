@@ -19,6 +19,8 @@ const { createLorebooksStorage } = await import("../../packages/server/src/servi
 const { lorebooksRoutes } = await import("../../packages/server/src/routes/lorebooks.routes.js");
 const { createCharactersStorage } = await import("../../packages/server/src/services/storage/characters.storage.js");
 const { processLorebooks } = await import("../../packages/server/src/services/lorebook/index.js");
+const { persistLorebookRuntimeState } =
+  await import("../../packages/server/src/services/generation/lorebook-generation-runtime.js");
 const { characterDataSchema } = await import("../../packages/shared/src/index.js");
 const { chats: chatsTable } = await import("../../packages/server/src/db/schema/index.js");
 const db = await getDB();
@@ -82,14 +84,25 @@ try {
   await chats.patchMetadata(a.id, { entryStateOverrides: { [entry.id]: { enabled: false, ephemeral: 0 } } });
   assert.equal((await patch(entry.id, true)).statusCode, 200);
   assert.equal((await overrides())[entry.id], undefined, "Enabling a spent entry resets its authored budget");
-  const scan = async () => {
+  const scan = async (beforePersist?: () => Promise<void>) => {
+    const snapshot = JSON.parse((await chats.getById(a.id))!.metadata);
     const result = await processLorebooks(db, [{ role: "user", content: "dock" }], null, {
       chatId: a.id,
       activeLorebookIds: [book.id],
-      entryStateOverrides: await overrides(),
+      entryStateOverrides: snapshot.entryStateOverrides ?? snapshot.lorebookEntryStateOverrides,
+      entryTimingStates: snapshot.entryTimingStates ?? snapshot.lorebookEntryTimingStates,
     });
-    if (result.updatedEntryStateOverrides)
-      await chats.patchMetadata(a.id, { entryStateOverrides: result.updatedEntryStateOverrides });
+    await beforePersist?.();
+    const persisted = await persistLorebookRuntimeState({
+      db,
+      chats,
+      chatId: a.id,
+      fallbackMeta: snapshot,
+      entryStateOverrides: result.updatedEntryStateOverrides,
+      entryTimingStates: result.updatedEntryTimingStates,
+    });
+    const current = JSON.parse((await chats.getById(a.id))!.metadata);
+    for (const [key, value] of Object.entries(persisted)) assert.deepEqual(value, current[key]);
     return result;
   };
   const firstScan = await scan();
@@ -100,6 +113,88 @@ try {
   await patch(entry.id, true);
   await scan();
   assert.deepEqual((await overrides())[entry.id], { ephemeral: 1 }, "An authored budget change is used on re-enable");
+
+  // Real generation persistence must preserve changes accepted after its snapshot.
+  await lorebooks.updateEntry(entry.id, { ephemeral: null, sticky: 2 });
+  await chats.patchMetadata(a.id, { entryStateOverrides: {}, entryTimingStates: {} });
+  await scan(async () => {
+    assert.equal((await patch(entry.id, false)).statusCode, 200);
+    await chats.patchMetadata(a.id, { lorebookTokenBudget: 900 });
+  });
+  assert.deepEqual(
+    (await overrides())[entry.id],
+    { enabled: false },
+    "A late off toggle survives a non-countdown scan",
+  );
+  assert.equal(JSON.parse((await chats.getById(a.id))!.metadata).entryTimingStates[entry.id], undefined);
+  assert.equal(JSON.parse((await chats.getById(a.id))!.metadata).lorebookTokenBudget, 900);
+  await scan(async () => {
+    assert.equal((await patch(entry.id, true)).statusCode, 200);
+  });
+  assert.equal((await overrides())[entry.id], undefined, "A late on toggle survives the disabled snapshot");
+  assert.ok((await scan()).activatedEntryIds.includes(entry.id), "The next scan uses the accepted toggle");
+
+  await lorebooks.updateEntry(entry.id, { ephemeral: 1, sticky: null });
+  await chats.patchMetadata(a.id, { entryStateOverrides: {}, entryTimingStates: {} });
+  await scan(async () => {
+    assert.equal((await patch(entry.id, false)).statusCode, 200);
+  });
+  assert.deepEqual((await overrides())[entry.id], { enabled: false }, "A late toggle also wins over countdown expiry");
+  await patch(entry.id, true);
+  await scan(async () => {
+    assert.equal((await patch(other.id, false)).statusCode, 200);
+  });
+  assert.deepEqual(
+    (await overrides())[entry.id],
+    { ephemeral: 0, enabled: false },
+    "Unchanged countdowns still expire",
+  );
+  assert.deepEqual((await overrides())[other.id], { enabled: false }, "Another entry's toggle is retained");
+
+  await chats.patchMetadata(a.id, {
+    entryStateOverrides: undefined,
+    lorebookEntryStateOverrides: { [other.id]: { enabled: false } },
+  });
+  await scan();
+  assert.deepEqual((await overrides())[other.id], { enabled: false }, "Legacy switches survive modern runtime writes");
+  assert.deepEqual((await overrides())[entry.id], { ephemeral: 0, enabled: false });
+
+  await patch(entry.id, true);
+  await scan(async () => {
+    await chats.patchMetadata(a.id, { activeLorebookIds: [] });
+  });
+  assert.equal((await overrides())[entry.id], undefined, "A detached book cannot regain newly computed state");
+  await chats.patchMetadata(a.id, {
+    activeLorebookIds: [book.id],
+    entryStateOverrides: { [entry.id]: { ephemeral: 1 } },
+  });
+  await scan(async () => {
+    await chats.patchMetadata(a.id, { entryStateOverrides: {}, entryTimingStates: {} });
+  });
+  assert.equal((await overrides())[entry.id], undefined, "Cleared countdown state is not restored by a stale scan");
+
+  const deletedDuringScan = await lorebooks.createEntry({
+    lorebookId: book.id,
+    name: "Temporary dock lore",
+    keys: ["dock"],
+    content: "Temporary",
+    ephemeral: 1,
+    sticky: 2,
+  });
+  await scan(async () => {
+    await lorebooks.removeEntry(deletedDuringScan.id);
+  });
+  const afterDeletion = JSON.parse((await chats.getById(a.id))!.metadata);
+  assert.equal(
+    afterDeletion.entryStateOverrides[deletedDuringScan.id],
+    undefined,
+    "Deleted entries cannot gain a new countdown",
+  );
+  assert.equal(
+    afterDeletion.entryTimingStates[deletedDuringScan.id],
+    undefined,
+    "Deleted entries cannot gain new sticky state",
+  );
 
   const chars = createCharactersStorage(db);
   const character = await chars.create(characterDataSchema.parse({ name: "Harbor captain" }));
@@ -158,7 +253,9 @@ try {
     }
   };
   await seedRemovedState([entry.id]);
-  await lorebooks.removeEntry(entry.id);
+  await scan(async () => {
+    await lorebooks.removeEntry(entry.id);
+  });
   await assertRemovedState([entry.id]);
   const folder = await lorebooks.createFolder(book.id, { name: "Cascade" });
   assert.ok(folder);

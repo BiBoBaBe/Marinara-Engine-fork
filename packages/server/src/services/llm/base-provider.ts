@@ -300,7 +300,7 @@ export interface ContextFitResult {
 
 type ContextFitOptions = Pick<
   ChatOptions,
-  "maxContext" | "maxTokens" | "tools" | "suppressModelParameters" | "preserveContext"
+  "maxContext" | "maxTokens" | "tools" | "responseFormat" | "suppressModelParameters" | "preserveContext"
 >;
 
 const MESSAGE_OVERHEAD_TOKENS = 6;
@@ -391,7 +391,10 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
 /** Same estimator and reserves as provider fitting, without mutating the request or reducing the reply. */
 export function measureContextBudget(messages: ChatMessage[], options: ContextFitOptions & { maxContext: number }) {
   const maxContext = normalizePositiveInteger(options.maxContext) ?? 1;
-  const reservedTokens = contextSafetyMargin(maxContext) + estimateToolDefinitionTokens(options.tools);
+  const reservedTokens =
+    contextSafetyMargin(maxContext) +
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
   const maxTokens = normalizePositiveInteger(options.maxTokens) ?? 0;
   const inputBudget = Math.max(0, maxContext - reservedTokens - maxTokens);
   const estimatedTokens = estimateMessagesTokens(messages);
@@ -485,7 +488,9 @@ export function fitMessagesToContext(
     normalizePositiveInteger(defaultMaxContext),
   );
   const estimatedTokensBefore = estimateMessagesTokens(messages);
-  const toolTokens = estimateToolDefinitionTokens(options.tools);
+  const definitionTokens =
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
 
   if (maxContext && options.preserveContext) {
     const budget = measureContextBudget(messages, { ...options, maxContext });
@@ -510,14 +515,14 @@ export function fitMessagesToContext(
     return {
       messages,
       maxTokens: requestedMaxTokens,
-      reservedTokens: toolTokens,
+      reservedTokens: definitionTokens,
       estimatedTokensBefore,
       estimatedTokensAfter: estimatedTokensBefore,
       trimmed: false,
     };
   }
 
-  const reservedTokens = contextSafetyMargin(maxContext) + toolTokens;
+  const reservedTokens = contextSafetyMargin(maxContext) + definitionTokens;
   const usableWindow = Math.max(1, maxContext - reservedTokens);
   const reservedInputFloor = Math.min(MIN_INPUT_BUDGET_TOKENS, Math.max(0, usableWindow - 1));
   let maxTokens =

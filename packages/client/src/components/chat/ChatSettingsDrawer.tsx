@@ -9423,6 +9423,10 @@ export function ChatSettingsDrawer({
               onGameLorebookSearchChange={(gameLorebookSearch) =>
                 updateMeta.mutate({ id: chat.id, gameLorebookSearch })
               }
+              gameDiceOutcomeNarration={metadata.gameDiceOutcomeNarration !== false}
+              onGameDiceOutcomeNarrationChange={(gameDiceOutcomeNarration) =>
+                updateMeta.mutate({ id: chat.id, gameDiceOutcomeNarration })
+              }
               enableTools={metadata.enableTools as boolean | undefined}
               forceToolCall={metadata.forceToolCall as boolean | undefined}
               activeToolIds={activeToolIds}

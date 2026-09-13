@@ -647,8 +647,12 @@ async function generateSwarmUiVideo(
   if (videoReference.startsWith("data:video/mp4")) {
     videoBuffer = Buffer.from(stripDataUrl(videoReference), "base64");
   } else {
+    const videoUrl = new URL(videoReference, `${base}/`);
+    if (videoUrl.origin !== new URL(base).origin) {
+      throw new Error("SwarmUI returned a video URL outside the configured server");
+    }
     const videoResponse = await comfyUiVideoFetch(
-      new URL(videoReference, `${base}/`),
+      videoUrl,
       { headers: swarmUiVideoHeaders(apiKey), signal: request.signal },
       MAX_VIDEO_RESPONSE_BYTES,
     );
