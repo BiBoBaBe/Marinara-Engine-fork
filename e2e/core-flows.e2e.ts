@@ -223,21 +223,6 @@ async function dragChatResource(page: Page, source: Locator, target: Locator) {
   }
 }
 
-async function expectHomeContentFits(page: Page) {
-  const home = page.locator('[data-component="ChatArea.EmptyState"]');
-  await expect
-    .poll(async () => {
-      return home.evaluate((homeElement) => {
-        const contentElement = homeElement.querySelector<HTMLElement>('[data-component="ChatArea.HomeContent"]');
-        if (!contentElement) return false;
-        const homeRect = homeElement.getBoundingClientRect();
-        const contentRect = contentElement.getBoundingClientRect();
-        return contentRect.top >= homeRect.top - 1 && contentRect.bottom <= homeRect.bottom + 1;
-      });
-    })
-    .toBe(true);
-}
-
 async function expectHomeWidgetHeightsMatch(page: Page, baseline: number) {
   await expect
     .poll(async () => {
@@ -7924,7 +7909,6 @@ test("external Agent imports require the Danger Zone gate and explicit capabilit
     await page.locator('[data-tour="panel-settings"]').click();
     await page.getByRole("tab", { name: "Advanced" }).click();
     const agentImportToggle = page.getByLabel("Allow custom Agent imports");
-    const extensionImportToggle = page.getByLabel("Allow third-party extension imports");
     await expect(agentImportToggle).toBeEnabled();
     await expect(agentImportToggle).not.toBeChecked();
     expect(
@@ -8649,6 +8633,70 @@ test("chat toolbar panels close when their trigger is clicked again across modes
       request.delete(`/api/chats/${gameChat.id}`),
     ]);
   }
+});
+
+test("chat Help overlay responds to viewport changes with unchanged target geometry", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 800 });
+  await page.goto("/");
+  await page.waitForFunction(() => "React" in globalThis && "ReactDOM" in globalThis);
+  await page.evaluate(async () => {
+    const { ChatHelpOverlay } = (await import("/src/components/chat/ChatHelpOverlay.tsx" as string)) as {
+      ChatHelpOverlay: unknown;
+    };
+    const { ChatHelpButton } = (await import("/src/components/chat/ChatHelpButton.tsx" as string)) as {
+      ChatHelpButton: unknown;
+    };
+    const runtime = globalThis as typeof globalThis & {
+      React: {
+        Fragment: unknown;
+        createElement: (component: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => unknown;
+        useState: (initial: boolean) => [boolean, (value: boolean) => void];
+        useEffect: (effect: () => void, dependencies: unknown[]) => void;
+      };
+      ReactDOM: { createRoot: (mount: HTMLElement) => { render: (element: unknown) => void } };
+    };
+    // A fixed-size surface exposes viewport changes that do not move any measured target.
+    const surface = document.createElement("div");
+    surface.dataset.chatMode = "conversation";
+    surface.style.cssText = "position:fixed;top:20px;left:20px;width:200px;height:200px";
+    document.body.prepend(surface);
+    const mount = document.createElement("div");
+    mount.dataset.helpViewportFixture = "true";
+    mount.style.cssText = "position:fixed;top:20px;left:20px;z-index:10000";
+    document.body.append(mount);
+    function HelpFixture() {
+      const [ready, setReady] = runtime.React.useState(false);
+      // Reveal the real trigger after the child overlay has registered its event listener.
+      runtime.React.useEffect(() => setReady(true), []);
+      return runtime.React.createElement(
+        runtime.React.Fragment,
+        null,
+        runtime.React.createElement(ChatHelpOverlay, {
+          mode: "conversation",
+          activeChatId: "fixed-help-viewport-fixture",
+          isFirstChat: false,
+          autoOpenBlocked: true,
+        }),
+        ready ? runtime.React.createElement(ChatHelpButton, { mode: "conversation" }) : null,
+      );
+    }
+    runtime.ReactDOM.createRoot(mount).render(runtime.React.createElement(HelpFixture, null));
+  });
+  await page.locator("[data-help-viewport-fixture]").getByRole("button", { name: "Help", exact: true }).click();
+
+  const overlay = page.locator('[data-chat-help-overlay="conversation"]');
+  const legend = overlay.locator("[data-chat-help-legend]");
+  await expect(legend).toBeVisible();
+  await page.setViewportSize({ width: 767, height: 800 });
+  await expect(legend).toHaveCount(0);
+  await expect(
+    overlay.getByRole("button", {
+      name: "Tap a section you want to learn more about or this button to exit the help overlay.",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 800, height: 800 });
+  await expect(legend).toBeVisible();
 });
 
 test("chat Help overlay labels visible controls in every mode", async ({ page, request }, testInfo) => {
@@ -18868,7 +18916,6 @@ test("home browser hub scales cleanly and opens FAQ as a bookmark window", async
   await page.keyboard.press("Escape");
   await expect(faqWindow).toBeHidden();
 
-  const bookmarks = page.getByRole("navigation", { name: "Home bookmarks" });
   await openHomeBookmark(page, "Widgets");
   const widgetManager = page.getByRole("dialog", { name: "Home Widgets" });
   await expect(widgetManager).toBeVisible();

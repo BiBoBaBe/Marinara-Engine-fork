@@ -51,7 +51,6 @@ import {
   DEFAULT_CONVERSATION_PROMPT,
   getDefaultAgentPrompt,
   replaceBuiltInAgentDefinitions,
-  GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_PROMPT_TEMPLATE,
   STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE_ID,
@@ -662,7 +661,6 @@ import {
   buildBackgroundProviderPrompt,
   buildNpcPortraitProviderPrompt,
   buildSceneIllustrationProviderPrompt,
-  chatBackgroundTags,
   safeGeneratedAssetSlug,
 } from "../../packages/server/src/services/game/game-asset-generation.js";
 import { MAPS_LOCATION_ARTWORK } from "../../packages/server/src/services/prompt-overrides/registry/game-assets.js";
@@ -9325,6 +9323,44 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         generateRouteSource.slice(fallbackBranchStart, fallbackBranchEnd),
         /appendFallbackChatSummaryToSystemPrompt\(/u,
       );
+    },
+  },
+  {
+    name: "sequential Game agent phases do not overlap different model connections",
+    async run() {
+      for (const sequentialExecution of [false, true]) {
+        let active = 0;
+        let peak = 0;
+        const agents = [0, 1, 2].map((index) => {
+          const capture = makeCapturingProvider("Context checked.");
+          const complete = capture.provider.chatComplete;
+          capture.provider.chatComplete = async (...args) => {
+            active++;
+            peak = Math.max(peak, active);
+            try {
+              await new Promise((done) => setTimeout(done, 20));
+              return await complete(...args);
+            } finally {
+              active--;
+            }
+          };
+          return {
+            ...makeRegressionAgentConfig({
+              id: `custom:sequential-${index}`,
+              type: `sequential-${index}`,
+              isCustomAgent: true,
+              phase: "parallel",
+              promptTemplate: "Check the supplied context.",
+              settings: { resultType: "context_injection" },
+            }),
+            provider: capture.provider,
+            model: `model-${index}`,
+            maxParallelJobs: 4,
+          } as ResolvedAgent;
+        });
+        await runParallelAgents(agents, makeRegressionAgentContext({ chatMode: "game", sequentialExecution }));
+        assert.equal(peak, sequentialExecution ? 1 : 3);
+      }
     },
   },
   {
