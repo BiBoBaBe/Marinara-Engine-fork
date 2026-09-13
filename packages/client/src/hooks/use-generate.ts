@@ -1849,7 +1849,7 @@ export function useGenerate() {
               const jobId = job.id ?? params.chatId;
               if (
                 job.blocking !== false &&
-                ["running", "needs_confirmation", "error"].includes(job.status) &&
+                ["needs_confirmation", "error"].includes(job.status) &&
                 !shownAdvancedMemoryJobs.has(jobId)
               ) {
                 shownAdvancedMemoryJobs.add(jobId);
