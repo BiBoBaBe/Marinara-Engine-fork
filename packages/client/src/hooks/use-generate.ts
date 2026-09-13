@@ -1609,7 +1609,14 @@ export function useGenerate() {
         typewriterRemainder = 0;
         lastTypewriterPaintAt = 0;
         roleplayTypewriterCharsPerSecond = null;
-        if (streamingEnabled && shouldDisplayRawStream && fullBuffer) setStreamBuffer(fullBuffer, params.chatId);
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          fullBuffer &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
+          setStreamBuffer(fullBuffer, params.chatId);
+        }
         if (typewriterDone) {
           const done = typewriterDone;
           typewriterDone = null;
@@ -1650,6 +1657,10 @@ export function useGenerate() {
         if (typingActive) return;
         typingActive = true;
         const tick = (now = performance.now()) => {
+          if (abortController.signal.aborted) {
+            flushTypewriterBuffer();
+            return;
+          }
           if (pendingText.length === 0) {
             typingActive = false;
             lastTypewriterPaintAt = 0;
@@ -1735,8 +1746,14 @@ export function useGenerate() {
         document.addEventListener("visibilitychange", recordBackgroundedStream);
         window.addEventListener("pagehide", markPageHidden);
       }
+      // Stop must also release a local drain after the network stream finishes.
+      abortController.signal.addEventListener("abort", flushTypewriterBuffer, { once: true });
 
       const waitForTypewriterDrain = async () => {
+        if (abortController.signal.aborted) {
+          flushTypewriterBuffer();
+          return;
+        }
         if (!streamingEnabled || !shouldDisplayRawStream || (pendingText.length === 0 && !typingActive)) return;
         if (canInspectPageFocus && document.visibilityState !== "visible") {
           recordBackgroundedStream();
@@ -3116,7 +3133,11 @@ export function useGenerate() {
           await waitForTypewriterDrain();
         }
         // Final flush — ensure full content is set (only for the viewed chat)
-        if (streamingEnabled && shouldDisplayRawStream) {
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
           setStreamBuffer(normalizeLineBreakSpacing(fullBuffer + pendingText), params.chatId);
         }
       } catch (error) {
@@ -3245,6 +3266,7 @@ export function useGenerate() {
         }
         // Cancel any pending animation frame to prevent leaks
         cancelAnimationFrame(rafId);
+        abortController.signal.removeEventListener("abort", flushTypewriterBuffer);
         if (canInspectPageFocus) {
           document.removeEventListener("visibilitychange", recordBackgroundedStream);
           window.removeEventListener("pagehide", markPageHidden);

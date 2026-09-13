@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { createServer, type ServerResponse } from "node:http";
 import { seedUIState } from "./ui-state-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -183,3 +184,148 @@ test("orphan recovery yields to a resumed local stream and its typewriter", asyn
     await request.delete(`/api/chats/${chatId}`);
   }
 });
+
+for (const stage of ["assistant-ready", "transport-done", "live-provider"] as const) {
+  test(`Roleplay Stop releases buffered text and the composer (${stage})`, async ({ page, request }, testInfo) => {
+    const replyText = "The lantern lights the quiet path. ".repeat(30).trim();
+    const openResponses = new Set<ServerResponse>();
+    let providerCalls = 0;
+    const provider = createServer((incoming, response) => {
+      incoming.resume();
+      incoming.on("end", () => {
+        if (incoming.method !== "POST" || incoming.url !== "/v1/chat/completions") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ data: [{ id: "fixture" }] }));
+          return;
+        }
+        providerCalls += 1;
+        openResponses.add(response);
+        response.on("close", () => openResponses.delete(response));
+        response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        response.write(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: replyText }, finish_reason: null }] })}\n\n`,
+        );
+        if (stage !== "live-provider") {
+          response.end(
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+          );
+        }
+      });
+    });
+    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
+    let connectionId = "";
+    let characterId = "";
+    let chatId = "";
+    try {
+      const address = provider.address();
+      if (!address || typeof address === "string") throw new Error("Stop fixture provider did not bind");
+      const connection = await request.post("/api/connections", {
+        data: {
+          name: "Stop fixture",
+          provider: "custom",
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          apiKey: "fixture",
+          model: "fixture",
+          maxContext: 32768,
+        },
+      });
+      expect(connection.ok()).toBeTruthy();
+      connectionId = (await connection.json()).id;
+      const character = await request.post("/api/characters", {
+        data: { data: { name: "Stop fixture", first_mes: "" } },
+      });
+      expect(character.ok()).toBeTruthy();
+      characterId = (await character.json()).id;
+      const chat = await request.post("/api/chats", {
+        data: { name: `Stop at ${stage}`, mode: "roleplay", characterIds: [characterId], connectionId },
+      });
+      expect(chat.ok()).toBeTruthy();
+      chatId = (await chat.json()).id;
+      expect(
+        (await request.patch(`/api/chats/${chatId}/metadata`, { data: { enableAgents: false } })).ok(),
+      ).toBeTruthy();
+      if (stage === "transport-done") {
+        // The ready event is optional: also cover draining after the reader has
+        // already finished, where aborting fetch alone cannot interrupt it.
+        await page.route("**/api/generate", async (route) => {
+          const response = await route.fetch();
+          const body = (await response.text())
+            .split("\n")
+            .filter((line) => {
+              if (!line.startsWith("data: ") || line === "data: [DONE]") return true;
+              return JSON.parse(line.slice(6)).type !== "assistant_message_ready";
+            })
+            .join("\n");
+          await route.fulfill({ response, body });
+        });
+      }
+      await openFreshChat(page, chatId);
+      await page.evaluate(async () => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.setState({ enableStreaming: true, streamingSpeed: 1, reduceAmbientEffects: false });
+      });
+      const send = page.locator("button.mari-chat-send-btn");
+      const pause = send.locator("svg.lucide-circle-stop");
+      const input = page.locator("textarea.mari-chat-input-textarea");
+      await input.fill("Tell me about the path.");
+      await send.click();
+      await expect.poll(() => providerCalls).toBe(1);
+      await expect(pause).toBeVisible();
+      const readState = () =>
+        page.evaluate(async (id) => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          const state = useChatStore.getState();
+          return {
+            streaming: state.isStreaming,
+            owned: state.abortControllers.has(id),
+            length: state.streamBuffer.length,
+          };
+        }, chatId);
+      await expect.poll(async () => (await readState()).length).toBeGreaterThan(0);
+      expect((await readState()).length).toBeLessThan(replyText.length - 200);
+      const readReplies = async () =>
+        (await (await request.get(`/api/chats/${chatId}/messages`)).json()) as Array<{
+          id: string;
+          role: string;
+          content: string;
+        }>;
+      if (stage !== "live-provider") {
+        await expect
+          .poll(async () =>
+            (await readReplies()).filter((message) => message.role === "assistant").map((message) => message.content),
+          )
+          .toEqual([replyText]);
+      } else {
+        expect(openResponses.size).toBe(1);
+      }
+      await page.screenshot({ path: testInfo.outputPath("before-stop.png") });
+      const aborted = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/generate/abort" && response.request().method() === "POST",
+      );
+      await send.click();
+      expect((await aborted).ok()).toBeTruthy();
+      await expect(pause).toHaveCount(0, { timeout: 2_000 });
+      await expect.poll(readState, { timeout: 2_000 }).toEqual({ streaming: false, owned: false, length: 0 });
+      await expect.poll(() => openResponses.size).toBe(0);
+      if (stage !== "live-provider") {
+        await expect
+          .poll(async () =>
+            (await readReplies()).filter((message) => message.role === "assistant").map((message) => message.content),
+          )
+          .toEqual([replyText]);
+      }
+      await input.fill("I can write the next turn.");
+      await expect(send).toBeEnabled();
+      await page.screenshot({ path: testInfo.outputPath("after-stop.png") });
+    } finally {
+      await page.close().catch(() => undefined);
+      for (const response of openResponses) response.end();
+      provider.closeAllConnections();
+      await new Promise<void>((resolve) => provider.close(() => resolve()));
+      if (chatId) await request.delete(`/api/chats/${chatId}?force=true`).catch(() => undefined);
+      if (characterId) await request.delete(`/api/characters/${characterId}`).catch(() => undefined);
+      if (connectionId) await request.delete(`/api/connections/${connectionId}`).catch(() => undefined);
+    }
+  });
+}
