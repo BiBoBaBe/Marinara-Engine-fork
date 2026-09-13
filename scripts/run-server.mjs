@@ -10,7 +10,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     if (stopping) return;
     stopping = true;
-    process.exitCode = 128 + (constants.signals[signal] ?? 0);
     // Windows already broadcasts console Ctrl+C to the server. child.kill()
     // force-terminates it there, preventing its graceful shutdown from flushing saves.
     // POSIX still needs forwarding for signals addressed only to this launcher.

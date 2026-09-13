@@ -272,7 +272,9 @@ function nestedMacroOptions(options: ResolveMacroOptions): ResolveMacroOptions {
 
 function clampMacroOutput(value: string, options: ResolveMacroOptions): string {
   const maxLength = macroLimit(options, "maxMacroOutputLength");
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
+  if (value.length <= maxLength) return value;
+  getMacroBudget(options).exceeded = true;
+  return value.slice(0, maxLength);
 }
 
 function hashStringToUint32(value: string): number {

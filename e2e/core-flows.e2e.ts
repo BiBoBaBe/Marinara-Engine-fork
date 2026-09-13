@@ -1129,6 +1129,44 @@ test("Function Calling can require the first tool round per chat", async ({ page
   }
 });
 
+test("Game dice outcome narration can be disabled and stays disabled after reload", async ({ page, request }) => {
+  const chatResponse = await request.post("/api/chats", {
+    data: { name: "Dice Narration Settings", mode: "game", characterIds: [] },
+  });
+  expect(chatResponse.ok()).toBeTruthy();
+  const chat = (await chatResponse.json()) as { id: string };
+  await page.addInitScript((chatId) => localStorage.setItem("marinara-active-chat-id", chatId), chat.id);
+  const readMetadata = async () => {
+    const response = await request.get(`/api/chats/${chat.id}`);
+    const stored = (await response.json()) as { metadata: string | Record<string, unknown> };
+    return typeof stored.metadata === "string"
+      ? (JSON.parse(stored.metadata) as Record<string, unknown>)
+      : stored.metadata;
+  };
+  const section = page.locator('[data-chat-settings-section="function-calling"]');
+  const openSection = async () => {
+    await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+    const heading = section.locator('[role="button"][aria-expanded]');
+    if ((await heading.getAttribute("aria-expanded")) !== "true") await heading.click();
+  };
+  const narration = section.getByLabel("Narrate dice outcomes immediately", { exact: true });
+  try {
+    await page.goto("/");
+    await openSection();
+    await expect(narration).toBeChecked();
+    await expect(section.getByText(/Uses additional input and output tokens/)).toBeVisible();
+    await section.getByText("Narrate dice outcomes immediately", { exact: true }).click();
+    await expect.poll(async () => (await readMetadata()).gameDiceOutcomeNarration).toBe(false);
+    await page.reload();
+    await openSection();
+    await expect(narration).not.toBeChecked();
+    await section.getByText("Narrate dice outcomes immediately", { exact: true }).click();
+    await expect.poll(async () => (await readMetadata()).gameDiceOutcomeNarration).toBe(true);
+  } finally {
+    await request.delete(`/api/chats/${chat.id}`).catch(() => undefined);
+  }
+});
+
 test("settings profile exports use the new identity and legacy exports still import", async ({ request }, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Settings profile transfer contract is covered once.");
 

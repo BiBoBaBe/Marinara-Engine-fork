@@ -108,7 +108,7 @@ try {
   child.kill("SIGINT");
   await waitFor(() => output.includes("Received SIGINT; shutting down"), 2_000);
   process.kill(serverPid, "SIGINT");
-  assert.equal(await exited, 130, "The launcher should retain its signal exit code");
+  assert.equal(await exited, 0, "A graceful server shutdown must not become a launcher error");
   assert.ok(output.includes("Shutdown complete"), `Repeated interrupts must finish graceful close: ${output}`);
   assert.ok(!output.includes("forcing exit now"), output);
   assert.throws(() => process.kill(serverPid!, 0), "No server may survive the launcher");

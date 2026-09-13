@@ -621,6 +621,8 @@ export interface ChatMetadata {
   gameGmToolConnectionId?: string | null;
   /** Let the GM query already-vectorized lore without enabling the other optional tools. */
   gameLorebookSearch?: boolean;
+  /** Rewrite Game narration after new text-command dice rolls; absent means enabled. */
+  gameDiceOutcomeNarration?: boolean;
   /** Serialize narration, agents, and scene media within this Game chat. */
   gameSequentialAgents?: boolean;
   /** Master visibility/runtime switch for manual Game Mode scene videos. */

@@ -1247,10 +1247,10 @@ export async function processLorebooks(
     relevantLorebooksById,
     forcedEntriesOnly ? 0 : options?.currentLocationTokenBudget,
   );
-  // A location-budget drop must stay out of every subsequent scan, including
-  // recursive activation. Constants otherwise re-enter even with no messages.
+  // Declined constants must not bypass the location reserve automatically.
+  // Nonconstant entries may still earn an independent ordinary activation.
   const locationBudgetSkippedIds = new Set(locationBudgetResult.skipped.map((entry) => entry.id));
-  const scannableEntries = allEntries.filter((entry) => !locationBudgetSkippedIds.has(entry.id));
+  const scannableEntries = allEntries.filter((entry) => !entry.constant || !locationBudgetSkippedIds.has(entry.id));
   const ordinaryActivatedEntries = forcedEntriesOnly
     ? []
     : scanForActivatedEntries(messages, scannableEntries, scanOpts);
@@ -1277,7 +1277,12 @@ export async function processLorebooks(
       );
   const budgetResult = {
     ...baseBudgetResult,
-    budgetSkippedEntries: [...locationBudgetResult.skipped, ...baseBudgetResult.budgetSkippedEntries],
+    budgetSkippedEntries: [
+      ...locationBudgetResult.skipped.filter(
+        (entry) => !baseBudgetResult.selected.some((selected) => selected.entry.id === entry.id),
+      ),
+      ...baseBudgetResult.budgetSkippedEntries,
+    ],
   };
   const finalActivated = budgetResult.selected;
 

@@ -4,6 +4,15 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Image API connections now accept custom JSON parameters, including provider-supported LoRA fields. Parameters persist with saved, copied, and exported connections and apply to generation requests using that connection's own defaults (#6167).
+
+- Lorebook entries declined by the current-location reserve can still activate independently through keywords, sticky state, or recursion within the ordinary lore budget; declined constants cannot bypass the reserve (#6143).
+- Chat-local lorebook toggles made during reply preparation now survive generation. Runtime countdown and timing updates preserve newer edits, legacy switches, and deletion or detach cleanup (#6144).
+
+- Separate Game tool planning preserves narrator prefills and prompt formatting, keeps its instruction in the conversation on every provider, skips Continue, and no longer advertises duplicate local tool calls or reports the planner's finish reason as narration (#6148, #6149, #6150, #6155, #6156).
+- Game dice outcome rewrites include native rolls alongside text-command rolls. They can be disabled in Chat Settings to save the extra generation cost, and no rewrite runs when nothing was rolled (#6147, #6157).
+- Game replies consisting only of a refused package command explain the invalid argument instead of claiming the model returned nothing (#6151).
+
 - Numeric settings keep text selection intact when a saved value arrives just before editing, preventing old digits from being prepended to the new value.
 - Regression checks now drain development-watcher diagnostics before checking them and capture live dice screenshots without freezing animations.
 - Roleplay setup now waits for preset changes to save before advancing and closes obsolete preset-variable prompts instead of leaving an empty dialog.
@@ -181,7 +190,13 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
-- iPhone TTS playback preserves user-initiated audio access, and mobile Roleplay message controls keep the volume popup on screen without unwanted tap highlighting (#6166).
+- Storyboard planning retries explicitly local connections behind proxies once without reasoning, and reports empty final answers or exhausted output limits when planning still fails (#6165).
+
+- World generation reserves context for its reply schema, preserves selected lore after macro expansion or refuses it clearly, and no longer counts unnamed outlets as injected (#6145, #6146, #6152).
+
+- Clean server shutdowns no longer report a launcher failure, and Restart Server works from the Windows local-build launcher (#6153, #6154).
+
+- TTS reuses the audio element primed by a user's tap across delayed generation and later voice clips. Mobile Roleplay volume controls stay within the screen edges (#6166).
 
 - Mobile character reordering keeps Chat Settings still during the drag; swiping outside the handle continues to scroll normally (#6098).
 - Roleplay message actions keep their tapped state when opening menus on iPhone, suppress native tap flashes, and use direct tray buttons for recipient controls (#6092, #6094).

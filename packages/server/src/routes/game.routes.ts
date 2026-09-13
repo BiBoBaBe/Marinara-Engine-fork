@@ -11,7 +11,6 @@ import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { registerSequentialGameTasks, retainSequentialGameTask } from "../services/game/sequential-tasks.js";
-import { isLocalInferenceBaseUrl } from "../middleware/ip-allowlist.js";
 import { readImageDimensionsFromFile } from "../utils/image-metadata.js";
 import { createChatsStorage, METADATA_WRITE_ORDINALS_KEY } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
@@ -300,6 +299,7 @@ import { applyStoryboardAgentSettings } from "../services/game/storyboard-agent-
 import {
   STORYBOARD_FALLBACK_BEAT_MAX_CHARS,
   completeStoryboardPlan,
+  shouldRetryStoryboardWithoutReasoning,
   compactStoryboardFallbackBeat,
   compactStoryboardTextAtWordBoundary,
   createStoryboardReviewPlanEnvelope,
@@ -10880,13 +10880,18 @@ export async function gameRoutes(app: FastifyInstance) {
           lastGenerationType: "game_setup",
           idleDuration: "0 seconds",
         });
+        let loreMacroLimitExceeded = false;
         const resolveLoreMacrosForFinal = (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
           setLorebookEntryCounts(lorePromptMacroContext, lorebookEntryCounts);
-          // Preserve large literal entries while keeping expansion bounded and
-          // retaining the resolver's recursion/expansion-count safeguards.
-          return resolveMacrosWithVariableSnapshot(value, lorePromptMacroContext, {
-            maxMacroOutputLength: Math.max(value.length, 200_000),
+          const macroBudget = { expansions: 0, exceeded: false };
+          // Allow expansions that can fit the configured window, while retaining
+          // bounded allocation and the resolver's recursion/count safeguards.
+          const resolved = resolveMacrosWithVariableSnapshot(value, lorePromptMacroContext, {
+            maxMacroOutputLength: Math.max(value.length, (modelAccessPolicy.effectiveMaxContext ?? 50_000) * 4),
+            macroBudget,
           });
+          loreMacroLimitExceeded ||= macroBudget.exceeded;
+          return resolved;
         };
         const loreScopeExclusions = resolveLorebookScopeExclusions("game", meta);
         const lorebookResult = await processLorebooks(app.db, [], null, {
@@ -10916,6 +10921,14 @@ export async function gameRoutes(app: FastifyInstance) {
           ignoreForcedEntryProbability: true,
           resolveContent: resolveLoreMacrosForFinal,
         });
+        if (loreMacroLimitExceeded) {
+          return reply.code(422).send({
+            code: "context_limit",
+            truncated: false,
+            error:
+              "A selected lorebook entry exceeds the macro expansion limit for this world-generation request. Choose a larger-context connection or shorten its macros; no partial lore was sent.",
+          });
+        }
         const combinedLore = [
           lorebookResult.worldInfoBefore,
           ...lorebookResult.depthEntries.map((entry) => entry.content),
@@ -11082,6 +11095,7 @@ export async function gameRoutes(app: FastifyInstance) {
             messages: attemptMessages,
             policy: modelAccessPolicy,
             maxTokens: options.maxTokens,
+            responseFormat: options.responseFormat,
           });
           // This one-shot prompt has no disposable history. Dropping its system
           // tail would silently discard lore the player explicitly selected.
@@ -12499,14 +12513,14 @@ export async function gameRoutes(app: FastifyInstance) {
             conn.provider,
           );
           const parsedPlan = await completeStoryboardPlan({
-            retryWithoutReasoning:
-              plannerOptions.reasoningEffort !== "none" &&
-              conn.provider === "custom" &&
-              isLocalInferenceBaseUrl(baseUrl),
+            retryWithoutReasoning: shouldRetryStoryboardWithoutReasoning(
+              { provider: conn.provider, baseUrl, treatAsLocalEndpoint: conn.treatAsLocalEndpoint },
+              plannerOptions.reasoningEffort,
+            ),
             customThinkingTags: parameters?.customThinkingTags,
             generate: async (withoutReasoning) => {
               if (withoutReasoning)
-                logger.warn("[game/storyboard] Retrying empty local planner output without reasoning");
+                logger.warn("[game/storyboard] Retrying unusable local planner output without reasoning");
               const result = await runGameChatComplete(
                 provider,
                 illustratorMessages.messages,
@@ -12522,7 +12536,13 @@ export async function gameRoutes(app: FastifyInstance) {
                 "Game storyboard illustrator",
                 GAME_STORYBOARD_ILLUSTRATOR_TIMEOUT_MS,
               );
-              if (debugLogsEnabled) debugLog("[debug/game/storyboard-illustrator] raw response:\n%s", result.content);
+              if (debugLogsEnabled)
+                debugLog(
+                  "[debug/game/storyboard-illustrator] finishReason=%s usage=%s raw response:\n%s",
+                  result.finishReason,
+                  JSON.stringify(result.usage ?? null),
+                  result.content,
+                );
               return result;
             },
           });

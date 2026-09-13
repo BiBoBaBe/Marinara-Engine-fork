@@ -173,7 +173,11 @@ export function processActivatedEntries(
   totalTokensEstimate: number;
 } {
   // Apply budget
-  const budgeted = applyTokenBudget(activatedEntries, tokenBudget);
+  // Legacy unnamed outlets have no injection target and must not count as included.
+  const budgeted = applyTokenBudget(
+    activatedEntries.filter(({ entry }) => entry.position !== 7 || Boolean(entry.outletName?.trim())),
+    tokenBudget,
+  );
 
   // Build blocks
   const { before, after } = buildWorldInfoBlocks(budgeted);

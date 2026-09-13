@@ -234,7 +234,7 @@ try {
   } as Parameters<typeof connections.create>[0]);
   createdConnectionId = conn.id;
 
-  // #5943: the shared location budget binds ordinary and recursive scans too.
+  // #5943: declined forced constants cannot bypass the location reserve.
   for (const recursiveScanning of [false, true]) {
     const book = await createBook("Location budget", { tokenBudget: 4000, recursiveScanning });
     const blocked = await lorebooks.createEntry({
@@ -277,6 +277,68 @@ try {
     assert.ok(
       result.budgetSkippedEntries.every((entry) => !result.activatedEntryIds.includes(entry.id)),
       "Skip diagnostics must describe entries actually omitted",
+    );
+  }
+
+  // #6143: a declined nonconstant may independently earn ordinary-budget space.
+  for (const activation of ["keyword", "sticky", "recursive"] as const) {
+    const book = await createBook(`Ordinary ${activation} after location decline`, {
+      tokenBudget: 4000,
+      recursiveScanning: activation === "recursive",
+    });
+    const declined = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Dragon location",
+      keys: ["dragon"],
+      content: loreContent("DRAGONLOCATION", 1600),
+      sticky: activation === "sticky" ? 2 : null,
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    if (activation === "recursive") {
+      await lorebooks.createEntry({
+        lorebookId: book.id,
+        name: "Ordinary recursive seed",
+        constant: true,
+        content: "dragon",
+        preventRecursion: false,
+      } as Parameters<typeof lorebooks.createEntry>[0]);
+    }
+    const result = await processLorebooks(
+      db,
+      activation === "keyword" ? [{ role: "user", content: "dragon" }] : [],
+      null,
+      {
+        activeLorebookIds: [book.id],
+        forcedEntryIds: [declined.id],
+        currentLocationTokenBudget: 100,
+        ...(activation === "sticky"
+          ? {
+              entryTimingStates: {
+                [declined.id]: { lastActivatedAt: 0, stickyCount: 2, cooldownRemaining: 0, delayRemaining: 0 },
+              },
+            }
+          : {}),
+      },
+    );
+    assert.equal(result.activatedEntryIds.filter((id) => id === declined.id).length, 1, activation);
+    assert.equal(
+      result.budgetSkippedEntries.some((entry) => entry.id === declined.id),
+      false,
+      activation,
+    );
+    assert.ok(
+      !result.activatedEntries
+        .find((entry) => entry.id === declined.id)!
+        .activationSources.includes("current_location"),
+    );
+    const noOrdinaryRoom = await processLorebooks(db, [{ role: "user", content: "dragon" }], null, {
+      activeLorebookIds: [book.id],
+      forcedEntryIds: [declined.id],
+      currentLocationTokenBudget: 100,
+      tokenBudget: 100,
+    });
+    assert.ok(
+      !noOrdinaryRoom.activatedEntryIds.includes(declined.id),
+      "Independent activation still pays the ordinary budget",
     );
   }
 

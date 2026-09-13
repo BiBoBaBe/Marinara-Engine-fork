@@ -3328,6 +3328,18 @@ const cases: RegressionCase[] = [
       });
 
       assert.equal(result.length <= 16, true);
+
+      const budget = { expansions: 0, exceeded: false };
+      const truncated = resolveMacros(
+        "{{user}}",
+        { ...context, user: "x".repeat(32) },
+        {
+          maxMacroOutputLength: 16,
+          macroBudget: budget,
+        },
+      );
+      assert.equal(truncated, "x".repeat(16));
+      assert.equal(budget.exceeded, true, "Callers must be able to refuse silently truncated macro output");
     },
   },
   {

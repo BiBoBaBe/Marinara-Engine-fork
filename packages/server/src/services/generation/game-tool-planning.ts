@@ -35,7 +35,9 @@ export async function planGameToolCalls(args: {
     messages: [
       ...args.messages.map(({ role, content }): ChatMessage => ({ role: role === "tool" ? "user" : role, content })),
       {
-        role: "system",
+        // Anthropic and Google hoist system messages; keep this request-local
+        // instruction in the final conversation turn on every provider.
+        role: "user",
         content:
           "You are planning tools for the Game narrator, not writing narration. For the latest player action, call only the available tools whose real results are needed now. Do not invent results or repeat completed actions. If no tool is needed, return no tool calls. A separate narrator will receive the actual results and write the scene. You have one planning request; independent tools may be called together.",
       },
