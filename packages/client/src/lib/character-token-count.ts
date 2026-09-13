@@ -5,6 +5,7 @@ import {
   type CharacterData,
   type DepthPrompt,
 } from "@marinara-engine/shared";
+import type { TFunction } from "i18next";
 
 export { estimateTextTokens };
 
@@ -88,6 +89,6 @@ export function estimateCharacterCardTokens(data: CharacterTokenData): number {
   return estimateTextTokens(textParts.join("\n"));
 }
 
-export function formatEstimatedTokens(tokens: number): string {
-  return `~${tokens.toLocaleString()} tokens`;
+export function formatEstimatedTokens(tokens: number, localizeUi: TFunction): string {
+  return localizeUi("chat.summary.tokenEstimate", { tokens: tokens.toLocaleString() });
 }

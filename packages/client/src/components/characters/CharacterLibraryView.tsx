@@ -287,7 +287,7 @@ function CardLibraryDetailCard({
                   )}
                 >
                   <Hash size="0.75rem" />
-                  {formatEstimatedTokens(card.tokenEstimate)}
+                  {formatEstimatedTokens(card.tokenEstimate, localizeUi)}
                 </span>
                 {card.favorite && (
                   <span

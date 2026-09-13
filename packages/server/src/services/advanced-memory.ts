@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
   estimateChatSummaryTokens,
+  sliceTextToTokenBudget,
   normalizeAdvancedMemorySettings,
   advancedMemorySettingsSchema,
   normalizeChatSummaryEntries,
@@ -661,8 +662,11 @@ export function createAdvancedMemoryService(db: DB) {
       throw new Error("The summary prompt and output reserve do not fit this model's context limit");
     let parts = inputs.filter(Boolean).flatMap((text) => {
       const pieces: string[] = [];
-      const maxChars = inputBudget * 3;
-      for (let offset = 0; offset < text.length; offset += maxChars) pieces.push(text.slice(offset, offset + maxChars));
+      for (let offset = 0; offset < text.length; ) {
+        const piece = sliceTextToTokenBudget(text.slice(offset), inputBudget);
+        pieces.push(piece);
+        offset += piece.length;
+      }
       return pieces;
     });
     if (!parts.length) return "";
@@ -982,15 +986,17 @@ export function createAdvancedMemoryService(db: DB) {
       abortIfNeeded(options.signal);
       const batch = batches[batchIndex]!;
       // ponytail: a single huge message cannot contain a source-ID boundary; show its ends for classification, while summaries consume every fragment.
-      const perMessageChars = Math.max(128, Math.floor((budget * 3) / Math.max(1, batch.length)));
+      const perMessageTokens = Math.max(32, Math.floor(budget / Math.max(1, batch.length)));
       const transcript = batch.map(({ message }) => {
         const tracker = trackerHints.get(message.id);
-        const chars = Math.max(64, perMessageChars - (JSON.stringify(tracker)?.length ?? 0));
+        const tokens = Math.max(16, perMessageTokens - tokenSize(JSON.stringify(tracker) ?? "") - 32);
+        const marker = "\n[interior of this same message omitted]\n";
+        const endTokens = Math.max(0, Math.floor((tokens - tokenSize(marker)) / 2));
         return {
           messageId: message.id,
           content:
-            message.content.length > chars
-              ? `${message.content.slice(0, Math.floor(chars / 2))}\n[interior of this same message omitted]\n${message.content.slice(-Math.floor(chars / 2))}`
+            tokenSize(message.content) > tokens
+              ? `${sliceTextToTokenBudget(message.content, endTokens)}${marker}${sliceTextToTokenBudget(message.content, endTokens, true)}`
               : message.content,
           ...(tracker ? { tracker } : {}),
         };

@@ -13,7 +13,12 @@
 // the box for casual users while letting power users tune precision
 // by writing tight descriptions.
 // ──────────────────────────────────────────────
-import { estimateTextTokens, type AgentContext, type AgentResult, type LorebookEntry } from "@marinara-engine/shared";
+import {
+  sliceTextToTokenBudget,
+  type AgentContext,
+  type AgentResult,
+  type LorebookEntry,
+} from "@marinara-engine/shared";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import { executeAgent, type AgentExecConfig } from "./agent-executor.js";
 import { logger } from "../../lib/logger.js";
@@ -81,12 +86,9 @@ export interface KnowledgeRouterCandidateOptions extends LorebookEmbeddingOption
   keywordScanEntries?: LorebookEntry[];
 }
 
-/** Take the first ~N tokens of text (rough char-count approximation). */
+/** Take the first ~N tokens using the shared estimate. */
 function firstNTokens(text: string, n: number): string {
-  const codePoints = Array.from(text);
-  let end = Math.min(codePoints.length, n * 4);
-  while (end > 0 && estimateTextTokens(codePoints.slice(0, end).join("")) > n) end -= 1;
-  return codePoints.slice(0, end).join("").trim();
+  return sliceTextToTokenBudget(text, n).trim();
 }
 
 /**

@@ -6,7 +6,7 @@ import { createHash, randomInt, randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { basename, extname, join } from "path";
 import { z } from "zod";
-import { estimateTextTokens } from "@marinara-engine/shared";
+import { estimateTextTokens, sliceTextToTokenBudget } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
@@ -3325,7 +3325,6 @@ function gameGenOptions(
   return merged;
 }
 
-const SESSION_SUMMARY_CHARS_PER_TOKEN = 4;
 const SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS = 256;
 const GAME_SETUP_MIN_OUTPUT_TOKENS = 16_384;
 const EXPERIENCE_GENERATION_MIN_OUTPUT_TOKENS = 1_024;
@@ -3550,21 +3549,14 @@ const SESSION_SUMMARY_TRUNCATION_MARKER = "\n\n[Middle of session transcript tru
 type GameTranscriptMessage = { id: string; role: string; content: string | null | undefined };
 
 function truncateSessionTranscriptMiddle(content: string, targetTokens: number): string {
-  const targetChars = Math.max(
-    SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS,
-    Math.floor(targetTokens * SESSION_SUMMARY_CHARS_PER_TOKEN),
-  );
-  const chars = Array.from(content);
-  if (chars.length <= targetChars) return content;
-
-  if (targetChars <= SESSION_SUMMARY_TRUNCATION_MARKER.length + SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS) {
-    return chars.slice(0, targetChars).join("");
-  }
-
-  const availableChars = targetChars - SESSION_SUMMARY_TRUNCATION_MARKER.length;
-  const headChars = Math.ceil(availableChars * 0.65);
-  const tailChars = Math.floor(availableChars * 0.35);
-  return chars.slice(0, headChars).join("") + SESSION_SUMMARY_TRUNCATION_MARKER + chars.slice(-tailChars).join("");
+  const minimumTokens = estimateTextTokens(Array.from(content).slice(0, SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS).join(""));
+  const budget = Math.max(minimumTokens, Math.floor(targetTokens));
+  if (estimateTextTokens(content) <= budget) return content;
+  const availableTokens = budget - estimateTextTokens(SESSION_SUMMARY_TRUNCATION_MARKER);
+  if (availableTokens <= minimumTokens) return sliceTextToTokenBudget(content, budget);
+  const head = sliceTextToTokenBudget(content, Math.ceil(availableTokens * 0.65));
+  const tail = sliceTextToTokenBudget(content, availableTokens - estimateTextTokens(head), true);
+  return head + SESSION_SUMMARY_TRUNCATION_MARKER + tail;
 }
 
 function buildSessionConclusionMessages(args: {
@@ -3710,7 +3702,7 @@ function fitSessionConclusionMessages(args: {
     const currentTranscriptTokens = estimateTextTokens(transcriptText);
     const overflowTokens = Math.max(1, fit.estimatedTokensBefore - (fit.inputBudget ?? fit.estimatedTokensBefore - 1));
     const targetTranscriptTokens = Math.max(
-      Math.ceil(SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS / SESSION_SUMMARY_CHARS_PER_TOKEN),
+      estimateTextTokens(Array.from(transcriptText).slice(0, SESSION_SUMMARY_MIN_TRANSCRIPT_CHARS).join("")),
       currentTranscriptTokens - overflowTokens - 32,
     );
     const nextTranscriptText = truncateSessionTranscriptMiddle(transcriptText, targetTranscriptTokens);

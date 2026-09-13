@@ -4055,7 +4055,7 @@ export function AgentEditor() {
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                     {promptTemplateHelp}
                     <p className="ml-auto shrink-0 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-                      {formatEstimatedTokens(estimateTextTokens(defaultPrompt || ""))}
+                      {formatEstimatedTokens(estimateTextTokens(defaultPrompt || ""), localizeUi)}
                     </p>
                   </div>
                   <span className="absolute right-3 top-2 rounded-md bg-[var(--card)] px-1.5 py-0.5 text-[0.5625rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">

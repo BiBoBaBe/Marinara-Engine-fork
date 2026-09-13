@@ -153,7 +153,7 @@ function ExpandedMacroEditor({
             </div>
             {showTokenCount && (
               <span className="mr-3 shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
-                {formatEstimatedTokens(estimateTextTokens(localValue))}
+                {formatEstimatedTokens(estimateTextTokens(localValue), localizeUi)}
               </span>
             )}
             <button
@@ -504,12 +504,12 @@ export function MacroTextarea({
                   tokenCountAlign === "start" && "self-start",
                 )}
               >
-                {formatEstimatedTokens(estimateTextTokens(value))}
+                {formatEstimatedTokens(estimateTextTokens(value), localizeUi)}
               </p>
             </div>
           ) : (
             <p className="mt-0.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-              {formatEstimatedTokens(estimateTextTokens(value))}
+              {formatEstimatedTokens(estimateTextTokens(value), localizeUi)}
             </p>
           ))}
       </div>

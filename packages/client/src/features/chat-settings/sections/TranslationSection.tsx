@@ -274,7 +274,7 @@ function TranslationPromptField({
         className="min-h-28 w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-2 font-mono text-xs leading-relaxed outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
       />
       <p className="mt-0.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-        {formatEstimatedTokens(estimateTextTokens(customPrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT))}
+        {formatEstimatedTokens(estimateTextTokens(customPrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT), localizeUi)}
       </p>
     </div>
   );

@@ -1775,12 +1775,7 @@ function SectionsTab({
             const role = (section.role ?? "system") as string;
             const group = section.groupId ? groupMap.get(section.groupId) : null;
             const RoleIcon = ROLE_ICONS[role] ?? Settings2;
-            const markerConfig =
-              isMarker && section.markerConfig
-                ? typeof section.markerConfig === "string"
-                  ? JSON.parse(section.markerConfig)
-                  : section.markerConfig
-                : null;
+            const markerConfig = isMarker ? readMarkerConfig(section.markerConfig) : null;
             const hasContentTextarea = !isMarker || markerConfig?.type === "agent_data";
             const positionControls = (
               <div
@@ -2086,7 +2081,7 @@ function SectionsTab({
 
                       {/* Marker config */}
                       {isMarker &&
-                        section.markerConfig &&
+                        markerConfig &&
                         (() => {
                           const mc = markerConfig;
                           const isAgentMarker = mc.type === "agent_data";

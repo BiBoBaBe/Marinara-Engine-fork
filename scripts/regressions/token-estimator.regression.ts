@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { estimateTextTokens } from "../../packages/shared/src/utils/token-estimator.js";
 import { estimateCharacterCardTokens } from "../../packages/client/src/lib/character-token-count.js";
 import { processActivatedEntries } from "../../packages/server/src/services/lorebook/prompt-injector.js";
+import { createLorebookEntrySchema } from "../../packages/shared/src/schemas/lorebook.schema.js";
 
 assert.equal(estimateTextTokens(""), 0);
 assert.equal(estimateTextTokens("abcdefghijkl"), 3, "Latin text should retain the four-characters-per-token estimate");
@@ -27,12 +28,19 @@ for (const [contents, expected] of [
   [["漢", "字", "漢"], 3],
   [["a", "가", "漢"], 2],
 ] as Array<[string[], number]>) {
-  const entries = contents.map((content, order) => ({
-    entry: { content, order, position: 0 },
+  const entries: Parameters<typeof processActivatedEntries>[0] = contents.map((content, order) => ({
+    entry: {
+      ...createLorebookEntrySchema.parse({ lorebookId: "token-estimator", name: `Entry ${order}`, content, order }),
+      id: `entry-${order}`,
+      position: 0,
+      embedding: null,
+      createdAt: "2026-09-13T00:00:00.000Z",
+      updatedAt: "2026-09-13T00:00:00.000Z",
+    },
     matchedKeys: [],
     activationSources: [],
     injectionOrder: order,
-  })) as Parameters<typeof processActivatedEntries>[0];
+  }));
   assert.equal(
     processActivatedEntries(entries).totalTokensEstimate,
     expected,

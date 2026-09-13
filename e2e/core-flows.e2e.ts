@@ -9545,6 +9545,115 @@ test("preset pictures can be uploaded from the panel and replaced in the Overvie
   }
 });
 
+test("preset token counters stay localized and editable with malformed marker settings", async ({
+  page,
+  request,
+}, testInfo) => {
+  const errors = collectUnexpectedErrors(page);
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const presetName = `Token Preset ${suffix}`;
+  const presetResponse = await request.post("/api/prompts", { data: { name: presetName } });
+  expect(presetResponse.ok()).toBeTruthy();
+  const preset = (await presetResponse.json()) as { id: string };
+  const brokenConfigs: Record<string, string | null> = {
+    "Broken marker": "{invalid",
+    "Null marker": "null",
+    "Missing marker": null,
+  };
+
+  try {
+    for (const name of ["CJK prompt", "Agent marker", ...Object.keys(brokenConfigs)]) {
+      const isMarker = name !== "CJK prompt";
+      const response = await request.post(`/api/prompts/${preset.id}/sections`, {
+        data: {
+          identifier: `${name.replaceAll(" ", "_")}_${suffix}`,
+          name,
+          content: "你好世界",
+          role: "system",
+          isMarker,
+          ...(isMarker && {
+            markerConfig:
+              name === "Agent marker" ? { type: "agent_data", agentType: "illustrator" } : { type: "character" },
+          }),
+        },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+    // Legacy/imported responses can contain invalid or absent marker JSON even
+    // though the current write API validates newly created marker settings.
+    await page.route(`**/api/prompts/${preset.id}/full`, async (route) => {
+      const response = await route.fetch();
+      const payload = (await response.json()) as { sections: Array<{ name: string; markerConfig: unknown }> };
+      for (const section of payload.sections) {
+        if (Object.hasOwn(brokenConfigs, section.name)) section.markerConfig = brokenConfigs[section.name];
+      }
+      await route.fulfill({ json: payload });
+    });
+    const packs = await mockUILanguagePacks(page);
+    packs.installed.add("ja");
+    await page.route("**/api/ui-languages/ja", (route) =>
+      route.fulfill({ json: { _meta: { locale: "ja" }, "chat.summary.tokenEstimate": "約{{tokens}}トークン" } }),
+    );
+    const theme = testInfo.project.name.includes("desktop") ? "light" : "dark";
+    await seedUIState(page, { language: "ja", theme }, "merge");
+    await page.goto("/");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await page.locator('[data-tour="panel-presets"]').click();
+    const presetRow = page.locator('[data-touch-drag-card="preset"]').filter({ hasText: presetName });
+    await presetRow.locator("[data-preset-open-action]").click({ position: { x: 8, y: 8 } });
+    const editor = page.locator(".mari-editor-shell");
+    await openEditorSection(editor, "Sections");
+    const cards = editor.locator('[data-touch-reorder-item="preset-section"]');
+    await expect(cards).toHaveCount(5);
+
+    for (const name of Object.keys(brokenConfigs)) {
+      const card = cards.filter({ hasText: name });
+      await card.locator("[data-preset-section-toggle]").click();
+      await expect(card.locator("[data-preset-section-position]")).toBeVisible();
+      await expect(card.locator("textarea")).toHaveCount(0);
+      await card.locator("[data-preset-section-toggle]").click();
+    }
+    for (const name of ["Agent marker", "CJK prompt"]) {
+      const card = cards.filter({ hasText: name });
+      await card.locator("[data-preset-section-toggle]").click();
+      await expect(card.getByText("約3トークン", { exact: true })).toBeVisible();
+      await expect(card.locator("[data-preset-section-position]")).toBeVisible();
+      if (name === "Agent marker") await card.locator("[data-preset-section-toggle]").click();
+    }
+    const prompt = cards.filter({ hasText: "CJK prompt" });
+    await prompt.locator("textarea").fill("hello");
+    await expect(prompt.getByText("約2トークン", { exact: true })).toBeVisible();
+    await prompt.getByRole("button", { name: "Expand editor", exact: true }).click();
+    const expanded = page.locator('[data-component="ExpandedMacroEditor"]');
+    await expect(expanded.getByText("約2トークン", { exact: true })).toBeVisible();
+    await expanded.locator("textarea").fill("你好世界你好世界");
+    await expect(expanded.getByText("約6トークン", { exact: true })).toBeVisible();
+    await expect(expanded.getByRole("button", { name: "Close expanded editor" })).toBeVisible();
+    const bounds = await expanded.evaluate((element) => ({
+      content: element.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(bounds.content).toBeLessThanOrEqual(bounds.viewport + 1);
+    await page.screenshot({ path: testInfo.outputPath("localized-expanded-token-counter.png") });
+    await expanded.getByRole("button", { name: "Close expanded editor" }).click();
+    await expect(expanded).toHaveCount(0);
+    await expect(prompt.locator("textarea")).toHaveValue("你好世界你好世界");
+    await expect(prompt.getByText("約6トークン", { exact: true })).toBeVisible();
+    await expect
+      .poll(async () => {
+        const response = await request.get(`/api/prompts/${preset.id}/full`);
+        const stored = (await response.json()) as { sections: Array<{ name: string; content: string }> };
+        return stored.sections.find((section) => section.name === "CJK prompt")?.content;
+      })
+      .toBe("你好世界你好世界");
+    await prompt.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath("localized-inline-token-counter.png") });
+    expect(errors).toEqual([]);
+  } finally {
+    await request.delete(`/api/prompts/${preset.id}`);
+  }
+});
+
 test("roleplay quick preset editor uses chat settings spacing, surfaces, and safe deletion", async ({
   page,
   request,
