@@ -133,7 +133,7 @@ try {
     chat.id,
     Array.from({ length: 800 }, (_, index) => ({
       role: index % 2 ? ("assistant" as const) : ("user" as const),
-      content: `${index === 400 ? "SCENE_CHANGE " : ""}Message ${index}: the compass promise continues along the road.`,
+      content: `${index === 0 ? "Date: Spring 14\n" : index === 400 ? "SCENE_CHANGE\nDate: Spring 15\n" : ""}Message ${index}: the compass promise continues along the road.`,
     })),
   );
   const source = await chats.listMessages(chat.id);
@@ -176,6 +176,9 @@ try {
     budgetTokens: 1200,
   });
   assert(prepared.currentSceneSummary, "a large ongoing scene gets a temporary prefix summary");
+  assert(prepared.chatSummary?.includes("source timeframe (summary corrections take precedence): Spring 14"));
+  assert(prepared.currentSceneSummary.includes("story timeframe: Spring 15"));
+  assert(prepared.chatSummary.includes("Messages #1–#400"), "continuity retains canonical chronology");
   assert(prepared.messageIds.includes(source.at(-1)!.id), "the latest message remains exact history");
   assert(prepared.receipt.estimatedTokensAfter <= 1200);
   await memory.validatePrepared(chat.id, source, prepared.receipt);
@@ -421,9 +424,9 @@ try {
       role: index % 2 ? ("assistant" as const) : ("user" as const),
       content:
         index === 5
-          ? "Luna promised to return the silver compass on Sunday."
+          ? "Date: Spring 14\nLuna promised to return the silver compass on Sunday."
           : index === 25
-            ? "Luna corrected the promise: the silver compass returns on Tuesday, never Sunday."
+            ? "The following morning, Luna corrected the promise: the silver compass returns on Tuesday, never Sunday."
             : index >= 56
               ? "What was Luna's promise about the silver compass and its later correction?"
               : `${index === 40 ? "SCENE_CHANGE " : ""}The cartographer studied ancient maps and measured every mountain ridge carefully along the long winding road.`,
@@ -521,6 +524,115 @@ try {
     "lexical recall includes the later correction exactly",
   );
   assert(exactRecall.recalledMessages?.includes("on Sunday"), "lexical recall includes the original promise exactly");
+  assert(exactRecall.recalledScenes?.includes("story timeframe: Spring 14 → The following morning"));
+  assert(exactRecall.recalledMessages.includes("story timeframe: Spring 14"));
+  assert(exactRecall.recalledMessages.includes("story timeframe: The following morning"));
+  assert(
+    exactRecall.recalledMessages.indexOf("#6") < exactRecall.recalledMessages.indexOf("#26"),
+    "recalled excerpts preserve chronological source order",
+  );
+  const { estimateChatSummaryTokens } = await import("../../packages/shared/src/index.ts");
+  assert(
+    estimateChatSummaryTokens(exactRecall.chatSummary ?? "") <= 256,
+    "the entire constant summary, including timeframe labels, respects its configured maximum",
+  );
+  const { eq: timelineEq } = await import("../../packages/server/src/db/file-query.ts");
+  await db
+    .update(advancedMemoryRecords)
+    .set({ timeline: null })
+    .where(timelineEq(advancedMemoryRecords.chatId, recallChat.id));
+  const beforeLegacyTimeline = requests.length;
+  const legacyTimeline = await memory.prepare({
+    chatId: recallChat.id,
+    messages: recallSource,
+    audienceCharacterIds: [],
+    budgetTokens: 1800,
+    readOnly: true,
+  });
+  assert(
+    legacyTimeline.recalledScenes?.includes("Spring 14 → The following morning"),
+    "legacy archives recover known timeframes from validated source IDs",
+  );
+  assert(
+    (await memory.status(recallChat.id)).records.some((record) => record.timeline?.includes("Spring 14")),
+    "legacy inspector timelines use the same fallback",
+  );
+  assert.equal(requests.length, beforeLegacyTimeline, "legacy timeline recovery makes no model or embedding calls");
+
+  const excerptRecords = (await memory.status(recallChat.id)).records.filter((record) => record.kind === "excerpt");
+  assert(excerptRecords.length > 0, "zero limits are tested with an existing excerpt archive");
+  for (const record of excerptRecords) {
+    assert.equal(record.startIndex, recallSource.findIndex((message) => message.id === record.messageIds[0]) + 1);
+    assert.equal(record.endIndex, recallSource.findIndex((message) => message.id === record.messageIds.at(-1)) + 1);
+  }
+  const fullScene = (await memory.status(recallChat.id)).records.find(
+    (record) => record.kind === "scene" && record.status === "closed",
+  );
+  assert(fullScene);
+  assert.equal(fullScene.startIndex, recallSource.findIndex((message) => message.id === fullScene.startMessageId) + 1);
+  assert.equal(fullScene.endIndex, recallSource.findIndex((message) => message.id === fullScene.endMessageId) + 1);
+  await memory.updateSettings(recallChat.id, { retrieveMinMessages: 0, retrieveMaxMessages: 0 });
+  await assert.rejects(
+    memory.validatePrepared(recallChat.id, recallSource, exactRecall.receipt),
+    /settings or summary corrections changed/,
+    "a previously prepared prompt cannot keep cached excerpts after disabling recall",
+  );
+  const noExcerpts = await memory.prepare({
+    chatId: recallChat.id,
+    messages: recallSource,
+    audienceCharacterIds: [],
+    budgetTokens: 1800,
+    readOnly: true,
+  });
+  assert.equal(noExcerpts.recalledMessages, null);
+  assert.deepEqual(noExcerpts.receipt.recalledMessageIds, []);
+  assert.equal(noExcerpts.chatSummary, exactRecall.chatSummary, "zero excerpt limits preserve required continuity");
+  assert.equal(noExcerpts.currentSceneSummary, exactRecall.currentSceneSummary);
+  assert(noExcerpts.recalledScenes, "zero excerpt limits still permit relevant scene recall");
+  assert(
+    excerptRecords.every(
+      (record) =>
+        !noExcerpts.recalledRecordIds.includes(record.id) && !(record.id in noExcerpts.receipt.recordRevisions),
+    ),
+    "disabled excerpt recall contributes no cached record dependencies",
+  );
+  const { createAdvancedMemoryPlacement, resolveAdvancedMemoryPrompt } =
+    await import("../../packages/server/src/services/prompt/advanced-memory-prompt.js");
+  for (const format of ["xml", "markdown", "none"] as const) {
+    const placements = [
+      createAdvancedMemoryPlacement("chat_summary", format),
+      createAdvancedMemoryPlacement("recalled_scenes", format),
+      createAdvancedMemoryPlacement("recalled_messages", format),
+    ];
+    const messages = [{ role: "system", content: placements.map((placement) => placement.token).join("\n") }];
+    const withoutExcerpts = resolveAdvancedMemoryPrompt(messages, placements, noExcerpts)
+      .map((message) => message.content)
+      .join("\n");
+    assert.doesNotMatch(withoutExcerpts, /Below is a small excerpt|Recalled Messages|recalled_messages/);
+    assert.match(withoutExcerpts, /Below is a summary|Below are earlier scenes/);
+    assert.match(
+      resolveAdvancedMemoryPrompt(messages, placements, exactRecall)
+        .map((message) => message.content)
+        .join("\n"),
+      /Below is a small excerpt/,
+      "nonzero limits retain historical excerpt prompt placement",
+    );
+  }
+  await memory.updateSettings(recallChat.id, { retrieveMinMessages: 0, retrieveMaxMessages: 3 });
+  const optionalExcerpts = await memory.prepare({
+    chatId: recallChat.id,
+    messages: recallSource,
+    audienceCharacterIds: [],
+    budgetTokens: 1800,
+    readOnly: true,
+  });
+  assert(optionalExcerpts.recalledMessages?.includes("returns on Tuesday"), "0/N can still recall relevant excerpts");
+  assert(optionalExcerpts.receipt.recalledMessageIds.length > 0);
+  assert.deepEqual(
+    (await memory.status(recallChat.id)).records.filter((record) => record.kind === "excerpt"),
+    excerptRecords,
+    "changing excerpt limits does not delete or rewrite archived records",
+  );
   for (const message of recallSource.slice(-4))
     await chats.updateMessageContent(message.id, "What is the temperature and pressure inside Jupiter's atmosphere?");
   const unrelatedSource = await chats.listMessages(recallChat.id);
@@ -543,6 +655,7 @@ try {
   assert.equal(unrelated.recalledScenes, null, "common words alone do not recall unrelated scenes");
   assert.equal(unrelated.recalledMessages, null, "common words alone do not recall unrelated source messages");
   assert(unrelated.receipt.reasons.includes("no-relevant-recall"));
+  await memory.updateSettings(recallChat.id, { retrieveMinMessages: 1, retrieveMaxMessages: 3 });
 
   const resumeChat = await chats.create({
     name: "Paid summary resume",
@@ -649,7 +762,12 @@ try {
     audienceCharacterIds: [],
     budgetTokens: 1000,
   });
-  assert.equal(importedPrepared.chatSummary, "IMPORTED_CONTINUITY_CORRECTION");
+  assert(importedPrepared.chatSummary?.endsWith("\nIMPORTED_CONTINUITY_CORRECTION"));
+  assert(
+    importedPrepared.chatSummary.includes(
+      "source timeframe (summary corrections take precedence): unknown (use message order)",
+    ),
+  );
   assert.equal(
     importedPrepared.receipt.checkpointId,
     importedContinuity.id,
@@ -676,9 +794,8 @@ try {
     audienceCharacterIds: [],
     budgetTokens: 1000,
   });
-  assert.equal(
-    reorderedPrepared.chatSummary,
-    "IMPORTED_CONTINUITY_CORRECTION",
+  assert(
+    reorderedPrepared.chatSummary?.endsWith("\nIMPORTED_CONTINUITY_CORRECTION"),
     "an imported dependent before duplicate sources resolves their final local IDs",
   );
 
@@ -1014,6 +1131,23 @@ try {
   routeApp.decorate("db", db);
   await routeApp.register(advancedMemoryRoutes, { prefix: "/api/chats" });
   try {
+    for (const limits of [
+      { retrieveMinMessages: 0, retrieveMaxMessages: 0 },
+      { retrieveMinMessages: 0, retrieveMaxMessages: 3 },
+      { retrieveMinMessages: 1, retrieveMaxMessages: 3 },
+    ]) {
+      const updated = await routeApp.inject({
+        method: "PATCH",
+        url: `/api/chats/${recallChat.id}/advanced-memory/settings`,
+        payload: limits,
+      });
+      assert.equal(updated.statusCode, 200, "zero and positive excerpt limits are accepted by the settings API");
+      const persisted = await routeApp.inject({ method: "GET", url: `/api/chats/${recallChat.id}/advanced-memory` });
+      assert.equal(persisted.statusCode, 200);
+      assert.equal(persisted.json().settings.retrieveMinMessages, limits.retrieveMinMessages);
+      assert.equal(persisted.json().settings.retrieveMaxMessages, limits.retrieveMaxMessages);
+      assert.equal(persisted.json().settings.enabled, true, "zero limits do not reset the remaining settings");
+    }
     const invalidReindex = await routeApp.inject({
       method: "POST",
       url: `/api/chats/${joinedChat.id}/advanced-memory/reindex`,
@@ -1074,6 +1208,27 @@ try {
         })
       ).statusCode,
       404,
+    );
+    const beforeReset = await memory.status(chat.id);
+    assert.deepEqual(
+      new Set(beforeReset.records.map((record) => record.kind)),
+      new Set(["scene", "continuity", "temporary", "excerpt"]),
+    );
+    const resetSource = await chats.listMessages(chat.id);
+    const resetResponse = await routeApp.inject({ method: "DELETE", url: `/api/chats/${chat.id}/advanced-memory` });
+    assert.equal(resetResponse.statusCode, 200);
+    const cleared = resetResponse.json();
+    assert.deepEqual(cleared.records, []);
+    assert.equal(cleared.job.status, "idle");
+    assert.equal(cleared.job.completed, 0);
+    assert.equal(cleared.job.processedMessageId, undefined);
+    assert.equal(cleared.job.classifiedMessageId, undefined);
+    assert.equal(cleared.latestReceipt, undefined);
+    assert.deepEqual(cleared.settings, beforeReset.settings);
+    assert.deepEqual(await chats.listMessages(chat.id), resetSource, "reset never edits the original transcript");
+    assert.deepEqual(
+      await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.chatId, chat.id)),
+      [],
     );
   } finally {
     await routeApp.close();
@@ -1267,6 +1422,86 @@ try {
     !(await memory.status(raceChat.id)).records.some((record) => record.kind === "scene" && record.content),
     "a stale model result is not committed",
   );
+
+  const resetChat = await chats.create({
+    name: "Reset during preparation",
+    mode: "roleplay",
+    characterIds: ["alice"],
+    connectionId: connection!.id,
+  });
+  assert(resetChat);
+  await chats.createMessagesBatch(resetChat.id, [
+    { role: "user", content: "Keep this original compass promise." },
+    { role: "assistant", content: "SCENE_CHANGE The journey resumes." },
+  ]);
+  const resetSettings = {
+    ...DEFAULT_ADVANCED_MEMORY_SETTINGS,
+    enabled: true,
+    maxContextTokens: 4096,
+    summaryBudgetTokens: 512,
+    knowledgeStarts: { alice: null },
+  };
+  await chats.patchMetadata(resetChat.id, { groupChatMode: "individual", advancedMemory: resetSettings });
+  const beforeResetSource = await chats.listMessages(resetChat.id);
+  const emptyArchivePrompt = await memory.prepare({
+    chatId: resetChat.id,
+    messages: beforeResetSource,
+    audienceCharacterIds: ["alice"],
+    budgetTokens: 1800,
+    readOnly: true,
+  });
+  assert.deepEqual(emptyArchivePrompt.receipt.recordRevisions, {});
+  await chats.updateMessageExtra(beforeResetSource.at(-1)!.id, {
+    advancedMemoryReceipt: emptyArchivePrompt.receipt,
+    unrelatedExtra: "preserve me",
+  });
+  const preservedResetSource = await chats.listMessages(resetChat.id);
+  assert((await memory.status(resetChat.id)).latestReceipt);
+  let signalResetSummary!: () => void;
+  let releaseResetSummary!: () => void;
+  let finishedResetSummary!: () => void;
+  const resetSummaryEntered = new Promise<void>((resolve) => (signalResetSummary = resolve));
+  const heldResetSummary = new Promise<void>((resolve) => (releaseResetSummary = resolve));
+  const resetSummaryFinished = new Promise<void>((resolve) => (finishedResetSummary = resolve));
+  beforeSummary = async () => {
+    signalResetSummary();
+    await heldResetSummary;
+    finishedResetSummary();
+  };
+  const runningBeforeReset = memory.initialize(resetChat.id);
+  const cancelledByReset = assert.rejects(runningBeforeReset, /reset|abort/iu);
+  try {
+    await resetSummaryEntered;
+    const resetting = memory.reset(resetChat.id);
+    await assert.rejects(memory.initialize(resetChat.id), /being reset/iu);
+    const resetResult = await resetting;
+    await cancelledByReset;
+    assert.equal(resetResult.job.status, "idle", "old cancellation cleanup cannot overwrite reset progress");
+    assert.deepEqual(resetResult.settings, resetSettings, "reset preserves confirmed character knowledge boundaries");
+    assert.equal(resetResult.latestReceipt, undefined);
+    await assert.rejects(
+      memory.validatePrepared(resetChat.id, preservedResetSource, emptyArchivePrompt.receipt),
+      /settings or summary corrections changed/iu,
+      "reset also invalidates cached prompts that depended on no archive record",
+    );
+  } finally {
+    releaseResetSummary();
+    await runningBeforeReset.catch(() => undefined);
+  }
+  await resetSummaryFinished;
+  assert.deepEqual(
+    await db.select().from(advancedMemoryRecords).where(eq(advancedMemoryRecords.chatId, resetChat.id)),
+    [],
+    "a cancelled provider response cannot recreate records or partial summary work after reset",
+  );
+  assert.deepEqual(await chats.listMessages(resetChat.id), preservedResetSource);
+  assert.equal((await memory.status(resetChat.id)).job.status, "idle");
+  await memory.initialize(resetChat.id);
+  const restarted = await memory.status(resetChat.id);
+  assert.equal(restarted.job.status, "ready", "Prepare can rebuild memory from the untouched chat after reset");
+  assert(restarted.records.some((record) => record.kind === "scene" && record.content));
+  assert(restarted.records.some((record) => record.kind === "excerpt"));
+  assert.deepEqual(await chats.listMessages(resetChat.id), preservedResetSource);
   console.info(
     "Advanced Memory core regression passed (800 messages, resume, scope, compaction, previews, corrections and races).",
   );

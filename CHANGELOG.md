@@ -4,6 +4,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Advanced Memory Recall now explains automatic context compression and summary limits, supports optional or disabled moving-context excerpts, and shares its setup with the Roleplay wizard. Existing chats get a preparation reminder; preparing/resuming responds immediately, with matching drawer controls and an improved Professor Mari running animation (#6159).
+- Advanced Memory gives reasoning models a separate, bounded response allowance for short summaries and rejects incomplete output instead of saving it as finished memory. Its archive shows numbered scene summaries with story timeframes carried into recalled context, full source-message inspection, search, and confirmed deletion to restart preparation while preserving the original chat and settings (#6159).
+
 - Character Tracker now keeps the members of a multi-character card apart. A scenario card that describes several people used to collapse into one tracked entry named after the card; each person now keeps their own name, state, and portrait across turns. Cards that mark their cast with `[CHARACTER: Name]` headers or repeated `Name:` fields are recognized up front. A stale entry carrying the card's title is cleared when a member replaces it, while manually added characters keep their identities (#6104).
 
 - The native-dice browser regression has a longer total test budget for its multi-stage WebKit scenario, while individual action and assertion timeouts remain unchanged (#6141).

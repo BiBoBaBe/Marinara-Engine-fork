@@ -32,7 +32,7 @@ export function useAdvancedMemoryStatus(chatId: string, enabled = true) {
 type AdvancedMemoryAction =
   | { action: "settings"; settings: Partial<AdvancedMemorySettings> }
   | { action: "initialize"; settings?: Partial<AdvancedMemorySettings>; debugMode?: boolean }
-  | { action: "cancel" | "reindex" }
+  | { action: "cancel" | "reindex" | "reset" }
   | { action: "record"; recordId: string; patch: { content?: string; enabled?: boolean } }
   | { action: "import"; envelope: unknown };
 
@@ -54,6 +54,8 @@ export function useAdvancedMemoryAction(chatId: string) {
           });
         case "import":
           return api.post<AdvancedMemoryStatus>(`${base}/import`, request.envelope);
+        case "reset":
+          return api.delete<AdvancedMemoryStatus>(base);
         default:
           return api.post<AdvancedMemoryStatus>(`${base}/${request.action}`, {});
       }

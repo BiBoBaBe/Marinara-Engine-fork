@@ -39,7 +39,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { api } from "../../lib/api-client";
-import { appendLocalSidecarConnectionOption } from "../../lib/connection-filters";
+import { appendLocalSidecarConnectionOption, filterLanguageGenerationConnections } from "../../lib/connection-filters";
 import { resolveConversationSelfieSetup } from "../../lib/conversation-selfie-setup";
 import {
   captureChatWizardDefaults,
@@ -107,6 +107,7 @@ import {
   type AgentAddSpriteSubject,
 } from "./AgentAddSetupFields";
 import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
+import { AdvancedMemorySettings } from "./AdvancedMemorySettings";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 // ─── Step definitions ─────────────────────────
@@ -3119,43 +3120,14 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
     const agentAddIntervalMeta = agentAddPreview
       ? getAgentRunIntervalMeta(agentAddPreview.agent.id, agentAddPreview.agent.builtIn)
       : null;
-
-    if (agentConfigsLoading || installedAgentsLoading) {
-      return (
-        <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-[var(--muted-foreground)]">
-          <Loader2 size="0.875rem" className="animate-spin" />
-          {localizeUi("ui.chat.roleplaysetupwizard.loadingAgents")}
-        </div>
-      );
-    }
-
-    if (availableAgents.length === 0) {
-      return (
-        <div
-          data-component="ChatSetupWizard.AgentEmptyState"
-          className="flex min-h-52 flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-5 py-8 text-center"
-        >
-          <p className="max-w-sm text-sm font-medium leading-6 text-[var(--muted-foreground)]">
-            {localizeUi("ui.chat.roleplaysetupwizard.noAgentsDownloadedYetHeadToAgentsTabAnd")}
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              onFinish();
-              openRightPanel("agents");
-            }}
-            className={cn(WIZARD_PRIMARY_BUTTON_CLASS, "gap-2")}
-          >
-            <Sparkles size="0.8125rem" />
-            {localizeUi("ui.chat.roleplaysetupwizard.openAgentsTab")}
-          </button>
-        </div>
-      );
-    }
+    const agentsLoading = agentConfigsLoading || installedAgentsLoading;
 
     return (
       <div className="space-y-3">
         <button
+          type="button"
+          role="switch"
+          aria-checked={agentsEnabled}
           onClick={() =>
             updateMeta.mutate({
               id: chat.id,
@@ -3189,7 +3161,46 @@ function RoleplaySetupWizard({ chat, onFinish, defaultsApplied, defaultsAction }
           </div>
         </button>
 
-        {agentsEnabled && (
+        {import.meta.env.VITE_MARINARA_LITE !== "true" && (
+          <AdvancedMemorySettings
+            variant="wizard"
+            chatId={chat.id}
+            metadataSettings={metadata.advancedMemory}
+            individual={metadata.groupChatMode === "individual"}
+            characters={chatCharIds.map((id) => ({ id, name: charInfoMap.get(id)?.name ?? id }))}
+            connections={filterLanguageGenerationConnections((connections ?? []) as ConnectionSetupOption[])}
+            hasHistory={!!chat.lastMessageAt}
+          />
+        )}
+
+        {agentsLoading && (
+          <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-[var(--muted-foreground)]">
+            <Loader2 size="0.875rem" className="animate-spin" />
+            {localizeUi("ui.chat.roleplaysetupwizard.loadingAgents")}
+          </div>
+        )}
+        {!agentsLoading && availableAgents.length === 0 && (
+          <div
+            data-component="ChatSetupWizard.AgentEmptyState"
+            className="flex min-h-52 flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-[var(--border)] bg-[var(--secondary)]/35 px-5 py-8 text-center"
+          >
+            <p className="max-w-sm text-sm font-medium leading-6 text-[var(--muted-foreground)]">
+              {localizeUi("ui.chat.roleplaysetupwizard.noAgentsDownloadedYetHeadToAgentsTabAnd")}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                onFinish();
+                openRightPanel("agents");
+              }}
+              className={cn(WIZARD_PRIMARY_BUTTON_CLASS, "gap-2")}
+            >
+              <Sparkles size="0.8125rem" />
+              {localizeUi("ui.chat.roleplaysetupwizard.openAgentsTab")}
+            </button>
+          </div>
+        )}
+        {!agentsLoading && availableAgents.length > 0 && agentsEnabled && (
           <>
             {agentAddPreview && (
               <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-3">

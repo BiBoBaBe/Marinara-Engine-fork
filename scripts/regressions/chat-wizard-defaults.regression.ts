@@ -17,6 +17,13 @@ const chat = {
     spriteCharacterIds: ["a"],
     conversationSetupComplete: true,
     summary: "generated history",
+    advancedMemory: {
+      enabled: true,
+      maxContextTokens: 12000,
+      knowledgeStarts: { a: "source-chat-message" },
+      knowledgeConfirmed: true,
+    },
+    advancedMemoryState: { status: "running", id: "source-chat-job" },
   }),
 } as unknown as Chat;
 const saved = captureChatWizardDefaults(chat, { autonomousMessages: false, characterCommands: true });
@@ -28,6 +35,12 @@ assert.deepEqual(saved.metadata.presetChoices, { path: "left" });
 assert.equal(saved.metadata.autonomousMessages, false);
 assert.ok(!Object.hasOwn(saved.metadata, "conversationSetupComplete"));
 assert.ok(!Object.hasOwn(saved.metadata, "summary"));
+assert.ok(!Object.hasOwn(saved.metadata, "advancedMemoryState"));
+const memoryDefaults = saved.metadata.advancedMemory as Record<string, unknown>;
+assert.equal(memoryDefaults.enabled, true);
+assert.equal(memoryDefaults.maxContextTokens, 12000);
+assert.deepEqual(memoryDefaults.knowledgeStarts, {});
+assert.equal(memoryDefaults.knowledgeConfirmed, false);
 const initial = captureChatWizardDefaults({ ...chat, name: "Fresh", metadata: {} });
 const reset = wizardDefaultsMetadataPatch(saved, initial);
 assert.equal(reset.autonomousMessages, null);

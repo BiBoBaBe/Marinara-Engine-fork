@@ -4350,21 +4350,22 @@ export function ChatSettingsDrawer({
             individual={metadata.groupChatMode === "individual"}
             characters={chatCharIds.map((id) => ({ id, name: charNameMap.get(id) ?? id }))}
             connections={textConnectionsList}
+            hasHistory={!!chat.lastMessageAt}
           />
         )}
-        <AgentSettingsActionButton
+        <button
           type="button"
           onClick={() =>
             setMemoryView((current) =>
               advancedMemoryEnabled ? (current === "advanced" ? null : "advanced") : "standard",
             )
           }
-          className="w-full"
+          className="mari-chrome-control flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-50"
           aria-expanded={advancedMemoryEnabled ? memoryView === "advanced" : undefined}
         >
           <Brain size="0.75rem" />
           {localizeUi("ui.chat.chatsettingsdrawer.accessMemoriesForThisChat")}
-        </AgentSettingsActionButton>
+        </button>
         {advancedMemoryEnabled && memoryView === "advanced" && (
           <AdvancedMemoryInspector
             chatId={chat.id}
@@ -9453,7 +9454,11 @@ export function ChatSettingsDrawer({
               style={{ order: CHAT_SETTINGS_ORDER.memoryRecall }}
               label={localizeUi("ui.chat.chatsettingsdrawer.memoryRecall")}
               icon={<Brain size="0.875rem" />}
-              help={localizeUi("ui.chat.chatsettingsdrawer.whenEnabledRelevantFragmentsFromThisChatAreAutomatically")}
+              help={localizeUi(
+                isRoleplayMode
+                  ? "chat.advancedMemory.recallHelp"
+                  : "ui.chat.chatsettingsdrawer.whenEnabledRelevantFragmentsFromThisChatAreAutomatically",
+              )}
             >
               {renderMemoryRecallControls(metadata.sceneStatus === "active")}
             </Section>

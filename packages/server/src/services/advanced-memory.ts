@@ -23,7 +23,7 @@ import { advancedMemoryRecords } from "../db/schema/advanced-memory.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { tryParseJsonRecord } from "../lib/json-repair.js";
 import { newId, now } from "../utils/id-generator.js";
-import { createChatsStorage } from "./storage/chats.storage.js";
+import { createChatsStorage, withChatMetadataPatchQueue } from "./storage/chats.storage.js";
 import { createCharactersStorage } from "./storage/characters.storage.js";
 import { createConnectionsStorage } from "./storage/connections.storage.js";
 import { createAppSettingsStorage } from "./storage/app-settings.storage.js";
@@ -34,6 +34,7 @@ import {
   resolveChatSummaryTemperatureOptions,
 } from "./chat-summary/connection-resolution.js";
 import { resolveBaseUrl } from "./generation/connection-base-url.js";
+import { describeEmptyModelResponse } from "./generation/empty-response-reason.js";
 import {
   parseChatSummaryResult,
   resolveChatSummaryPrompt,
@@ -97,7 +98,10 @@ type Context = {
   recordCache?: StoredRecord[];
 };
 type Scene = { id: string; start: number; end: number; closed: boolean };
-const activeOperations = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+const activeOperations = new Map<
+  string,
+  { controller: AbortController; promise: Promise<void>; started?: Promise<void>; resetting?: boolean }
+>();
 const coordinatorQueues = new Map<string, Promise<unknown>>();
 const IDLE_JOB: AdvancedMemoryJob = { status: "idle", stage: "idle", completed: 0, total: 0, error: null };
 // Lexical fallback must not manufacture relevance from ordinary connective words or source labels.
@@ -174,11 +178,20 @@ export function advancedMemorySourceFingerprint(messages: readonly AdvancedMemor
 }
 
 function policyFingerprint(ctx: Context): string {
-  return hash([ctx.individual, ctx.characterIds, ctx.settings.knowledgeStarts, ctx.settings.narratorCharacterId]);
+  return hash([
+    ctx.individual,
+    ctx.characterIds,
+    ctx.settings.knowledgeStarts,
+    ctx.settings.narratorCharacterId,
+    ...(object(ctx.metadata.advancedMemoryState).resetRevision
+      ? [object(ctx.metadata.advancedMemoryState).resetRevision]
+      : []),
+  ]);
 }
 
 function preparationPolicyRevision(ctx: Context): string {
   return hash([
+    "timeframe-labels-v1", // Invalidate cached prompts without rebuilding valid source archives.
     policyFingerprint(ctx),
     ctx.settings,
     ctx.metadata.summaryEntries,
@@ -305,6 +318,65 @@ function tokenSize(content: string): number {
 }
 function historySize(ctx: Context, messages: readonly AdvancedMemoryMessage[]): number {
   return tokenSize(logMessages(ctx, messages)) + messages.length * 12;
+}
+
+/** Quote story-time anchors, without turning relative narration or message timestamps into calendar dates. */
+function sourceTimeline(source: readonly AdvancedMemoryMessage[]): string | null {
+  const anchors = source
+    .flatMap((message) => {
+      const labeled = [
+        ...message.content.matchAll(/(?:^|\n)[ \t]*(?:Date|Story time|Time):[ \t]*([^\n]{1,100})/giu),
+      ].map((match) => match[1]!.trim());
+      if (labeled.length) return labeled.slice(0, 2).join(", ");
+      const opening = message.content.match(
+        /^\*{0,2}(?:On )?((?:\d{4}-\d{2}-\d{2}|(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}(?:st|nd|rd|th)?(?:,? \d{4})?|(?:the )?(?:following|next|previous) (?:morning|afternoon|evening|night|day|week|month|year)|(?:that|this) (?:morning|afternoon|evening|night)|(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|several) (?:minutes?|hours?|days?|weeks?|months?|years?) (?:later|earlier|ago)))\b(?=\s*[,.:;—\n*]|\s*$)/iu,
+      );
+      return opening ? [opening[1]!] : [];
+    })
+    .filter((value, index, values) => value && value !== values[index - 1]);
+  if (!anchors.length) return null;
+  // A bounded start/end anchor survives long scenes; the summary retains any important intervening changes.
+  return anchors.length === 1 ? anchors[0]! : `${anchors[0]} → ${anchors.at(-1)}`;
+}
+
+function withSourceTimelines(records: StoredRecord[], source: readonly AdvancedMemoryMessage[]): StoredRecord[] {
+  const byId = new Map(source.map((message) => [message.id, message]));
+  return records.map((record) => ({
+    ...record,
+    timeline:
+      record.timeline ??
+      sourceTimeline(
+        record.messageIds.map((id) => byId.get(id)).filter((message): message is AdvancedMemoryMessage => !!message),
+      ),
+  }));
+}
+
+function renderMemoryText(
+  indexes: Map<string, number>,
+  messageIds: readonly string[],
+  content: string,
+  timeline: string | null,
+  hasCorrections = false,
+): string {
+  const start = (indexes.get(messageIds[0]!) ?? 0) + 1;
+  const end = (indexes.get(messageIds.at(-1)!) ?? start - 1) + 1;
+  const label = hasCorrections ? "source timeframe (summary corrections take precedence)" : "story timeframe";
+  return `Messages #${start}–#${end}; ${label}: ${timeline ?? "unknown (use message order)"}.\n${content}`;
+}
+
+function renderMemoryRecord(record: StoredRecord | null, indexes: Map<string, number>): string {
+  return record
+    ? renderMemoryText(
+        indexes,
+        record.messageIds,
+        record.content,
+        record.timeline,
+        record.manualOverride ||
+          record.dependencies.some(
+            (dependency) => dependency.id.startsWith("summary:") || dependency.id.startsWith("record:"),
+          ),
+      )
+    : "";
 }
 
 function readStored(raw: Record<string, unknown>): StoredRecord {
@@ -494,17 +566,18 @@ export function createAdvancedMemoryService(db: DB) {
   }
 
   async function progress(ctx: Context, patch: Partial<AdvancedMemoryJob>, options: AdvancedMemoryOperationOptions) {
-    let emitted = IDLE_JOB;
+    let emitted: AdvancedMemoryJob | null = null;
     await chats.patchMetadata(
       ctx.chatId,
       (current) => {
         const previous = object(current.advancedMemoryState);
+        if (previous.resetRevision !== object(ctx.metadata.advancedMemoryState).resetRevision) return {};
         emitted = { ...IDLE_JOB, ...previous, ...patch } as AdvancedMemoryJob;
         return { advancedMemoryState: emitted };
       },
       { touchUpdatedAt: false },
     );
-    options.onProgress?.(emitted);
+    if (emitted) options.onProgress?.(emitted);
   }
 
   async function connection(ctx: Context, helper: boolean, initial = false) {
@@ -560,15 +633,12 @@ export function createAdvancedMemoryService(db: DB) {
       modelLimit ?? Infinity,
     );
     const requested = typeof ctx.metadata.summaryMaxTokens === "number" ? ctx.metadata.summaryMaxTokens : 4096;
+    // Retained memory stays short; reasoning and visible text share the provider's completion allowance.
     const outputBudget = Math.max(
       1,
-      Math.min(
-        Math.floor(budget * 0.8),
-        requested,
-        resolved.provider.maxTokensOverrideValue ?? requested,
-        Math.floor(window / 3),
-      ),
+      Math.min(requested, resolved.provider.maxTokensOverrideValue ?? requested, Math.floor(window / 3)),
     );
+    const summaryTarget = Math.max(1, Math.min(Math.floor(budget * 0.8), outputBudget));
     const inputBudget = Math.floor(window * 0.85) - outputBudget - tokenSize(prompt + combinePrompt) - 256;
     if (inputBudget < 128)
       throw new Error("The summary prompt and output reserve do not fit this model's context limit");
@@ -589,7 +659,7 @@ export function createAdvancedMemoryService(db: DB) {
       const outputs: string[] = [];
       for (const batch of batches) {
         abortIfNeeded(options.signal);
-        const instruction = `${combinePrompt}\n\nSummarize only the supplied eligible source material. Preserve corrections and distinguish plans, beliefs, and events. Do not add facts from outside these sources. Keep the result under ${outputBudget} tokens.\n\n${batch.join("\n\n")}`;
+        const instruction = `${combinePrompt}\n\nSummarize only the supplied eligible source material. Preserve corrections, chronological order and explicit story-time anchors; distinguish plans, beliefs, and events. An unknown story timeframe stays unknown; source message numbers show order, not elapsed time. Do not add facts from outside these sources. Keep the result under ${summaryTarget} tokens.\n\n${batch.join("\n\n")}`;
         logDebugOverride(
           options.debugMode === true || process.env.DEBUG_AGENTS === "true",
           "[advanced-memory] Summary prompt for %s (%s): %s\n%s",
@@ -601,6 +671,7 @@ export function createAdvancedMemoryService(db: DB) {
         const completionOptions = {
           model: resolved.model,
           ...resolveChatSummaryTemperatureOptions(resolved),
+          ...(resolved.enabledParameters?.reasoningEffort === false ? {} : { reasoningEffort: "none" as const }),
           maxTokens: outputBudget,
           maxContext: window,
           signal: options.signal,
@@ -624,7 +695,19 @@ export function createAdvancedMemoryService(db: DB) {
             completionOptions,
           );
           text = parseChatSummaryResult(result.content ?? "").summary;
-          if (!text) throw new Error("The summary model returned no summary");
+          if (!text)
+            throw new Error(
+              `The summary model returned no summary. ${describeEmptyModelResponse({
+                finishReason: result.finishReason,
+                usage: result.usage,
+                maxTokens: outputBudget,
+                hadThinking: (result.usage?.completionReasoningTokens ?? 0) > 0,
+              })}`,
+            );
+          if (result.finishReason === "length")
+            throw new Error(
+              "The summary model reached its output limit before completing the summary. Raise Max Tokens or lower Reasoning Effort, then resume preparation.",
+            );
           // Save a completed paid response even if cancellation arrived with it. Source/settings
           // validation still applies; only incomplete work is stored and it is never prompt content.
           await put(ctx, { ...cacheOwner, content: "" }, { ...options, signal: undefined });
@@ -673,14 +756,7 @@ export function createAdvancedMemoryService(db: DB) {
       audienceCharacterIds: audience,
       content,
       title: kind === "continuity" ? "Continuity" : kind === "temporary" ? "Ongoing scene" : "Scene",
-      timeline:
-        source
-          .map(
-            (message) =>
-              message.content.match(/(?:^|\n)(?:Date|Story time|Time):[ \t]*([^\n]{1,100})/iu)?.[1] ??
-              message.content.match(/\b(the following morning|the next day|that evening)\b/iu)?.[0],
-          )
-          .find(Boolean) ?? null,
+      timeline: sourceTimeline(source),
       enabled: true,
       manualOverride: false,
       sourceFingerprint: fingerprint(ctx, source, audience),
@@ -1136,6 +1212,8 @@ export function createAdvancedMemoryService(db: DB) {
 
   function initialize(chatId: string, options: AdvancedMemoryOperationOptions = {}): Promise<void> {
     const current = activeOperations.get(chatId);
+    if (current?.resetting)
+      return Promise.reject(new Error("Advanced Memory is being reset; prepare again when it finishes"));
     if (current)
       return (async () => {
         abortIfNeeded(options.signal);
@@ -1149,6 +1227,8 @@ export function createAdvancedMemoryService(db: DB) {
           // This caller owns its wait; only the initiating caller or explicit Cancel owns shared work.
           await Promise.race([
             (async () => {
+              await current.started;
+              abortIfNeeded(options.signal);
               if (options.blocking) await progress(await context(chatId), { blocking: true }, options);
               await current.promise;
             })(),
@@ -1161,7 +1241,19 @@ export function createAdvancedMemoryService(db: DB) {
       })();
     const controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
-    const promise = serialized(chatId, () => initializeImpl(chatId, { ...options, signal }))
+    let acknowledgeStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      acknowledgeStart = resolve;
+    });
+    const operationOptions = {
+      ...options,
+      signal,
+      onProgress: (event: AdvancedMemoryJob) => {
+        acknowledgeStart();
+        options.onProgress?.(event);
+      },
+    };
+    const promise = serialized(chatId, () => initializeImpl(chatId, operationOptions))
       .catch(async (error: unknown) => {
         const ctx = await context(chatId).catch(() => null);
         if (ctx)
@@ -1171,14 +1263,15 @@ export function createAdvancedMemoryService(db: DB) {
               status: signal.aborted ? "cancelled" : missingKnowledge(ctx).length ? "needs_confirmation" : "error",
               error: signal.aborted ? null : error instanceof Error ? error.message : "Memory preparation failed",
             },
-            options,
+            operationOptions,
           );
         throw error;
       })
       .finally(() => {
+        acknowledgeStart();
         if (activeOperations.get(chatId)?.controller === controller) activeOperations.delete(chatId);
       });
-    activeOperations.set(chatId, { controller, promise });
+    activeOperations.set(chatId, { controller, promise, started });
     return promise;
   }
 
@@ -1231,6 +1324,7 @@ export function createAdvancedMemoryService(db: DB) {
     historical: boolean,
     options: PrepareAdvancedMemoryInput,
   ): Promise<StoredRecord | null> {
+    const indexes = new Map(ctx.messages.map((message, index) => [message.id, index]));
     const entrySource = kind === "continuity" ? allowed(ctx, ctx.messages, audience) : source;
     const entries = kind === "continuity" ? sourceEntries(ctx, entrySource, historical) : [];
     if (!source.length && !entries.length) return null;
@@ -1289,7 +1383,7 @@ export function createAdvancedMemoryService(db: DB) {
           dependenciesValid(record, available, ctx),
       )
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-    if (decision?.enabled && tokenSize(decision.content) <= budget) return decision;
+    if (decision?.enabled && tokenSize(renderMemoryRecord(decision, indexes)) <= budget) return decision;
     if (decision)
       dependencies.push({
         id: `record:${decision.id}`,
@@ -1305,11 +1399,14 @@ export function createAdvancedMemoryService(db: DB) {
         recordValid(ctx, record) &&
         dependenciesValid(record, available, ctx),
     );
-    if (cached && tokenSize(cached.content) <= budget) return cached;
+    if (cached && tokenSize(renderMemoryRecord(cached, indexes)) <= budget) return cached;
+    const contentBudget = budget - tokenSize(renderMemoryRecord({ ...candidate, content: "" }, indexes));
+    if (contentBudget < 1)
+      throw new Error("The story timeframe and source labels exceed the summary budget; increase the summary budget");
     const parts = decision?.enabled
-      ? [`User-corrected memory (honor its corrections):\n${decision.content}`]
+      ? [`User-corrected memory (honor its corrections):\n${renderMemoryRecord(decision, indexes)}`]
       : [
-          ...sceneSummaries.map((record) => record.content),
+          ...sceneSummaries.map((record) => renderMemoryRecord(record, indexes)),
           logMessages(
             ctx,
             source.filter((message) => !covered.has(message.id)),
@@ -1317,7 +1414,7 @@ export function createAdvancedMemoryService(db: DB) {
           ...manualText.map((text) => `User-maintained summary (honor its corrections):\n${text}`),
         ].filter(Boolean);
     if (!parts.length) return null;
-    if (tokenSize(parts.join("\n\n")) <= budget) candidate.content = parts.join("\n\n");
+    if (tokenSize(parts.join("\n\n")) <= contentBudget) candidate.content = parts.join("\n\n");
     else {
       if (options.readOnly)
         throw new Error(
@@ -1328,7 +1425,7 @@ export function createAdvancedMemoryService(db: DB) {
         { id: newId(), blocking: true, status: "running", stage: "compacting", completed: 0, total: 1, error: null },
         options,
       );
-      candidate.content = await summarize(ctx, parts, budget, options, candidate);
+      candidate.content = await summarize(ctx, parts, contentBudget, options, candidate);
     }
     if (!options.readOnly) {
       await put(ctx, candidate, options);
@@ -1363,8 +1460,12 @@ export function createAdvancedMemoryService(db: DB) {
     if (ctx.individual && !audience.length && input.audienceMode !== "owner")
       throw new Error("Individual Advanced Memory requires a responding character");
     const eligible = allowed(ctx, sources, audience);
-    const available = (await operationRecords(ctx)).filter((record) => recordValid(ctx, record));
+    const available = withSourceTimelines(
+      (await operationRecords(ctx)).filter((record) => recordValid(ctx, record)),
+      sources,
+    );
     const indexes = new Map(sources.map((message, index) => [message.id, index]));
+    const summarySize = (record: StoredRecord | null) => tokenSize(renderMemoryRecord(record, indexes));
     const budget = Math.floor(input.budgetTokens) - 192; // Reserve component introductions and source labels; the caller rechecks the complete preset.
     if (!Number.isFinite(budget) || budget < 128)
       throw new Error("The preset leaves too little context for Roleplay history and memory");
@@ -1398,7 +1499,7 @@ export function createAdvancedMemoryService(db: DB) {
           record.kind === "continuity" &&
           record.enabled &&
           audienceMatches(record, audience) &&
-          tokenSize(record.content) <= summaryBudget &&
+          summarySize(record) <= summaryBudget &&
           dependenciesValid(record, available, ctx),
       )
       .map((record) => ({
@@ -1424,7 +1525,7 @@ export function createAdvancedMemoryService(db: DB) {
     const scenes = available
       .filter((record) => record.kind === "scene" && record.id === record.sceneId && record.status === "closed")
       .sort((a, b) => indexes.get(a.endMessageId)! - indexes.get(b.endMessageId)!);
-    let needsRollover = historySize(ctx, live) + tokenSize(continuity?.content ?? "") > budget;
+    let needsRollover = historySize(ctx, live) + summarySize(continuity) > budget;
     for (const scene of scenes) {
       if (!needsRollover) break;
       const end = indexes.get(scene.endMessageId);
@@ -1450,20 +1551,17 @@ export function createAdvancedMemoryService(db: DB) {
       receipt.reasons.push("scene-boundary-rollover");
     }
     let temporary: StoredRecord | null = null;
-    if (historySize(ctx, live) + tokenSize(continuity?.content ?? "") > budget) {
-      const temporaryBudget = Math.max(
-        64,
-        Math.min(1024, Math.floor((budget - tokenSize(continuity?.content ?? "")) / 3)),
-      );
+    if (historySize(ctx, live) + summarySize(continuity) > budget) {
+      const temporaryBudget = Math.max(64, Math.min(1024, Math.floor((budget - summarySize(continuity)) / 3)));
       let prefixLength = 0;
       while (
         prefixLength < live.length - 1 &&
-        historySize(ctx, live.slice(prefixLength)) + tokenSize(continuity?.content ?? "") + temporaryBudget > budget
+        historySize(ctx, live.slice(prefixLength)) + summarySize(continuity) + temporaryBudget > budget
       )
         prefixLength++;
       if (
         !prefixLength ||
-        historySize(ctx, live.slice(prefixLength)) + tokenSize(continuity?.content ?? "") + temporaryBudget > budget
+        historySize(ctx, live.slice(prefixLength)) + summarySize(continuity) + temporaryBudget > budget
       ) {
         throw new Error(
           "The latest message cannot fit without losing necessary context; increase the Advanced Memory context limit",
@@ -1483,7 +1581,7 @@ export function createAdvancedMemoryService(db: DB) {
       live = live.slice(prefixLength);
       receipt.reasons.push("open-scene-prefix-summary");
     }
-    let used = historySize(ctx, live) + tokenSize(continuity?.content ?? "") + tokenSize(temporary?.content ?? "");
+    let used = historySize(ctx, live) + summarySize(continuity) + summarySize(temporary);
     if (used > budget)
       throw new Error(
         "The prepared Roleplay context still exceeds its budget; choose a larger context or smaller summary budget",
@@ -1502,7 +1600,7 @@ export function createAdvancedMemoryService(db: DB) {
     );
     const candidates = available.filter(
       (record) =>
-        (record.kind === "scene" || record.kind === "excerpt") &&
+        (record.kind === "scene" || (record.kind === "excerpt" && ctx.settings.retrieveMaxMessages > 0)) &&
         record.content &&
         record.enabled &&
         audienceMatches(record, audience) &&
@@ -1565,6 +1663,19 @@ export function createAdvancedMemoryService(db: DB) {
       .sort((a, b) => b.score - a.score);
     const sceneTexts: Array<{ index: number; text: string }> = [];
     const excerptIds = new Set<string>();
+    const excerptTexts = new Map<string, string>();
+    const sceneTimeframes = new Map<string, string>();
+    for (const record of available) {
+      if (
+        record.kind !== "scene" ||
+        !record.content ||
+        !record.enabled ||
+        !record.timeline ||
+        !audienceMatches(record, audience)
+      )
+        continue;
+      for (const id of record.messageIds) sceneTimeframes.set(id, record.timeline);
+    }
     const selectedScenes = new Set<string>();
     const recallBudget = Math.min(budget - used, Math.floor(budget * 0.2));
     let recalledTokens = 0;
@@ -1573,7 +1684,7 @@ export function createAdvancedMemoryService(db: DB) {
       const start = indexes.get(record.messageIds[0]!) ?? -1;
       if (start < 0) continue;
       if (record.kind === "scene" && !selectedScenes.has(record.sceneId)) {
-        const label = `Messages #${indexes.get(record.startMessageId)! + 1}–#${indexes.get(record.endMessageId)! + 1}:\n${record.content}`;
+        const label = renderMemoryRecord(record, indexes);
         if (recalledTokens + tokenSize(label) <= recallBudget) {
           sceneTexts.push({ index: start, text: label });
           recalledTokens += tokenSize(label);
@@ -1614,9 +1725,15 @@ export function createAdvancedMemoryService(db: DB) {
           )
           .sort((a, b) => Math.abs(indexes.get(a.id)! - center) - Math.abs(indexes.get(b.id)! - center));
         for (const message of expanded) {
-          const text = messageText(ctx, message, indexes.get(message.id)!);
+          const text = renderMemoryText(
+            indexes,
+            [message.id],
+            messageText(ctx, message, indexes.get(message.id)!),
+            sourceTimeline([message]) ?? sceneTimeframes.get(message.id) ?? null,
+          );
           if (recalledTokens + tokenSize(text) > recallBudget) break;
           excerptIds.add(message.id);
+          excerptTexts.set(message.id, text);
           recalledTokens += tokenSize(text);
         }
       }
@@ -1646,14 +1763,14 @@ export function createAdvancedMemoryService(db: DB) {
     if (!sceneTexts.length && !excerpts.length) receipt.reasons.push("no-relevant-recall");
     return {
       messageIds: live.map((message) => message.id),
-      chatSummary: continuity?.content ?? null,
-      currentSceneSummary: temporary?.content ?? null,
+      chatSummary: renderMemoryRecord(continuity, indexes) || null,
+      currentSceneSummary: renderMemoryRecord(temporary, indexes) || null,
       recalledScenes:
         sceneTexts
           .sort((a, b) => a.index - b.index)
           .map((item) => item.text)
           .join("\n\n") || null,
-      recalledMessages: logMessages(ctx, excerpts) || null,
+      recalledMessages: excerpts.map((message) => excerptTexts.get(message.id)!).join("\n\n") || null,
       recalledRecordIds: [...new Set(recalledRecords.map((record) => record.id))],
       receipt,
     };
@@ -1661,12 +1778,17 @@ export function createAdvancedMemoryService(db: DB) {
 
   async function prepare(input: PrepareAdvancedMemoryInput): Promise<PreparedAdvancedMemory> {
     if (input.readOnly) return prepareImpl(input);
+    if (activeOperations.get(input.chatId)?.resetting)
+      throw new Error("Advanced Memory is being reset; prepare again when it finishes");
     const ctx = await context(input.chatId);
     if (input.messages.at(-1)?.id === ctx.messages.at(-1)?.id)
       await initialize(input.chatId, { ...input, blocking: true });
     const controller = new AbortController();
     const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
-    const work = serialized(input.chatId, () => prepareImpl({ ...input, signal })).catch(async (error: unknown) => {
+    const work = serialized(input.chatId, async () => {
+      await validateSnapshot(ctx, input.messages, { ...input, signal });
+      return prepareImpl({ ...input, signal });
+    }).catch(async (error: unknown) => {
       await progress(
         ctx,
         {
@@ -1726,6 +1848,8 @@ export function createAdvancedMemoryService(db: DB) {
       .find((extra) => extra.advancedMemoryReceipt);
     const latestReceipt = object(latestExtra?.advancedMemoryReceipt);
     const hasReceipt =
+      (!object(ctx.metadata.advancedMemoryState).resetRevision ||
+        latestReceipt.policyRevision === preparationPolicyRevision(ctx)) &&
       ["estimatedTokensBefore", "estimatedTokensAfter", "budgetTokens"].every(
         (key) => typeof latestReceipt[key] === "number" && Number.isFinite(latestReceipt[key]),
       ) &&
@@ -1746,12 +1870,12 @@ export function createAdvancedMemoryService(db: DB) {
       summaryModel: summary.ok ? summary.model : null,
       warnings,
       ...(hasReceipt ? { latestReceipt: latestReceipt as unknown as PreparedAdvancedMemory["receipt"] } : {}),
-      records: allRecords
+      records: withSourceTimelines(allRecords, ctx.messages)
         .filter((record) => record.content || record.status === "open")
         .map((record) => ({
           ...record,
-          startIndex: indexes.get(record.startMessageId) ?? 0,
-          endIndex: indexes.get(record.endMessageId) ?? 0,
+          startIndex: indexes.get(record.kind === "excerpt" ? record.messageIds[0]! : record.startMessageId) ?? 0,
+          endIndex: indexes.get(record.kind === "excerpt" ? record.messageIds.at(-1)! : record.endMessageId) ?? 0,
           embedding: undefined,
           embeddingSpaceId: undefined,
           embeddingStatus:
@@ -1779,16 +1903,49 @@ export function createAdvancedMemoryService(db: DB) {
       if (anchor && !ctx.messages.some((message) => message.id === anchor))
         throw new Error("A character knowledge range points to a message that no longer exists");
     }
+    if (hash(next) === hash(ctx.settings)) return status(chatId);
     activeOperations.get(chatId)?.controller.abort(new Error("Advanced Memory settings changed"));
     await chats.patchMetadata(chatId, { advancedMemory: next }, { touchUpdatedAt: false });
     return status(chatId);
   }
 
   async function cancel(chatId: string) {
+    const current = activeOperations.get(chatId);
+    if (current?.resetting) {
+      await current.promise;
+      return status(chatId);
+    }
     activeOperations.get(chatId)?.controller.abort(new Error("Advanced Memory preparation cancelled"));
     const ctx = await context(chatId);
     await progress(ctx, { status: "cancelled", error: null }, {});
     return status(chatId);
+  }
+
+  function reset(chatId: string): Promise<AdvancedMemoryStatus> {
+    const current = activeOperations.get(chatId);
+    if (current?.resetting) return current.promise.then(() => status(chatId));
+    current?.controller.abort(new Error("Advanced Memory was reset"));
+    const controller = new AbortController();
+    const promise = serialized(chatId, async () => {
+      // A job's cancellation handler persists progress after leaving the record queue.
+      // Finish that handler before clearing its state, while reserving this queue slot.
+      await current?.promise.catch(() => undefined);
+      await context(chatId);
+      await withChatMetadataPatchQueue(chatId, () =>
+        db.transaction(async (tx) => {
+          await tx.delete(advancedMemoryRecords).where(eq(advancedMemoryRecords.chatId, chatId));
+          await createChatsStorage(tx).patchMetadata(
+            chatId,
+            { advancedMemoryState: { ...IDLE_JOB, resetRevision: newId() } },
+            { touchUpdatedAt: false, metadataQueueHeld: true },
+          );
+        }),
+      );
+    }).finally(() => {
+      if (activeOperations.get(chatId)?.controller === controller) activeOperations.delete(chatId);
+    });
+    activeOperations.set(chatId, { controller, promise, resetting: true });
+    return promise.then(() => status(chatId));
   }
 
   async function getSources(chatId: string, recordId: string) {
@@ -2078,6 +2235,7 @@ export function createAdvancedMemoryService(db: DB) {
     prepare,
     updateSettings,
     cancel,
+    reset,
     getSources,
     updateRecord,
     validatePrepared,
