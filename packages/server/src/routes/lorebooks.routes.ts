@@ -16,6 +16,7 @@ import {
   updateLorebookFolderSchema,
   LOCAL_SIDECAR_CONNECTION_ID,
   canReparentFolder,
+  estimateTextTokens,
   type CreateLorebookEntryInput,
   type LorebookEntryTimingState,
   type Lorebook,
@@ -228,7 +229,7 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
   const totalTokensEstimate =
     typeof value.totalTokensEstimate === "number" && Number.isFinite(value.totalTokensEstimate)
       ? value.totalTokensEstimate
-      : Math.ceil(activatedEntries.reduce((total, entry) => total + entry.content.length, 0) / 4);
+      : estimateTextTokens(activatedEntries.map((entry) => entry.content).join(""));
   const totalEntries =
     typeof value.totalEntries === "number" && Number.isFinite(value.totalEntries)
       ? value.totalEntries

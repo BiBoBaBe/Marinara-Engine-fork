@@ -1540,9 +1540,7 @@ export const ChatArea = memo(function ChatArea() {
   ]);
 
   // On chat switch, clear in-memory translations and seed from persisted extras.
-  // Also re-seed when new pages are fetched (pagination) so older persisted
-  // translations become visible.
-  const msgPageCount = msgData?.pages.length ?? 0;
+  // Also re-seed when message extras arrive after a chat switch or pagination.
   const prevChatIdRef = useRef(chat?.id);
   useEffect(() => {
     if (!messages) return;
@@ -1558,8 +1556,7 @@ export const ChatArea = memo(function ChatArea() {
         extra?: string | Record<string, unknown> | null;
       }>,
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat?.id, msgPageCount]);
+  }, [chat?.id, messages]);
 
   // Sync chat background from metadata when switching chats. Set the UI store
   // to whatever the chat's metadata says — including null. The previous version

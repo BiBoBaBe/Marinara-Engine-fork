@@ -3,7 +3,7 @@
 // Ties together storage, scanning, and injection.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
-import { LIMITS } from "@marinara-engine/shared";
+import { estimateTextTokens, LIMITS } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import type {
   CharacterData,
@@ -480,10 +480,8 @@ function lorebookInjectionOrder(a: ActivatedEntry, b: ActivatedEntry): number {
   return a.injectionOrder - b.injectionOrder;
 }
 
-// Lorebook budgets currently use the project-wide chars/4 approximation.
-// This can drift for CJK, emoji, and long-tail vocabulary until a canonical tokenizer is available here.
 function estimateLorebookTokens(content: string): number {
-  return Math.ceil(content.length / 4);
+  return estimateTextTokens(content);
 }
 
 type LorebookBudgetSelectionState = {

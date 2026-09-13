@@ -129,7 +129,7 @@ export function CardLibraryPreview({
                 { value1: kind === "personas" ? "persona" : "character" },
               )}
             >
-              <Hash size="0.5625rem" /> {formatEstimatedTokens(card.tokenEstimate)}
+              <Hash size="0.5625rem" /> {formatEstimatedTokens(card.tokenEstimate, localizeUi)}
             </span>
             {card.tags.slice(0, 2).map((tag) => (
               <span

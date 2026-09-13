@@ -1442,6 +1442,7 @@ function CharacterDescriptionTab({
         helpText={CHARACTER_DESCRIPTION_HELP}
       />
       <MacroTextarea
+        showTokenCount
         value={formData.description}
         onChange={(value) => updateField("description", value)}
         placeholder={localizeUi("ui.characters.characterdescriptiontab.describeWhoThisCharacterIsTheirRoleAndTheir")}
@@ -1451,9 +1452,6 @@ function CharacterDescriptionTab({
         selfCharacterId={selfCharacterId}
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
       />
-      <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-        {formData.description.length} {localizeUi("ui.noodle.noodlehome.characters")}
-      </p>
     </div>
   );
 }
@@ -1475,12 +1473,12 @@ function TextareaTab({
   placeholder: string;
   rows?: number;
 }) {
-  const { t: localizeUi } = useUiTranslation();
   const selfCharacterId = useUIStore((s) => s.characterDetailId);
   return (
     <div className="mari-editor-panel space-y-3 p-3">
       <SectionHeader title={title} subtitle={subtitle} helpText={helpText} />
       <MacroTextarea
+        showTokenCount
         value={value}
         onChange={onChange}
         placeholder={placeholder}
@@ -1490,9 +1488,6 @@ function TextareaTab({
         selfCharacterId={selfCharacterId}
         className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
       />
-      <p className="mt-1.5 text-right text-[0.625rem] text-[var(--muted-foreground)]">
-        {value.length} {localizeUi("ui.noodle.noodlehome.characters")}
-      </p>
     </div>
   );
 }
@@ -2355,6 +2350,7 @@ function DialogueTab({
           <HelpTooltip text={localizeUi("ui.characters.dialoguetab.theCharacterSOpeningMessageWhenANewChat")} />
         </span>
         <MacroTextarea
+          showTokenCount
           value={formData.first_mes}
           onChange={(value) => updateField("first_mes", value)}
           rows={6}
@@ -2454,6 +2450,7 @@ function DialogueTab({
           {localizeUi("ui.characters.dialoguetab.useStartToSeparateExchangesUseUserAndChar")}
         </p>
         <MacroTextarea
+          showTokenCount
           value={formData.mes_example}
           onChange={(value) => updateField("mes_example", value)}
           rows={10}
@@ -2498,6 +2495,7 @@ function AdvancedTab({
           />
         </span>
         <MacroTextarea
+          showTokenCount
           value={formData.system_prompt}
           onChange={(value) => updateField("system_prompt", value)}
           rows={6}
@@ -2517,6 +2515,7 @@ function AdvancedTab({
           <HelpTooltip text={localizeUi("ui.characters.advancedtab.textInsertedAfterTheChatHistoryRightBeforeThe")} />
         </span>
         <MacroTextarea
+          showTokenCount
           value={formData.post_history_instructions}
           onChange={(value) => updateField("post_history_instructions", value)}
           rows={4}
@@ -2535,7 +2534,9 @@ function AdvancedTab({
           <HelpTooltip text={localizeUi("ui.characters.advancedtab.injectsTextAtASpecificPositionInTheChat")} />
         </span>
         <MacroTextarea
+          showTokenCount
           value={depthPrompt.prompt}
+          tokenCountAlign="start"
           onChange={(value) => updateExtension("depth_prompt", { ...depthPrompt, prompt: value })}
           rows={4}
           title={localizeUi("ui.characters.advancedtab.depthPrompt")}
@@ -2543,34 +2544,36 @@ function AdvancedTab({
           selfCharacterId={characterId}
           className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm outline-none focus:border-[var(--primary)]/40"
           placeholder={localizeUi("ui.characters.advancedtab.promptInjectedAtASpecificDepthInTheChat")}
+          tokenCountFooter={
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-xs">
+                <span className="text-[var(--muted-foreground)]">{localizeUi("ui.characters.advancedtab.depth")}</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={depthPrompt.depth}
+                  onChange={(e) =>
+                    updateExtension("depth_prompt", { ...depthPrompt, depth: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-16 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-center text-xs outline-none"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <span className="text-[var(--muted-foreground)]">{localizeUi("ui.characters.advancedtab.role")}</span>
+                <select
+                  value={depthPrompt.role}
+                  onChange={(e) => updateExtension("depth_prompt", { ...depthPrompt, role: e.target.value })}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-xs outline-none"
+                >
+                  <option value="system">{localizeUi("ui.characters.advancedtab.system")}</option>
+                  <option value="user">{localizeUi("ui.characters.advancedtab.user")}</option>
+                  <option value="assistant">{localizeUi("ui.characters.advancedtab.assistant")}</option>
+                </select>
+              </label>
+            </div>
+          }
         />
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 text-xs">
-            <span className="text-[var(--muted-foreground)]">{localizeUi("ui.characters.advancedtab.depth")}</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={depthPrompt.depth}
-              onChange={(e) =>
-                updateExtension("depth_prompt", { ...depthPrompt, depth: parseInt(e.target.value) || 0 })
-              }
-              className="w-16 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-center text-xs outline-none"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-xs">
-            <span className="text-[var(--muted-foreground)]">{localizeUi("ui.characters.advancedtab.role")}</span>
-            <select
-              value={depthPrompt.role}
-              onChange={(e) => updateExtension("depth_prompt", { ...depthPrompt, role: e.target.value })}
-              className="rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 py-1 text-xs outline-none"
-            >
-              <option value="system">{localizeUi("ui.characters.advancedtab.system")}</option>
-              <option value="user">{localizeUi("ui.characters.advancedtab.user")}</option>
-              <option value="assistant">{localizeUi("ui.characters.advancedtab.assistant")}</option>
-            </select>
-          </label>
-        </div>
       </div>
 
       <CharacterRegexSection characterId={characterId} characterName={formData.name} />
