@@ -5,6 +5,65 @@ import { seedUIState } from "./ui-state-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
 
+test("Numeric inputs keep selection when a saved value arrives before editing", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => "React" in globalThis && "ReactDOM" in globalThis);
+  await page.evaluate(async () => {
+    const { DraftNumberInput } = (await import("/src/components/ui/DraftNumberInput.tsx" as string)) as {
+      DraftNumberInput: unknown;
+    };
+    const runtime = globalThis as typeof globalThis & {
+      React: {
+        Fragment: unknown;
+        createElement: (component: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => unknown;
+        useState: (initial: number) => [number, (value: number) => void];
+        useEffect: (effect: () => void, dependencies: unknown[]) => void;
+      };
+      ReactDOM: { createRoot: (mount: HTMLElement) => { render: (element: unknown) => void } };
+    };
+    const mount = document.createElement("div");
+    mount.dataset.numericSelectionFixture = "true";
+    mount.style.cssText = "position:fixed;top:100px;left:20px;z-index:10000;background:white;color:black";
+    document.body.append(mount);
+    function Fixture() {
+      const [value, setValue] = runtime.React.useState(20000);
+      const [committed, setCommitted] = runtime.React.useState(0);
+      runtime.React.useEffect(() => {
+        if (value !== 15999) return;
+        // Start editing after effects schedule a saved-value echo, before deferred draft work can repaint.
+        queueMicrotask(() => {
+          const input = mount.querySelector("input");
+          input?.select();
+          input?.focus();
+        });
+      }, [value]);
+      return runtime.React.createElement(
+        runtime.React.Fragment,
+        null,
+        runtime.React.createElement(DraftNumberInput, {
+          value,
+          min: 64,
+          max: 131072,
+          onCommit: setCommitted,
+          ariaLabel: "Summary budget fixture",
+        }),
+        runtime.React.createElement("button", { onClick: () => setValue(15999) }, "Deliver saved value"),
+        runtime.React.createElement("output", null, String(committed)),
+      );
+    }
+    runtime.ReactDOM.createRoot(mount).render(runtime.React.createElement(Fixture, null));
+  });
+  const fixture = page.locator("[data-numeric-selection-fixture]");
+  const input = fixture.getByLabel("Summary budget fixture");
+  await fixture.getByRole("button", { name: "Deliver saved value", exact: true }).click();
+  await expect(input).toHaveValue("15999");
+  await expect(input).toBeFocused();
+  await page.keyboard.insertText("2048");
+  await expect(input).toHaveValue("2048");
+  await input.press("Enter");
+  await expect(fixture.locator("output")).toHaveText("2048");
+});
+
 test("Roleplay wizard reuses automatic memory settings without downloaded agents", async ({ page, request }, info) => {
   const connectionResponse = await request.post("/api/connections", {
     data: { name: "Wizard memory proof", provider: "custom", model: "synthetic-model" },

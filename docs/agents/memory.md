@@ -79,7 +79,7 @@ Some container builds of Marinara, known as Marinara Lite, turn Memory Recall of
 
 ## Advanced Memory Recall (Alpha, Roleplay)
 
-Open **Chat Settings → Memory Recall** and enable **Advanced Memory Recall (Alpha)**. You can also enable **Automatic context and memory handling (alpha)** below Agents in the Roleplay setup wizard. This optional mode manages the live history window, continuity summaries, and relevant old excerpts together. Settings, setup progress, and the archive viewer stay inside the Chat Settings drawer on desktop and mobile.
+Open **Chat Settings → Memory Recall** and enable **Advanced Memory Recall (Alpha)**. You can also enable **Automatic context and memory handling (alpha)** below Agents in the Roleplay setup wizard. This optional mode manages the live history window, continuity summaries, and relevant old excerpts together. Settings and setup progress are available in both the wizard and the Chat Settings drawer on desktop and mobile. The archive viewer stays in the Chat Settings drawer.
 
 ### Setup
 
