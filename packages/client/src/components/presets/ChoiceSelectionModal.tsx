@@ -180,9 +180,16 @@ function ChatChoiceSelectionModal({
     prevOpenRef.current = open;
   }, [open]);
 
+  const autoClosedRef = useRef(false);
   useEffect(() => {
-    if (!open || isLoading || !presetId) return;
-    if (variables.length === 0) {
+    if (!open) {
+      autoClosedRef.current = false;
+      return;
+    }
+    if (isLoading || autoClosedRef.current) return;
+    if (!presetId || variables.length === 0) {
+      // Closing can advance the setup wizard; do it only once, including StrictMode effects.
+      autoClosedRef.current = true;
       onClose();
     }
   }, [open, isLoading, onClose, presetId, variables.length]);

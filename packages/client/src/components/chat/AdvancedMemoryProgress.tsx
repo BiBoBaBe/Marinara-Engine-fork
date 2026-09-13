@@ -9,10 +9,12 @@ export function AdvancedMemoryProgress({
   chatId,
   status,
   onResume,
+  pending = false,
 }: {
   chatId: string;
   status: AdvancedMemoryStatus;
   onResume: () => void;
+  pending?: boolean;
 }) {
   const { t } = useTranslation();
   const progressLabel = useId();
@@ -31,7 +33,7 @@ export function AdvancedMemoryProgress({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [job.blocking, job.id, running]);
-  if (job.status === "idle" || job.status === "needs_confirmation") return null;
+  if (!pending && (job.status === "idle" || job.status === "needs_confirmation")) return null;
   const stage = t(`chat.advancedMemory.stage.${job.stage}`);
 
   return (
@@ -40,6 +42,7 @@ export function AdvancedMemoryProgress({
       className="space-y-2 rounded-lg bg-[var(--secondary)] p-3"
       aria-label={t("chat.advancedMemory.progress")}
       data-component="AdvancedMemoryProgress"
+      aria-busy={pending || running}
     >
       {running && job.blocking !== false && (
         <div className="flex flex-col items-center gap-1">
@@ -52,7 +55,7 @@ export function AdvancedMemoryProgress({
         </div>
       )}
       <p id={progressLabel} role="status" aria-live="polite" className="text-xs font-medium">
-        {running ? stage : t(`chat.advancedMemory.status.${job.status}`)}
+        {pending ? t("chat.advancedMemory.starting") : running ? stage : t(`chat.advancedMemory.status.${job.status}`)}
       </p>
       {running && job.total > 0 && (
         <>
@@ -67,7 +70,7 @@ export function AdvancedMemoryProgress({
           </p>
         </>
       )}
-      {job.error && (
+      {job.error && !pending && (
         <p role="alert" className="break-words text-xs text-[var(--destructive)]">
           {job.error}
         </p>
@@ -85,7 +88,12 @@ export function AdvancedMemoryProgress({
       {(job.status === "cancelled" || job.status === "error") && (
         <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
           {t("chat.advancedMemory.resumeHelp")}{" "}
-          <button type="button" className="font-medium underline" onClick={onResume}>
+          <button
+            type="button"
+            className="font-medium underline disabled:cursor-wait disabled:opacity-50"
+            disabled={pending}
+            onClick={onResume}
+          >
             {t("chat.advancedMemory.resume")}
           </button>
         </p>

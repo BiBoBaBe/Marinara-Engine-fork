@@ -39,6 +39,9 @@ export async function advancedMemoryRoutes(app: FastifyInstance) {
   const service = createAdvancedMemoryService(app.db);
   const prefix = "/:id/advanced-memory";
   app.get<{ Params: { id: string } }>(prefix, async (req) => service.status(req.params.id));
+  app.delete<{ Params: { id: string } }>(prefix, async (req, reply) =>
+    withMemoryDomainErrors(reply, () => service.reset(req.params.id)),
+  );
   app.patch<{ Params: { id: string } }>(`${prefix}/settings`, async (req, reply) =>
     withMemoryDomainErrors(reply, () => service.updateSettings(req.params.id, req.body)),
   );
@@ -51,9 +54,19 @@ export async function advancedMemoryRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Enable Advanced Memory before initialization" });
       if (status.missingKnowledgeCharacterIds.length)
         return reply.status(409).send({ error: "Confirm character knowledge ranges first", ...status });
-      void service
-        .initialize(req.params.id, { debugMode: options.debugMode, blocking: true })
+      let acknowledgeStart!: () => void;
+      const started = new Promise<void>((resolve) => {
+        acknowledgeStart = resolve;
+      });
+      const completed = service
+        .initialize(req.params.id, {
+          debugMode: options.debugMode,
+          blocking: true,
+          onProgress: acknowledgeStart,
+        })
         .catch((error) => logger.warn(error, "[advanced-memory] Initialization interrupted"));
+      // The first progress callback follows its metadata write, so 202 cannot expose a stale idle/error state.
+      await Promise.race([started, completed]);
       return reply.status(202).send(await service.status(req.params.id));
     }),
   );

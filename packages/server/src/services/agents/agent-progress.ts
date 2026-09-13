@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { AgentContext, AgentTaskProgress } from "@marinara-engine/shared";
-import type { BaseLLMProvider, ChatMessage, ChatOptions } from "../llm/base-provider.js";
-import { logger } from "../../lib/logger.js";
+import { extractLeadingThinkingBlocks } from "@marinara-engine/shared";
+import {
+  measureContextBudget,
+  type BaseLLMProvider,
+  type ChatMessage,
+  type ChatOptions,
+} from "../llm/base-provider.js";
+import { logger, logDebugOverride } from "../../lib/logger.js";
+import { tryParseJsonRecord } from "../../lib/json-repair.js";
+import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
+import { normalizeGemma4Delimiters } from "../llm/textual-tool-call-parser.js";
+import { minContextLimit, normalizeMaxContext } from "../generation/generation-parameters.js";
 
 /** Observe an existing call while forwarding its explicit agent debug setting. */
 export async function completeAgentCall(
@@ -12,7 +22,69 @@ export async function completeAgentCall(
   options: ChatOptions,
 ) {
   if (context.agentDebug && options.debugMode !== true) options = { ...options, debugMode: true };
-  if (!context.agentProgress) return provider.chatComplete(messages, options);
+  let sceneCheck =
+    context.sceneCheck &&
+    !context.sceneCheck.claimed &&
+    context.sceneCheck.prompt.trim() &&
+    !options.tools?.length &&
+    !options.signal?.aborted &&
+    !context.signal?.aborted &&
+    agents.some((agent) => agent.phase === "post_processing" && context.sceneCheck!.trackerAgentIds.includes(agent.id))
+      ? context.sceneCheck
+      : undefined;
+  if (sceneCheck) {
+    const combinedMessages: ChatMessage[] = [
+      ...messages,
+      {
+        role: "user",
+        contextKind: "prompt",
+        content: `${sceneCheck.prompt}\n\nKeep the requested tracker JSON unchanged and add one reserved top-level field: "__scene_check": {"starts": [{"messageId": "exact source message ID"}]}. Use an empty starts array when no new scene starts. For a batch, put this field beside the agent ID fields, not inside a tracker result.`,
+      },
+    ];
+    const maxContext = minContextLimit(
+      normalizeMaxContext(options.maxContext),
+      normalizeMaxContext(provider.maxContextValue),
+    );
+    const maxTokens = Math.min(
+      normalizeMaxContext(options.maxTokens) ?? 4096,
+      normalizeMaxContext(provider.maxTokensOverrideValue) ?? Infinity,
+    );
+    if (maxContext && measureContextBudget(combinedMessages, { ...options, maxContext, maxTokens }).fits) {
+      sceneCheck.claimed = true;
+      messages = combinedMessages;
+    } else {
+      logger.debug(
+        "[scene-check] Keeping tracker request unchanged: %s",
+        maxContext ? "scene window exceeds the context budget" : "tracker context cap is unknown",
+      );
+      sceneCheck = undefined;
+    }
+  }
+  if (sceneCheck) {
+    logDebugOverride(
+      Boolean(context.agentDebug) || options.debugMode === true || isDebugAgentsEnabled(),
+      "[agent-debug] Tracker request with scene check:\n%s",
+      messages.map((message) => `[${message.role}] ${message.content}`).join("\n\n"),
+    );
+    try {
+      context.agentDebug?.({
+        stage: "request",
+        agentId: agents.length === 1 ? agents[0]!.id : "__batch__",
+        agentType: agents.length === 1 ? agents[0]!.type : "__batch__",
+        agentName: agents.map((agent) => agent.name).join(", "),
+        phase: agents.length === 1 ? agents[0]!.phase : "batch",
+        model: options.model,
+        temperature: options.temperature,
+        maxTokens: options.maxTokens ?? 0,
+        messageCount: messages.length,
+        messages: messages.map(({ role, content }) => ({ role, content })),
+        ...(agents.length > 1 ? { batchedAgentTypes: agents.map((agent) => agent.type) } : {}),
+      });
+    } catch (error) {
+      logger.warn(error, "Could not send scene-check tracker prompt diagnostics");
+    }
+  }
+  if (!context.agentProgress && !sceneCheck) return provider.chatComplete(messages, options);
   const startedAt = Date.now();
   const progress: AgentTaskProgress = {
     callId: randomUUID(),
@@ -44,13 +116,15 @@ export async function completeAgentCall(
   };
   emit();
   try {
+    let streamedText = "";
     const result = await provider.chatComplete(messages, {
       ...options,
       ...(options.stream !== false
         ? {
             onToken: async (chunk: string) => {
               receive(chunk);
-              await options.onToken?.(chunk);
+              if (sceneCheck) streamedText += chunk;
+              else await options.onToken?.(chunk);
             },
             onThinking: (chunk: string) => {
               receive(chunk);
@@ -66,6 +140,41 @@ export async function completeAgentCall(
       progress.completionTokens = result.usage.completionTokens;
     }
     emit();
+    if (sceneCheck) {
+      let content = streamedText || result.content;
+      let jsonContent = extractLeadingThinkingBlocks(content ?? "").content;
+      if (jsonContent.includes('<|"|>')) jsonContent = normalizeGemma4Delimiters(jsonContent);
+      let parsed = jsonContent ? tryParseJsonRecord(jsonContent) : null;
+      // The ordinary tracker parser also accepts a short prose prefix before its JSON object.
+      const objectStart = jsonContent.indexOf("{");
+      if (!parsed && objectStart > 0) parsed = tryParseJsonRecord(jsonContent.slice(objectStart));
+      if (parsed && Object.hasOwn(parsed, "__scene_check")) {
+        const payload = parsed.__scene_check;
+        delete parsed.__scene_check;
+        content = JSON.stringify(parsed);
+        if (
+          !options.signal?.aborted &&
+          !context.signal?.aborted &&
+          result.finishReason === "stop" &&
+          !result.toolCalls.length &&
+          payload &&
+          typeof payload === "object" &&
+          Array.isArray((payload as Record<string, unknown>).starts) &&
+          ((payload as Record<string, unknown>).starts as unknown[]).every(
+            (start) =>
+              start &&
+              typeof start === "object" &&
+              typeof (start as Record<string, unknown>).messageId === "string" &&
+              ((start as Record<string, unknown>).messageId as string).trim(),
+          )
+        ) {
+          sceneCheck.result = payload;
+        }
+      }
+      // Keep provider/progress streaming live; the tracker parser receives only its own JSON.
+      if (options.stream !== false && content) await options.onToken?.(content);
+      return { ...result, content };
+    }
     return result;
   } catch (error) {
     progress.stage = options.signal?.aborted ? "stopped" : "error";

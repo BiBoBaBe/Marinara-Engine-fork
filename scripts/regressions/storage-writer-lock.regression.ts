@@ -98,7 +98,8 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs = 15_000) 
       clearTimeout(timeout);
       reject(error);
     });
-    child.once("exit", (code, signal) => {
+    // Drain inherited stdout/stderr before checking the watcher's diagnostics.
+    child.once("close", (code, signal) => {
       clearTimeout(timeout);
       resolveExit({ code, signal });
     });

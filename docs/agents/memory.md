@@ -79,27 +79,29 @@ Some container builds of Marinara, known as Marinara Lite, turn Memory Recall of
 
 ## Advanced Memory Recall (Alpha, Roleplay)
 
-Open **Chat Settings → Memory Recall** and enable **Advanced Memory Recall (Alpha)**. This optional mode manages the live history window, continuity summaries, and relevant old excerpts together. Settings, setup progress, and the archive viewer stay inside the Chat Settings drawer on desktop and mobile.
+Open **Chat Settings → Memory Recall** and enable **Advanced Memory Recall (Alpha)**. You can also enable **Automatic context and memory handling (alpha)** below Agents in the Roleplay setup wizard. This optional mode manages the live history window, continuity summaries, and relevant old excerpts together. Settings and setup progress are available in both the wizard and the Chat Settings drawer on desktop and mobile. The archive viewer stays in the Chat Settings drawer.
 
 ### Setup
 
-- Choose a **maximum context** that your chat model supports. The cap covers estimated prompt tokens, tools, attachments, reply space, and safety headroom. It is an estimate, not an exact tokenizer or billing limit.
-- Choose the **constant-summary budget** within that cap. A short continuity snapshot is included once in each request. Recent messages remain uncompressed while the full request fits.
-- The **helper connection** makes small scene decisions. It defaults to the agent connection, falling back to the chat connection. Initial historical processing can use the main or helper model; the resolved models are shown before preparation.
+- Choose **Maximum allowed context before compression (tokens)** within your chat model's supported context. This is a ceiling before compression, not the amount sent every turn. The cap covers estimated prompt tokens, tools, attachments, reply space, and safety headroom; it is not an exact tokenizer or billing limit.
+- Choose **Maximum constant summary size (tokens)** within that cap. A short continuity snapshot is included once in each request. Recent messages remain uncompressed while the full request fits.
+- The **Helper model** makes standalone scene decisions. It defaults to the agent connection, falling back to the chat connection. Initial historical processing can use the main or helper model; the resolved models are shown before preparation.
 - Scene summaries and compaction use your existing **Summaries** model and prompts. Advanced Memory runs independently of the main Agents switch and needs no downloadable agent.
-- The preferred neighboring-message range defaults to **3–10**. Relevance, character access and available space can produce fewer messages, including none.
+- **Moving context** controls exact historical excerpts. The message range defaults to **3–10**; set both values to **0** to disable excerpts, or set only the minimum to **0** to make them optional. Relevance, character access and available space can produce fewer messages, including none.
 
 For an older Individual group chat, confirm missing character knowledge ranges once. A character's first spoken line is not evidence that they knew everything before it. Select an actual character as **Narrator** only when they should bypass participation limits. Explicit hidden messages and manual start markers still restrict memory. You can correct these ranges later; newly added characters need their own confirmation.
 
-Preparation works through older history in batches and shows its current stage beside Professor Mari's hamster wheel. **Cancel** retains completed work; **Resume** continues after closing the drawer or restarting the server. A failed model call preserves previously valid memory and displays an error to retry.
+For an existing chat, click **Prepare existing history** first. Preparation works through older history in batches and shows its current stage beside Professor Mari's hamster wheel. **Cancel** retains completed work; **Resume** continues after closing the drawer or restarting the server. A failed model call preserves previously valid memory and displays an error to retry.
 
 ### While chatting
+
+Scene detection runs after generation. With automatic post-processing trackers enabled, scene checks follow tracker calls and share their existing model request, with the same character visibility restrictions. Without automatic trackers, **Standalone scene check interval (messages)** defaults to **5**: after the interval is reached, the helper receives only that recent message window, its scene instructions and the output format. Both persona and character messages count. Uncertain transitions leave the scene open. If the scene window cannot fit alongside a tracker request, the tracker still runs and scene detection waits for a later check.
 
 When the full request reaches the cap, Advanced Memory drops optional recall first, then moves older completed scenes into continuity. If one unfinished scene is too large, it temporarily summarizes the older part while leaving the scene open. Original messages and manual start/visibility settings are retained.
 
 The archive can recover relevant scene summaries and exact dialogue with original message numbers and speakers. Both persona and character messages count. Historical regeneration only uses sources before the target, including when the target predates the current managed window. Editing, swiping, hiding or deleting source messages causes affected derived memory to be checked again before use.
 
-Open **Access memories for this chat** in the same drawer to inspect scene sources and audiences, edit summaries, disable recall records, reindex, or export/import. Corrections to original manual summaries are preserved and invalidate dependent continuity. Disabling a record is distinct from hiding its source messages: hidden source messages are the authority for character knowledge.
+Open **Access memories for this chat** in the same drawer to search chronologically numbered scene summaries, inspect their timeframes and audiences, edit **Summary text**, or read the full original messages with **Inspect source messages**. Internal verbatim excerpts are not separate scene-summary entries. Source-grounded story timeframes accompany recalled context; unknown dates stay unknown. You can disable recall records, reindex, export/import, or confirm **Delete all memories** to restart memory preparation while retaining the original chat and settings. Corrections to original manual summaries are preserved and invalidate dependent continuity. Disabling a record is distinct from hiding its source messages: hidden source messages are the authority for character knowledge.
 
 Advanced mode owns retrieval while enabled, so the Standard Recall switch does not insert a second copy. It also replaces the ordinary automatic Roleplay summary schedule for that chat. Turning Advanced Memory off restores those normal settings. Existing lorebooks and downloadable agents retain their own scope rules; Advanced Memory cannot make arbitrary user-authored or external context private.
 

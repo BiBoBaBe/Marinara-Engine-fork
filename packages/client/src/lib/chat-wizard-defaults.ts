@@ -1,4 +1,8 @@
-import { CHAT_PRESET_EXCLUDED_METADATA_KEYS, type Chat } from "@marinara-engine/shared";
+import {
+  CHAT_PRESET_EXCLUDED_METADATA_KEYS,
+  normalizeAdvancedMemorySettings,
+  type Chat,
+} from "@marinara-engine/shared";
 import { getChatCharacterIds } from "./chat-macros";
 
 export type ChatWizardMode = "conversation" | "roleplay";
@@ -19,10 +23,18 @@ const excluded = new Set([
     (key) => !["activeLorebookIds", "presetChoices", "spriteCharacterIds"].includes(key),
   ),
   "conversationSetupComplete",
+  "advancedMemoryState",
 ]);
 
 export function captureChatWizardDefaults(chat: Chat, overrides: Record<string, unknown> = {}): ChatWizardDefaults {
-  const metadata = readChatMetadata(chat);
+  const metadata = { ...readChatMetadata(chat), ...overrides };
+  if (metadata.advancedMemory) {
+    metadata.advancedMemory = {
+      ...normalizeAdvancedMemorySettings(metadata.advancedMemory),
+      knowledgeStarts: {},
+      knowledgeConfirmed: false,
+    };
+  }
   return {
     name: chat.name,
     connectionId: chat.connectionId ?? null,
@@ -30,7 +42,7 @@ export function captureChatWizardDefaults(chat: Chat, overrides: Record<string, 
     personaId: chat.personaId ?? null,
     personaCharacterId: chat.personaCharacterId ?? null,
     characterIds: getChatCharacterIds(chat),
-    metadata: Object.fromEntries(Object.entries({ ...metadata, ...overrides }).filter(([key]) => !excluded.has(key))),
+    metadata: Object.fromEntries(Object.entries(metadata).filter(([key]) => !excluded.has(key))),
   };
 }
 

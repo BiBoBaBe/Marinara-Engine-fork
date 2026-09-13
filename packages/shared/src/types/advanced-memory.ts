@@ -6,8 +6,10 @@ export const advancedMemorySettingsSchema = z.object({
   summaryBudgetTokens: z.number().int().min(64).max(131_072).default(4096),
   helperConnectionId: z.string().nullable().default(null),
   initialProcessingModel: z.enum(["main", "helper"]).default("helper"),
-  retrieveMinMessages: z.number().int().min(1).max(50).default(3),
-  retrieveMaxMessages: z.number().int().min(1).max(50).default(10),
+  /** Cadence and recent-message window for standalone post-generation scene checks. */
+  sceneCheckInterval: z.number().int().min(1).max(100).default(5),
+  retrieveMinMessages: z.number().int().min(0).max(50).default(3),
+  retrieveMaxMessages: z.number().int().min(0).max(50).default(10),
   narratorCharacterId: z.string().nullable().default(null),
   /** A null value explicitly confirms knowledge from the beginning. Missing means unconfirmed. */
   knowledgeStarts: z.record(z.string().nullable()).default({}),

@@ -34,13 +34,13 @@ export function DraftNumberInput({
   const [draft, setDraft] = useState(String(value));
   const focusedRef = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // While the user is editing, the draft belongs to them: a value-prop
     // update arriving mid-edit is usually the ASYNC ECHO of the previous
     // commit (mutate → invalidate → refetch), and syncing it here wiped the
     // in-progress draft so blur re-committed the OLD value — a silently
     // dropped edit (#5636). External updates still sync any time the field
-    // is not focused.
+    // is not focused. Settle those echoes before focus/selection can start a new edit.
     if (focusedRef.current) return;
     setDraft(String(value));
   }, [value]);
