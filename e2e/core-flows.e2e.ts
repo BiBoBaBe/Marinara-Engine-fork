@@ -9592,7 +9592,9 @@ test("preset token counters stay localized and editable with malformed marker se
     const packs = await mockUILanguagePacks(page);
     packs.installed.add("ja");
     await page.route("**/api/ui-languages/ja", (route) =>
-      route.fulfill({ json: { _meta: { locale: "ja" }, "chat.summary.tokenEstimate": "約{{tokens}}トークン" } }),
+      route.fulfill({
+        json: { _meta: { locale: "ja", direction: "ltr" }, "chat.summary.tokenEstimate": "約{{tokens}}トークン" },
+      }),
     );
     const theme = testInfo.project.name.includes("desktop") ? "light" : "dark";
     await seedUIState(page, { language: "ja", theme }, "merge");
