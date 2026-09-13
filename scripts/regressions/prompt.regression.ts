@@ -10962,6 +10962,29 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         }),
         ["Rook", "Vale"],
       );
+      assert.deepEqual(
+        extractCharacterCardCastMembers({
+          name: "Party",
+          description: '> **Full Name:** "Rook" (scout)\r\n- _Name_： **Vale** (mage)\r\nName: Rook',
+        }),
+        ["Rook", "Vale"],
+      );
+      // Long malformed fields used to trigger polynomial regex backtracking; the runner has a fixed timeout.
+      const longWhitespace = " ".repeat(100_000);
+      assert.deepEqual(
+        extractCharacterCardCastMembers({
+          name: "Party",
+          description: [
+            `Name${longWhitespace}`,
+            `Name:${longWhitespace}${"x".repeat(121)}`,
+            `Full${longWhitespace}namo: Decoy`,
+            `Name: ${"(".repeat(119)}x`,
+            `Name:${longWhitespace}Rook (scout)`,
+            "Name: Vale (mage)",
+          ].join("\n"),
+        }),
+        ["Rook", "Vale"],
+      );
       const declaredBatch: Array<Record<string, unknown>> = [
         {
           characterId: "resort-card",
@@ -10974,6 +10997,35 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       const declaredMatches = applyTrackerCharacterCardIdentity(declaredBatch, [declaredCastCard]);
       assert.equal(declaredMatches.has("resort-card"), false);
       assert.deepEqual(declaredBatch, [{ characterId: "resort-card:cast:julia", name: "Julia", mood: "Sleeping" }]);
+
+      // A manual row sharing a declared member's name keeps its manual identity and portrait guards.
+      const manualMember = {
+        characterId: "manual-ana",
+        name: "Ana",
+        mood: "Calm",
+        avatarPath: "/api/avatars/file/manual-ana.png",
+        avatarCrop: { zoom: 2, offsetX: 0, offsetY: 0 },
+      };
+      const manualBatch: Array<Record<string, unknown>> = [{ ...manualMember }];
+      assert.equal(applyTrackerCharacterCardIdentity(manualBatch, [declaredCastCard]).size, 0);
+      assert.deepEqual(manualBatch, [manualMember]);
+
+      // Preserve a legacy title row until this result actually provides a member to replace it.
+      const legacyTitle = {
+        characterId: "resort-card",
+        name: "Vacation Resort",
+        mood: "Excited",
+        outfit: "Summer clothes",
+        customFields: { Goal: "Reach the resort" },
+        avatarPath: "/api/avatars/file/resort.png",
+        avatarCrop: null,
+      };
+      const legacyBatch: Array<Record<string, unknown>> = [{ ...legacyTitle }];
+      const legacyMatches = applyTrackerCharacterCardIdentity(legacyBatch, [declaredCastCard], {
+        previousCharacters: [{ characterId: "resort-card:cast:julia", name: "Julia" }],
+      });
+      assert.equal(legacyMatches.has("resort-card"), true);
+      assert.deepEqual(legacyBatch, [legacyTitle]);
 
       assert.equal(
         canonicalizeGamePartySpeakerLabels(

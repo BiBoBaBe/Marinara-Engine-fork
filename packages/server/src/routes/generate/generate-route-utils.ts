@@ -1627,7 +1627,7 @@ export function parseTrackerCastCharacterId(value: unknown): { cardId: string; n
  * `extractCharacterCardCastMembers`), when the batch carries two or more
  * distinctly named members for it, or when `previousCharacters` already holds
  * a cast id for it. An entry that merely repeats the title of a card with a
- * known cast is dropped: it is the old merged row, not a person.
+ * declared cast is dropped once this result supplies an individual member.
  * Cast members keep their own name under a `<cardId>:cast:<name>` id, do not
  * inherit the card avatar, and are not reported in the returned card-id set,
  * so the NPC avatar path (library, stored, or generated portraits) applies.
@@ -1691,7 +1691,8 @@ export function applyTrackerCharacterCardIdentity(
       cardsByName.get(nameKey) ??
       (explicitCanonicalName ? cardsByName.get(normalizeTextForMatch(explicitCanonicalName)) : undefined);
     if (!card) {
-      const castCard = nameKey ? cardsByCastMember.get(nameKey) : undefined;
+      const castCard =
+        nameKey && !isManualTrackerCharacterId(character.characterId) ? cardsByCastMember.get(nameKey) : undefined;
       if (castCard) return { character, card: castCard, isCardName: false, castNameKey: nameKey, viaCastId: false };
       return { character, card: undefined, isCardName: false, castNameKey: "", viaCastId: false };
     }
@@ -1744,9 +1745,8 @@ export function applyTrackerCharacterCardIdentity(
       continue;
     }
 
-    if (declaredCastCardIds.has(card.id) && isCardName) {
-      // The card is a cast, so a row carrying the card's own title is the old
-      // merged entry (or the scenario itself), never one of the people on it.
+    if (declaredCastCardIds.has(card.id) && isCardName && (memberNamesByCard.get(card.id)?.size ?? 0) > 0) {
+      // Replace the old merged title only when this result includes a member, preserving legacy state otherwise.
       continue;
     }
 

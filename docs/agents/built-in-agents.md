@@ -110,9 +110,9 @@ Picks the best matching background image for the current scene from your uploade
 
 Tracks the characters present, plus their mood, actions, appearance, outfit, thoughts, and per-character stats such as HP. It can also create portrait images for new characters that have none.
 
-A single card that describes several people, such as a scenario card with a cast, is tracked as separate characters. Mark each person in the card text with a `[CHARACTER: Name]` header or a `Name:` field and Character Tracker picks them up from the first turn. Each member keeps their own name, mood, outfit, thoughts, and portrait instead of being folded into one entry named after the card.
+A single card that describes several people, such as a scenario card with a cast, can track them separately. Mark each person in the card text with a `[CHARACTER: Name]` header or a `Name:` field so the tracker can associate reported members with their card. Each member keeps their own name, mood, outfit, thoughts, and portrait. An old entry named after the card remains until the tracker reports an individual member to replace it. Manually added characters keep their manual identity even when their name matches a declared cast member.
 
-When a recurring character returns after leaving the scene, Character Tracker reuses their latest saved stats and custom fields for continuity. Characters backed by cards also receive their configured RPG pools and attributes as grounding, and always retain the card's avatar and crop. Automatically generated portraits remain limited to NPCs without a matching character card.
+When a recurring character returns after leaving the scene, Character Tracker reuses their latest saved stats and custom fields for continuity. Characters backed by cards also receive their configured RPG pools and attributes as grounding. Single-character card entries retain the card's avatar and crop. Members of a multi-character card use their own portraits through the same library, saved-avatar, or optional portrait-generation path as NPCs; they do not inherit the shared card portrait.
 
 - **Phase**: Post-Processing.
 - **Where it works**: Roleplay.
