@@ -43,6 +43,8 @@ import { startSceneWithPromptPreferences } from "../lib/scene-generation";
 import { translate } from "../localization/i18n";
 import { waitForPendingChatMetadataSaves } from "../lib/chat-metadata-save-barrier";
 import { agentKeys } from "./use-agents";
+import { advancedMemoryKeys, ADVANCED_MEMORY_SETTINGS_EVENT } from "./use-advanced-memory";
+import type { AdvancedMemoryJob, AdvancedMemoryReceipt, AdvancedMemoryStatus } from "@marinara-engine/shared";
 import { discardPendingGameStatePatch } from "./use-game-state-patcher";
 import { spatialContextKeys } from "./use-spatial-context";
 import {
@@ -637,6 +639,7 @@ import {
   applyRecentMessageContentEditsToData,
   chatKeys,
   forgetRecentMessageContentEdit,
+  forgetUnchangedMessageContentEdit,
   preserveRecentMessageContentEdit,
   rememberRecentMessageContentEdit,
 } from "./use-chats";
@@ -1271,6 +1274,7 @@ export function useGenerate() {
         }
       };
       useChatStore.getState().setAbortController(params.chatId, abortController);
+      useChatStore.getState().setPendingVnReply(params.chatId, null);
       useChatStore.getState().clearThinkingBuffer(params.chatId);
 
       // Helper: returns true when this generation's chat is the one the user is viewing.
@@ -1476,6 +1480,23 @@ export function useGenerate() {
       let typewriterBufferUntil = 0;
       let roleplayTypewriterCharsPerSecond: number | null = null;
       const persistedMessages = new Map<string, Message>();
+      let vnReplyPublished = false;
+      const publishVnReply = (message: Message | null) => {
+        if (
+          vnReplyPublished ||
+          chatModeForGeneration !== "roleplay" ||
+          params.impersonate ||
+          params.turnGameBots ||
+          abortController.signal.aborted ||
+          useChatStore.getState().abortControllers.get(params.chatId) !== abortController ||
+          !message ||
+          assistantMessagesBeforeGeneration.fingerprints.get(message.id) === assistantMessageFingerprint(message)
+        )
+          return;
+        vnReplyPublished = true;
+        const { id, activeSwipeIndex, content } = message;
+        useChatStore.getState().setPendingVnReply(params.chatId, { id, activeSwipeIndex, content });
+      };
       let sawGroupTurn = false;
       let currentGroupTurnSavedMessage: Message | null = null;
       let heldTextRewriteMessage: Message | null = null;
@@ -1737,6 +1758,7 @@ export function useGenerate() {
         qc.invalidateQueries({ queryKey: chatKeys.messages(params.chatId) });
         return true;
       };
+      const shownAdvancedMemoryJobs = new Set<string>();
 
       // Safety net: guarantees the Mari work-status pill clears for this
       // chat on every termination path (done, error, abort, unexpected
@@ -1793,6 +1815,37 @@ export function useGenerate() {
           { disconnectOnResume: true },
         )) {
           switch (event.type) {
+            case "advanced_memory_status": {
+              const data = event.data as { chatId?: string; job?: AdvancedMemoryJob } | undefined;
+              if (data?.chatId !== params.chatId || !data.job) break;
+              const job = data.job;
+              qc.setQueryData<AdvancedMemoryStatus>(advancedMemoryKeys.status(params.chatId), (current) =>
+                current ? { ...current, job } : current,
+              );
+              void qc.invalidateQueries({ queryKey: advancedMemoryKeys.status(params.chatId) });
+              const jobId = job.id ?? params.chatId;
+              if (
+                job.blocking !== false &&
+                ["running", "needs_confirmation", "error"].includes(job.status) &&
+                !shownAdvancedMemoryJobs.has(jobId)
+              ) {
+                shownAdvancedMemoryJobs.add(jobId);
+                useUIStore.getState().setChatSettingsSectionExpanded("roleplay-memory-recall", true);
+                window.dispatchEvent(
+                  new CustomEvent(ADVANCED_MEMORY_SETTINGS_EVENT, { detail: { chatId: params.chatId } }),
+                );
+              }
+              break;
+            }
+            case "advanced_memory_receipt": {
+              const data = event.data as { chatId?: string; receipt?: AdvancedMemoryReceipt } | undefined;
+              if (data?.chatId !== params.chatId || !data.receipt) break;
+              qc.setQueryData<AdvancedMemoryStatus>(advancedMemoryKeys.status(params.chatId), (current) =>
+                current ? { ...current, latestReceipt: data.receipt } : current,
+              );
+              void qc.invalidateQueries({ queryKey: advancedMemoryKeys.status(params.chatId) });
+              break;
+            }
             case "spatial_transition_committed": {
               const transitionData = event.data as
                 | {
@@ -2461,6 +2514,21 @@ export function useGenerate() {
               break;
             }
 
+            case "roleplay_interrupted_message": {
+              const { message, previousContent } = event.data as { message: Message; previousContent: string };
+              if (
+                message.chatId !== params.chatId ||
+                typeof message.id !== "string" ||
+                typeof previousContent !== "string"
+              )
+                break;
+              await qc.cancelQueries({ queryKey: chatKeys.messages(params.chatId), exact: true });
+              forgetUnchangedMessageContentEdit(params.chatId, message, previousContent);
+              if (persistedMessages.has(message.id)) persistedMessages.set(message.id, message);
+              upsertPersistedMessages(qc, params.chatId, [message]);
+              break;
+            }
+
             case "message_saved": {
               flushLeadingSpeakerPrefix();
               const savedMessage = event.data as Message;
@@ -2563,6 +2631,7 @@ export function useGenerate() {
                 if (pendingText.length > 0 || typingActive) await waitForTypewriterDrain();
                 const savedMessage = persistedMessages.get(message.id);
                 if (savedMessage) upsertPersistedMessages(qc, params.chatId, [savedMessage]);
+                publishVnReply(savedMessage ?? null);
                 if (useChatStore.getState().streamingChatId === params.chatId) {
                   setStreaming(false);
                 }
@@ -3195,6 +3264,7 @@ export function useGenerate() {
           });
         }
         if (stillOwnerAtCleanupStart) {
+          if (sawDoneEvent || passiveStreamSettled) publishVnReply(latestAssistantMessage(persistedMessages.values()));
           useChatStore.getState().clearPerChatState(params.chatId);
           useChatStore.getState().setAbortController(params.chatId, null);
           useChatStore.getState().setBackgroundIllustration(params.chatId, false);
