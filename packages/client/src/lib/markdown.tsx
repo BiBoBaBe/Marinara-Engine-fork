@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Shared Markdown rendering utilities
 // ──────────────────────────────────────────────
-import { type ReactNode } from "react";
+import { isValidElement, type ReactNode } from "react";
 import { normalizeCardAssetImageSyntax, resolveCardAssetUrl } from "./card-asset-links";
 import { convertBasicLatexSymbols, convertBasicLatexSymbolsInHtml } from "./latex-symbols";
 import { useUIStore } from "../stores/ui.store";
@@ -426,6 +426,16 @@ export function renderMarkdownBlocks(
 
   const flushText = () => {
     if (textBuffer.length === 0) return;
+    const previous = segments.at(-1);
+    if (
+      isValidElement(previous) &&
+      (previous.type === "blockquote" || previous.type === "hr") &&
+      textBuffer[0]?.trim() === ""
+    ) {
+      // The block already starts a new line. Keep extra blank lines, but do
+      // not render its boundary newline as an additional lower line box.
+      textBuffer.shift();
+    }
     const joined = textBuffer.join("\n");
     if (joined.trim()) {
       segments.push(<span key={`${keyBase}t${key++}`}>{renderInline(joined, `${keyBase}t${key}`)}</span>);
@@ -708,6 +718,12 @@ export function applyInlineMarkdownHTML(html: string): string {
 
   return (
     next
+      // Fences and inline code have already become HTML. Keep those regions
+      // literal while consuming the boundary break of a Markdown rule.
+      .replace(
+        /(<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>)|(?:^|(?<=<br[^>]*>))\s*(?:\*{3,}|-{3,})\s*(?:<br[^>]*>|$)/gi,
+        (_match, code: string | undefined) => code ?? '<hr class="mari-md-rule">',
+      )
       // Highlight: ==text==
       .replace(/==(.+?)==/g, '<mark class="mari-md-highlight">$1</mark>')
       // Strikethrough: ~~text~~
@@ -727,10 +743,12 @@ export function applyInlineMarkdownHTML(html: string): string {
       .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
       // Italic: _text_ (not inside a word)
       .replace(/(?<![_\w])_([^_]+?)_(?![_\w])/g, "<em>$1</em>")
-      // Blockquote lines: > text (after <br>)
+      // Blockquote lines: > text (after <br>). The block supplies its ending
+      // line break, so consume that delimiter without removing extra breaks.
       .replace(
-        /(?:^|(?<=<br[^>]*>))\s*&gt;\s?(.+?)(?=<br|$)/g,
-        '<blockquote class="mari-md-blockquote">$1</blockquote>',
+        /(<pre\b[^>]*>[\s\S]*?<\/pre>|<code\b[^>]*>[\s\S]*?<\/code>)|(?:^|(?<=<br[^>]*>))\s*&gt;\s?(.+?)(?:<br[^>]*>|$)/gi,
+        (_match, code: string | undefined, content: string | undefined) =>
+          code ?? `<blockquote class="mari-md-blockquote">${content}</blockquote>`,
       )
       // Discord-style subtext: -# text
       .replace(/(?:^|(?<=<br[^>]*>))[ \t]*-#(?:[ \t]+(.*?))?(?=<br|$)/g, '<small class="mari-md-subtext">$1</small>')

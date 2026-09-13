@@ -3961,11 +3961,11 @@ strong {
 
 /* Blockquotes */
 .mari-message-content .mari-md-blockquote {
-  border: 1px solid var(--border);
+  border: 1px solid var(--marinara-app-accent-solid);
   border-radius: 0.5rem;
   padding: 0.5em 0.75em;
   margin: 0.35em 0;
-  background: color-mix(in srgb, var(--card) 94%, var(--accent));
+  background: color-mix(in srgb, var(--card) 94%, var(--marinara-app-accent-solid));
   color: inherit;
   font-style: italic;
 }

@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
+
 - Numeric settings keep text selection intact when a saved value arrives just before editing, preventing old digits from being prepended to the new value.
 - Regression checks now drain development-watcher diagnostics before checking them and capture live dice screenshots without freezing animations.
 - Roleplay setup now waits for preset changes to save before advancing and closes obsolete preset-variable prompts instead of leaving an empty dialog.
