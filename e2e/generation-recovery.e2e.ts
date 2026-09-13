@@ -185,9 +185,16 @@ test("orphan recovery yields to a resumed local stream and its typewriter", asyn
   }
 });
 
-for (const stage of ["assistant-ready", "transport-done", "live-provider"] as const) {
+for (const stage of ["assistant-ready", "transport-done", "live-provider", "partial-save"] as const) {
   test(`Roleplay Stop releases buffered text and the composer (${stage})`, async ({ page, request }, testInfo) => {
     const replyText = "The lantern lights the quiet path. ".repeat(30).trim();
+    const holdsProvider = stage === "live-provider" || stage === "partial-save";
+    const nextReplyText = "The second generation keeps its own live reply.";
+    let releasePartialSave = () => {};
+    const partialSaveGate = new Promise<void>((resolve) => {
+      releasePartialSave = resolve;
+    });
+    let partialSaveHeld = false;
     const openResponses = new Set<ServerResponse>();
     let providerCalls = 0;
     const provider = createServer((incoming, response) => {
@@ -202,10 +209,11 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
         openResponses.add(response);
         response.on("close", () => openResponses.delete(response));
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        const content = stage === "partial-save" && providerCalls > 1 ? nextReplyText : replyText;
         response.write(
-          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: replyText }, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,
         );
-        if (stage !== "live-provider") {
+        if (!holdsProvider) {
           response.end(
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
           );
@@ -259,6 +267,28 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
           await route.fulfill({ response, body });
         });
       }
+      if (stage === "partial-save") {
+        // An empty Retry generates without a new user row, so Stop persists the
+        // partial assistant reply in its normal client cleanup path.
+        expect(
+          (
+            await request.post(`/api/chats/${chatId}/messages`, {
+              data: { role: "user", content: "Tell me about the path." },
+            })
+          ).ok(),
+        ).toBeTruthy();
+        await page.route(`**/api/chats/${chatId}/messages`, async (route) => {
+          if (route.request().method() !== "POST" || route.request().postDataJSON()?.role !== "assistant") {
+            await route.continue();
+            return;
+          }
+          const response = await route.fetch();
+          expect(response.ok()).toBeTruthy();
+          partialSaveHeld = true;
+          await partialSaveGate;
+          await route.fulfill({ response });
+        });
+      }
       await openFreshChat(page, chatId);
       await page.evaluate(async () => {
         const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
@@ -267,7 +297,16 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
       const send = page.locator("button.mari-chat-send-btn");
       const pause = send.locator("svg.lucide-circle-stop");
       const input = page.locator("textarea.mari-chat-input-textarea");
-      await input.fill("Tell me about the path.");
+      if (stage === "partial-save") {
+        await page.evaluate((id) => {
+          const completed: string[] = [];
+          Object.assign(window, { stoppedGenerationCompletions: completed });
+          window.addEventListener("marinara:generation-complete", (event) => {
+            if ((event as CustomEvent).detail?.chatId === id) completed.push(id);
+          });
+        }, chatId);
+      }
+      if (stage !== "partial-save") await input.fill("Tell me about the path.");
       await send.click();
       await expect.poll(() => providerCalls).toBe(1);
       await expect(pause).toBeVisible();
@@ -289,7 +328,7 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
           role: string;
           content: string;
         }>;
-      if (stage !== "live-provider") {
+      if (!holdsProvider) {
         await expect
           .poll(async () =>
             (await readReplies()).filter((message) => message.role === "assistant").map((message) => message.content),
@@ -305,10 +344,61 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
       );
       await send.click();
       expect((await aborted).ok()).toBeTruthy();
+      if (stage === "partial-save") {
+        await expect.poll(() => partialSaveHeld).toBe(true);
+        await expect.poll(async () => (await readState()).owned).toBe(false);
+        await expect.poll(() => openResponses.size).toBe(0);
+        await page.evaluate(async () => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          useChatStore.getState().setActiveChatId(null);
+        });
+        await expect(pause).toHaveCount(0);
+        await page.evaluate(async (id) => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+          useChatStore.getState().setActiveChatId(id);
+          useUIStore.setState({ streamingSpeed: 100 });
+        }, chatId);
+        await input.fill("Continue with a second reply.");
+        await send.click();
+        await expect.poll(() => providerCalls).toBe(2);
+        await expect
+          .poll(() =>
+            page.evaluate(async () => {
+              const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+              return useUIStore.getState().streamingSpeed;
+            }),
+          )
+          .toBe(100);
+        await expect.poll(readState).toMatchObject({ streaming: true, owned: true });
+        await expect.poll(async () => (await readState()).length).toBeGreaterThan(0);
+        const visibleLengthBeforeSave = (await readState()).length;
+        const partialSaveResponse = page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `/api/chats/${chatId}/messages` &&
+            response.request().method() === "POST",
+        );
+        releasePartialSave();
+        expect((await partialSaveResponse).ok()).toBeTruthy();
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (window as unknown as { stoppedGenerationCompletions: string[] }).stoppedGenerationCompletions.length,
+            ),
+          )
+          .toBe(1);
+        await expect.poll(readState, { timeout: 2_000 }).toMatchObject({ streaming: true, owned: true });
+        expect((await readState()).length).toBeGreaterThanOrEqual(visibleLengthBeforeSave);
+        await expect(pause).toBeVisible();
+        await send.click();
+        await expect.poll(() => openResponses.size).toBe(0);
+        return;
+      }
       await expect(pause).toHaveCount(0, { timeout: 2_000 });
       await expect.poll(readState, { timeout: 2_000 }).toEqual({ streaming: false, owned: false, length: 0 });
       await expect.poll(() => openResponses.size).toBe(0);
-      if (stage !== "live-provider") {
+      if (!holdsProvider) {
         await expect
           .poll(async () =>
             (await readReplies()).filter((message) => message.role === "assistant").map((message) => message.content),
@@ -319,6 +409,7 @@ for (const stage of ["assistant-ready", "transport-done", "live-provider"] as co
       await expect(send).toBeEnabled();
       await page.screenshot({ path: testInfo.outputPath("after-stop.png") });
     } finally {
+      releasePartialSave();
       await page.close().catch(() => undefined);
       for (const response of openResponses) response.end();
       provider.closeAllConnections();
