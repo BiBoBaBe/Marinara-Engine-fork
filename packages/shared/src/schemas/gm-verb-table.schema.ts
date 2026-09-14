@@ -64,12 +64,22 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
  *  colliding readers a package verb would shadow: Roleplay mode's own `[roll: character="…"]`
  *  command (`packages/server/src/services/generation/roleplay-commands.ts`), and the inner
  *  `[roll: 2d6+3]` of a Game placeholder, both of which match `CAPABILITY_COMMAND_TAG_PATTERN`
- *  exactly. `capability-gm-verbs.regression.ts` pins the reservation rather than derives it. */
+ *  exactly. `capability-gm-verbs.regression.ts` pins the reservation rather than derives it.
+ *  `branch` and `on` are reserved by hand for the same reason and are NOT the same case as each
+ *  other, so the difference is written down rather than implied. `[branch: crates]` matches
+ *  `CAPABILITY_COMMAND_TAG_PATTERN` exactly, so a package verb named `branch` would intercept
+ *  every one-request dice branch block before the engine's own arm ever saw it: that one is a
+ *  real shadow. `on` is DEFENSIVE ONLY and cannot fire — `[on success]` puts a space between the
+ *  name and the `]`, which that pattern does not accept — so it closes the name space without
+ *  buying a fix, and it must never be cited as the reason the delimiters get stripped. What
+ *  strips them is a literal pattern in `utils/dice-branch.ts`; no name set on either side
+ *  reaches `[on success]` or `[/branch]` at all. */
 export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "action",
   "ambient",
   "bg",
   "book",
+  "branch",
   "choices",
   "combat",
   "combat_result",
@@ -83,6 +93,7 @@ export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "map_update",
   "music",
   "note",
+  "on",
   "party-chat",
   "party-turn",
   "party_add",

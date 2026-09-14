@@ -26,43 +26,52 @@
 // either, and no second provider request is ever made. Nothing here invents a die
 // result, a modifier, a total or an outcome.
 //
-// Arm 2 is real: it rolls `[[roll: 2d6+3]]` live with the session's crypto roller and
-// substitutes the total, adding sheet modifiers by name through the same arithmetic a
-// skill check uses. The grammar and the bounded-span walk live in the shared
-// placeholder module; what lives here is the chat-shaped half — the sheet, the ledger,
-// the dice history and the log. Arm 1 is still a skeleton and the branch slice fills it.
+// Both arms are real. Arm 1 keeps the half a live roll selects and deletes the other one
+// before anything collects a command out of it; arm 2 rolls `[[roll: 2d6+3]]` with the
+// session's crypto roller and substitutes the total, adding sheet modifiers by name
+// through the same arithmetic a skill check uses. Each arm's grammar and bounded-span
+// walk live in a shared module beside the tag it reads; what lives here is the
+// chat-shaped half — the sheet, the roll, the ledger, the dice history and the log.
 // ──────────────────────────────────────────────
 
 import {
+  dropGameBranchBlocks,
+  isEngineRollableSkillCheckTag,
   parseRollPlaceholderBody,
+  parseSkillCheckTagBody,
+  readSkillCheckBranchLabel,
   replaceRollPlaceholdersWithNotice,
   resolveRollPlaceholders,
+  scanGameBranchBlocks,
   scanRollPlaceholders,
+  scanSkillCheckTagSpans,
+  selectGameBranchHalf,
+  serializeResolvedSkillCheckTag,
+  stripGameBranchDelimiters,
   type DiceRollResult,
+  type GameBranchBlock,
+  type GameBranchRefusal,
   type GameDiceTurnNotice,
   type GameDicePlaceholderRecord,
   type RollPlaceholderRefusalRecord,
   type RollPlaceholderSheetModifier,
   type RPGAttributes,
+  type SkillCheckResult,
+  type SkillCheckTagSpan,
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
 import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
-import { loadSkillCheckModifierContext, type SkillCheckModifierContext } from "./skill-check-resolution.service.js";
+import {
+  isResolvableSkillCheckRequest,
+  loadSkillCheckModifierContext,
+  resolveSkillCheckWithContext,
+  type SkillCheckModifierContext,
+  type SkillCheckRequest,
+} from "./skill-check-resolution.service.js";
 
 export { PLACEHOLDER_BODY_MAX, ROLL_UNAVAILABLE_TEXT } from "@marinara-engine/shared";
-
-/** `[branch: id]` is an ordinary `[name:` head. The other three delimiters are not. */
-const BRANCH_OPENER_PATTERN = /\[branch:[^\]\r\n]*\]/gi;
-/**
- * `[on success]` has a space between the name and the `]`, so the server's tag-head
- * reader and the client's bracket walk both return null for it and every
- * removable-tag set is skipped before it is ever consulted. Only a literal pattern
- * reaches it. Same for `[/branch]`, which is not a `[name:` or `[name]` head at all.
- */
-const BRANCH_HALF_PATTERN = /\[on\s+(?:success|failure)\]/gi;
-const BRANCH_CLOSER_PATTERN = /\[\/branch\]/gi;
 
 /** How much of a refused span is worth carrying into a log line. */
 const LOGGED_SPAN_MAX = 200;
@@ -163,23 +172,188 @@ export function createGameTurnChanceSession(options: GameTurnChanceSessionOption
   };
 }
 
+/** Why the arm would not resolve a block. The block's own reasons, plus the matching ones. */
+export type GameBranchArmRefusal =
+  | GameBranchRefusal
+  /** No check tag claimed this block's label back. */
+  | "unmatched-label"
+  /** Two blocks, or two check tags, claimed the same label, so the label decides nothing. */
+  | "ambiguous-label"
+  /** The claimed tag is not a check this engine rolls, is out of bounds, or already carries a result. */
+  | "unrollable-check";
+
+/** Plain words for each refusal, so the log says what the model wrote rather than what a flag is called. */
+const BRANCH_REFUSAL_REASONS: Record<GameBranchArmRefusal, string> = {
+  unterminated: "the block never closed",
+  nested: "the block carried another block or a check tag inside it",
+  "empty-label": "the block named no label",
+  "missing-half": "the block is missing one of its two halves",
+  "duplicate-half": "the block wrote the same half twice",
+  "unmatched-label": "no check tag claimed the block's label",
+  "ambiguous-label": "the label was claimed more than once, so it decides nothing",
+  "unrollable-check": "the claimed check is not one this engine rolls",
+};
+
+/** What the arm decided about one block, before anything is spliced. */
+interface GameBranchPlan {
+  block: GameBranchBlock;
+  /** The check tag this block's label claimed, when exactly one claimed it back and it is rollable. */
+  check: (SkillCheckTagSpan & { request: SkillCheckRequest }) | null;
+  /** Null only when a half will be kept. */
+  refusal: GameBranchArmRefusal | null;
+}
+
+/** One replacement, spliced in reading order so the prose between spans stays byte for byte. */
+interface GameBranchEdit {
+  start: number;
+  end: number;
+  replacement: string;
+}
+
+/**
+ * Match every block to the check tag its label claims, and say what is wrong where it
+ * does not work out.
+ *
+ * Matching is by label, folded, and it has to be exactly one on each side: a label two
+ * blocks claim, or two check tags claim, decides nothing, and guessing which pairing the
+ * model meant would decide a real outcome on a coin flip the player never sees. A check
+ * tag INSIDE a block is never the match — the block is refused for carrying it, and the
+ * tag is re-emitted for the shipped resolver to roll — so the two spans can never
+ * overlap when the splice runs.
+ */
+export function planGameTurnBranches(content: string, blocks: GameBranchBlock[]): GameBranchPlan[] {
+  const claimedByBlocks = new Map<string, number>();
+  for (const block of blocks) {
+    if (block.label) claimedByBlocks.set(block.label, (claimedByBlocks.get(block.label) ?? 0) + 1);
+  }
+
+  /** A label mapped to `null` was claimed twice, which is the same as not being claimed. */
+  const checksByLabel = new Map<string, SkillCheckTagSpan | null>();
+  for (const span of scanSkillCheckTagSpans(content)) {
+    const label = readSkillCheckBranchLabel(span.body);
+    if (!label) continue;
+    checksByLabel.set(label, checksByLabel.has(label) ? null : span);
+  }
+
+  return blocks.map((block) => {
+    const inside = (span: SkillCheckTagSpan) => span.start >= block.start && span.end <= block.end;
+    const claimed = block.label ? checksByLabel.get(block.label) : undefined;
+    const ambiguous = (claimedByBlocks.get(block.label) ?? 0) > 1 || claimed === null;
+    const span = claimed && !inside(claimed) ? claimed : undefined;
+
+    let check: GameBranchPlan["check"] = null;
+    let matchRefusal: GameBranchArmRefusal | null = null;
+    if (!block.label) {
+      matchRefusal = "empty-label";
+    } else if (ambiguous) {
+      matchRefusal = "ambiguous-label";
+    } else if (!span) {
+      matchRefusal = "unmatched-label";
+    } else {
+      const tag = parseSkillCheckTagBody(span.body);
+      const request: SkillCheckRequest | null =
+        tag && !tag.resolvedResult && isEngineRollableSkillCheckTag(tag)
+          ? {
+              skill: tag.skill,
+              dc: tag.dc,
+              advantage: tag.advantage,
+              disadvantage: tag.disadvantage,
+              preRolledD20: tag.preRolledD20,
+            }
+          : null;
+      if (request && isResolvableSkillCheckRequest(request)) check = { ...span, request };
+      else matchRefusal = "unrollable-check";
+    }
+    return { block, check, refusal: block.refusal ?? matchRefusal };
+  });
+}
+
 /**
  * Branch arm. Scans for `[branch: id] ... [/branch]` blocks with their matching sparse
  * check tags, resolves in reading order and splices.
  *
- * A no-op in this slice, on purpose. The branch failure contract does not say "strip
- * the delimiters": it says roll the check once, write the RESOLVED record, and keep
- * neither half — and the roller and the record belong to the branch slice. Half of that
- * contract would be worse than none, because a stripped block leaves both outcomes
- * standing as prose. Nothing prompts the model to write a branch block until the prompt
- * slice lands, so the arm has nothing to see before then; a block written anyway falls
- * through to the shipped sparse-tag behaviour.
+ * It runs BEFORE spatial extraction and BEFORE the package-verb strip, and that position
+ * is the whole reason the arm exists where it does: the discarded half is gone before
+ * anything collects a command out of it, so a `[spatial_move:]` or a package verb the
+ * model wrote into the outcome that did not happen never reaches a parser at all. The
+ * live rewrite path only holds that invariant by re-parsing both after the rewrite, and
+ * re-parsing is exactly what a one-request turn skips.
+ *
+ * The roll goes through `resolveSkillCheckWithContext` with the session's crypto roller,
+ * like every other check in the turn, so the sheet modifier, the advantage handling and
+ * the critical flags are the shipped ones rather than a second implementation. A critical
+ * folds into the success or failure half by its `success` boolean and is recorded in the
+ * tag; it never becomes a third half.
+ *
+ * The failure contract, per 3.5, and every branch of it ends in the same place: the check
+ * is rolled once, the RESOLVED record is written — never a sparse tag, which the client's
+ * own fallback would pick up and roll a second time — neither half's prose is kept, the
+ * delimiters are stripped, and no second provider request is ever made.
  */
 export async function resolveGameTurnBranches(
   content: string,
-  _session: GameTurnChanceSession,
+  session: GameTurnChanceSession,
 ): Promise<GameTurnChanceRewrite> {
-  return await Promise.resolve({ content, changed: false });
+  const blocks = scanGameBranchBlocks(content);
+  if (blocks.length === 0) return { content, changed: false };
+
+  const plans = planGameTurnBranches(content, blocks);
+  // The sheet is read at most once per turn, and only when a block actually has a check
+  // to roll: a turn whose every block is malformed reads no snapshot at all.
+  const context = plans.some((plan) => plan.check) ? await session.loadModifierContext() : null;
+
+  const edits: GameBranchEdit[] = [];
+  for (const plan of plans) {
+    let result: SkillCheckResult | null = null;
+    if (plan.check && context) {
+      result = resolveSkillCheckWithContext(context, plan.check.request, () => session.roll(20));
+      edits.push({
+        start: plan.check.start,
+        end: plan.check.end,
+        replacement: serializeResolvedSkillCheckTag(result),
+      });
+    }
+
+    const half = plan.refusal === null && result ? selectGameBranchHalf(plan.block, result.success) : null;
+    if (half) {
+      edits.push({ start: plan.block.start, end: plan.block.end, replacement: half.text });
+      session.ledger.push({ stage: "branch", outcome: "resolved", span: plan.block.raw.slice(0, LOGGED_SPAN_MAX) });
+      continue;
+    }
+
+    // Neither half is kept. Any check tag that sat inside the block is re-emitted,
+    // because losing the ask is the one thing a refusal may not do.
+    edits.push({
+      start: plan.block.start,
+      end: plan.block.end,
+      replacement: plan.block.innerCheckTags.join(" "),
+    });
+    session.ledger.push({ stage: "branch", outcome: "unreadable", span: plan.block.raw.slice(0, LOGGED_SPAN_MAX) });
+    logger.warn(
+      "[game/one-request-dice] Refused a branch block in chat %s: %s (%s)%s",
+      session.chatId,
+      plan.block.raw.slice(0, LOGGED_SPAN_MAX),
+      BRANCH_REFUSAL_REASONS[plan.refusal ?? "unmatched-label"],
+      result ? " the check was still rolled and recorded" : "",
+    );
+  }
+
+  edits.sort((left, right) => left.start - right.start);
+  let next = "";
+  let cursor = 0;
+  for (const edit of edits) {
+    // Overlapping spans cannot happen — a claimed check tag inside a block refuses that
+    // block instead of matching it — but a splice that silently duplicated prose would be
+    // invisible in the saved turn, so the guard is a skip rather than a trust.
+    if (edit.start < cursor) continue;
+    next += content.slice(cursor, edit.start) + edit.replacement;
+    cursor = edit.end;
+  }
+  next += content.slice(cursor);
+  // A half marker or a closer with no opener of its own is left over from a block the
+  // walk could not bound. Nothing else on either side reaches those two spellings.
+  next = stripGameBranchDelimiters(next);
+  return { content: next, changed: next !== content };
 }
 
 /**
@@ -338,10 +512,16 @@ export async function runGameTurnChancePass(
 }
 
 /**
- * The fallback rewrite of the failure contract. Strips the branch delimiters at either
- * stage, and sweeps the placeholder spans at the later stage only, so a placeholder
- * inside a package verb's argument still goes away with the verb instead of being
- * rewritten in front of it.
+ * The fallback rewrite of the failure contract. Drops the branch blocks at either stage,
+ * and sweeps the placeholder spans at the later stage only, so a placeholder inside a
+ * package verb's argument still goes away with the verb instead of being rewritten in
+ * front of it.
+ *
+ * The blocks are DROPPED rather than un-delimited, which is the same call 3.5 makes for a
+ * block the arm itself refused: a pass that failed rolled nothing, so keeping both halves
+ * would save a turn asserting two contradictory outcomes and keeping one would invent the
+ * outcome. The check tags inside a dropped block are re-emitted, so the ask survives and
+ * the shipped resolver still rolls it.
  */
 export function applyChanceFallback(
   content: string,
@@ -350,11 +530,21 @@ export function applyChanceFallback(
 ): GameTurnChanceRewrite {
   let next = content;
   let changed = false;
-  const delimiters = stripBranchDelimiters(next);
-  if (delimiters.changed) {
-    next = delimiters.content;
+  const blocks = dropGameBranchBlocks(next);
+  if (blocks.changed) {
+    next = blocks.content;
     changed = true;
-    session.ledger.push({ stage, outcome: "unreadable", span: "[branch]" });
+    for (const block of blocks.blocks) {
+      session.ledger.push({ stage, outcome: "unreadable", span: block.slice(0, LOGGED_SPAN_MAX) });
+      logger.warn(
+        "[game/one-request-dice] Dropped a branch block after the pass failed in chat %s: %s",
+        session.chatId,
+        block.slice(0, LOGGED_SPAN_MAX),
+      );
+    }
+    if (blocks.blocks.length === 0) {
+      session.ledger.push({ stage, outcome: "unreadable", span: "[branch]" });
+    }
   }
   if (stage === "placeholder") {
     const placeholders = replaceUnreadablePlaceholders(next, session.chatId);
@@ -371,10 +561,7 @@ export function applyChanceFallback(
 
 /** Strip `[branch: id]`, `[on success]`, `[on failure]` and `[/branch]`, keeping the prose between them. */
 export function stripBranchDelimiters(content: string): GameTurnChanceRewrite {
-  const next = content
-    .replace(BRANCH_OPENER_PATTERN, "")
-    .replace(BRANCH_HALF_PATTERN, "")
-    .replace(BRANCH_CLOSER_PATTERN, "");
+  const next = stripGameBranchDelimiters(content);
   return { content: next, changed: next !== content };
 }
 

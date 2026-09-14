@@ -355,6 +355,30 @@ assert.equal(
   false,
   "and the schema refuses a package verb that would claim the name",
 );
+// `branch` and `on` are reserved by hand too, and they are NOT the same case. `[branch: crates]`
+// matches the capability command pattern exactly, so a package verb named branch would intercept
+// every one-request dice block before the engine's arm saw it. `on` cannot be shadowed at all —
+// `[on success]` puts a space between the name and the `]` — so it is reserved to close the name
+// space and is pinned here as defensive, never as the reason the delimiters are stripped.
+assert.ok(reserved.has("branch"), "`branch` stays reserved: a package verb named branch shadows the block opener");
+assert.ok(reserved.has("on"), "`on` stays reserved, defensively");
+assert.match(
+  "[branch: crates]",
+  capabilityCommandTag,
+  "the block opener is shadowable, which is why branch is reserved",
+);
+for (const delimiter of ["[on success]", "[on failure]", "[/branch]"]) {
+  assert.doesNotMatch(
+    delimiter,
+    capabilityCommandTag,
+    `${delimiter} cannot be shadowed by a package verb, so reserving its name buys nothing`,
+  );
+}
+assert.equal(
+  gmVerbSchema.safeParse({ name: "branch", description: "Shadow the block", effect: "event" }).success,
+  false,
+  "and the schema refuses a package verb that would claim the block opener",
+);
 
 // ── Pin 2: engine-owned metadata namespaces ──────────────────────────────────
 

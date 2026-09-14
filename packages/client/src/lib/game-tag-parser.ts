@@ -11,6 +11,7 @@
 import {
   parseSkillCheckTagBody,
   readGmTagAttributes,
+  stripGameBranchDelimiters,
   type DirectionCommand,
   type DirectionEffect,
   type SkillCheckTag,
@@ -959,6 +960,13 @@ export function stripGmTags(content: string): string {
     .replace(/\[party-turn\]/gi, "")
     .replace(/\[party-chat\]/gi, "")
     .replace(/\[dice:\s*[^\]]+\]/gi, "");
+  // The one-request dice branch delimiters. Three of the four are unreachable by
+  // everything below: `stripUnknownBracketTags` and the `[\w+:` catch-all both require a
+  // `:` after the name, and `[on success]` has a space before its `]` while `[/branch]`
+  // is not a `[name:` head at all. The prose between them is kept — a block only reaches
+  // this stripper when the engine's chance pass never ran for it, and deleting narration
+  // the player already read would be the worse failure.
+  text = stripGameBranchDelimiters(text);
   // Quote-aware catch-all for any remaining [tag: ...] the model may invent
   text = stripUnknownBracketTags(text);
   // Balanced bracket stripping for tags whose content may contain nested []
@@ -1021,6 +1029,13 @@ export function stripGmTagsKeepReadables(content: string): string {
     .replace(/\[party-turn\]/gi, "")
     .replace(/\[party-chat\]/gi, "")
     .replace(/\[dice:\s*[^\]]+\]/gi, "");
+  // The one-request dice branch delimiters. Three of the four are unreachable by
+  // everything below: `stripUnknownBracketTags` and the `[\w+:` catch-all both require a
+  // `:` after the name, and `[on success]` has a space before its `]` while `[/branch]`
+  // is not a `[name:` head at all. The prose between them is kept — a block only reaches
+  // this stripper when the engine's chance pass never ran for it, and deleting narration
+  // the player already read would be the worse failure.
+  text = stripGameBranchDelimiters(text);
   // Quote-aware catch-all for unknown tags, keeping Note/Book inline.
   // Case-insensitive to match extractBalancedTags (which lowercases the prefix);
   // otherwise `[note:]` / `[book:]` would slip past extraction and get stripped.

@@ -230,8 +230,12 @@ export async function resolveChatSkillCheck(
  * The same bounds the endpoint's schema enforces, so a tag the client would
  * have been unable to POST is left in the prose rather than resolved by a path
  * with looser rules.
+ *
+ * Exported because the one-request branch arm rolls its own matched check before
+ * this function's own caller runs, and a second copy of these bounds is how the
+ * two paths would start refusing different tags.
  */
-function isResolvableRequest(request: SkillCheckRequest): boolean {
+export function isResolvableSkillCheckRequest(request: SkillCheckRequest): boolean {
   if (!request.skill || request.skill.length > SKILL_CHECK_MAX_SKILL_LENGTH) return false;
   return Number.isInteger(request.dc) && request.dc >= SKILL_CHECK_MIN_DC && request.dc <= SKILL_CHECK_MAX_DC;
 }
@@ -357,7 +361,7 @@ export async function resolveSkillCheckTagsInContent(
         disadvantage: tag.disadvantage,
         preRolledD20: tag.preRolledD20,
       };
-      if (!isResolvableRequest(request)) {
+      if (!isResolvableSkillCheckRequest(request)) {
         logger.debug(
           "[game/skill-check] Leaving out-of-bounds check tag unresolved for chat %s (dc=%d)",
           options.chatId ?? "unknown",
