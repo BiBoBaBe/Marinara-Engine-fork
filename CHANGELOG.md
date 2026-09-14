@@ -13,6 +13,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Game setup keeps its normal steps when an Experience declares inline setup, with seed controls, individual lorebook entry selection, and setup-file import/export. Experiences can only be selected for new games; reopening an existing game preserves its saved Experience (#6181, #6182).
 - Unsupported installed package records no longer block supported packages on updated hosts, and remain preserved during registry writes and downgrade checks (#6181).
+- An Experience that requires custom HUD widgets on or off now applies that setting while it is on, locks the control with a line saying which Experience set it, and gives the earlier choice back when the Experience is turned off (#6200).
+- Dismissing the malformed-JSON repair dialog with Escape no longer also dismisses the Experience setup behind it (#6200).
+- Importing a game setup file now reports how many of its selected lorebook entries are missing on this machine instead of dropping them without a word (#6200).
+- The world seed an Experience asks for is a whole number from 0 to 4294967295; anything else blocks Start instead of quietly building a different world, and importing a setup file that carries no usable seed keeps the prefilled random one (#6200).
 - Automatic translation follows the originating chat while navigating elsewhere in the app (#6187).
 - Closing a Unix terminal flushes confirmed saves and records a clean server shutdown (#6183).
 - Inventory tracker items can retain editable descriptions and locations alongside their quantities (#6192).
