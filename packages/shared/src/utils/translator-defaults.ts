@@ -11,6 +11,7 @@ const stringKeys = [
 ] as const;
 const promptKeys = ["translationPrompt", "translationInputPrompt", "translationOutputPrompt"] as const;
 const booleanKeys = ["autoTranslate", "translateInput", "showInputTranslateButton", "translationDisplayOnly"] as const;
+export const TRANSLATOR_SETTINGS_KEYS = [...stringKeys, ...promptKeys, ...booleanKeys] as const;
 
 /** Keep only reusable translator settings, including explicit false, empty and prompt-reset values. */
 export function normalizeTranslatorSettings(value: unknown): Record<string, unknown> {

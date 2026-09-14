@@ -11,6 +11,7 @@ import { withChatMetadataPatchQueue } from "./chats.storage.js";
 import {
   CHAT_PRESET_EXCLUDED_METADATA_KEYS,
   TRANSLATOR_DEFAULTS_SETTINGS_KEY,
+  TRANSLATOR_SETTINGS_KEYS,
   normalizeTranslatorSettings,
   isRetiredBuiltInAgentId,
   type ChatMode,
@@ -295,6 +296,9 @@ export function createChatPresetsStorage(db: DB) {
         })();
 
         const presetMetadata = (sanitizePresetSettings(preset.settings).metadata ?? {}) as Record<string, unknown>;
+        const translatorSettings = normalizeTranslatorSettings(presetMetadata);
+        // Filter this application copy; keep the saved profile intact.
+        for (const key of TRANSLATOR_SETTINGS_KEYS) delete presetMetadata[key];
 
         // Preserve only chat-specific (non-profile) metadata keys.
         const preserved: Record<string, unknown> = {};
@@ -325,7 +329,7 @@ export function createChatPresetsStorage(db: DB) {
         const newMetadata: Record<string, unknown> = {
           ...baseDefaults,
           ...presetMetadata,
-          ...normalizeTranslatorSettings(presetMetadata),
+          ...translatorSettings,
           ...preserved,
           appliedChatPresetId: preset.id,
         };

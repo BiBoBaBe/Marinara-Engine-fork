@@ -1502,6 +1502,33 @@ try {
       "Saving defaults leaves existing chats unchanged",
     );
     const target = (await createTranslatorChat("roleplay"))!;
+    const invalidTranslatorMetadata = {
+      autoTranslate: "false",
+      translateInput: 0,
+      translationConnectionId: false,
+      translationOutputTargetLang: 42,
+      translationOutputPrompt: [],
+      translationProvider: "unsupported",
+      translationInputPrompt: "Valid profile prompt",
+      enableAgents: false,
+    };
+    const invalidProfile = (await chatPresetStorage.create({
+      name: "Invalid translator overrides",
+      mode: "roleplay",
+      settings: { metadata: invalidTranslatorMetadata },
+    }))!;
+    const invalidApplied = JSON.parse((await chatPresetStorage.applyToChat(invalidProfile.id, target.id))!.metadata);
+    assert.deepEqual(
+      Object.fromEntries(Object.keys(defaults).map((key) => [key, invalidApplied[key]])),
+      { ...defaults, translationInputPrompt: "Valid profile prompt" },
+      "Invalid profile translator values inherit saved defaults while valid choices still override them",
+    );
+    assert.equal(invalidApplied.enableAgents, false, "Other profile metadata remains applicable");
+    assert.deepEqual(
+      (await chatPresetStorage.getById(invalidProfile.id))!.settings.metadata,
+      invalidTranslatorMetadata,
+      "Applying a profile must not rewrite its saved translator choices",
+    );
     const profile = (await chatPresetStorage.create({
       name: "Translator override",
       mode: "roleplay",
