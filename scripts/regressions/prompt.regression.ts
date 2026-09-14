@@ -10967,6 +10967,34 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         { name: "Count", value: "1" },
       ]);
 
+      const attemptedUnlock = resolveTrackerGroupUpdate(
+        {
+          updates: [
+            { name: "Health", value: "0", locked: false },
+            { name: "New", value: "kept" },
+          ],
+          removed: ["Health"],
+        },
+        customFields,
+        customState,
+        "customTrackerFields",
+      )!;
+      const lockedResult = buildLockedPlayerStatsArrayPatch({
+        field: "customTrackerFields",
+        values: attemptedUnlock,
+        snapshot: { playerStats: customState.playerStats },
+        lockState: customState,
+      });
+      assert.deepEqual(lockedResult.values, [...customFields, { name: "New", value: "kept" }]);
+      const nextLockedState = { ...customState, playerStats: lockedResult.playerStats };
+      const subsequentRemoval = resolveTrackerGroupUpdate(
+        { removed: ["Health"] },
+        lockedResult.values,
+        nextLockedState,
+        "customTrackerFields",
+      );
+      assert.deepEqual(subsequentRemoval, lockedResult.values, "a model update cannot unlock the saved row");
+
       const trackedCharacters = [
         {
           characterId: "guard-a",
@@ -10983,6 +11011,47 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         { characterId: "visitor", name: "Visitor", mood: "happy" },
       ];
       const characterState = { ...currentState, presentCharacters: trackedCharacters };
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          { removed: ["guard-a", "Guard"] },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        trackedCharacters.slice(1),
+        "removing an ID must not disambiguate a name in the original snapshot",
+      );
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          { updates: [{ characterId: "guard-a", name: "Captain" }], removed: ["Guard"] },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        [{ ...trackedCharacters[0], name: "Captain" }, ...trackedCharacters.slice(1)],
+        "renaming an ID must not disambiguate a removal from the original snapshot",
+      );
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          {
+            updates: [
+              { characterId: "guard-a", name: "Captain" },
+              { name: "Guard", mood: "angry" },
+              { characterId: "arrival", name: "Arrival", mood: "calm" },
+              { name: "Arrival", mood: "happy" },
+            ],
+          },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        [
+          { ...trackedCharacters[0], name: "Captain" },
+          ...trackedCharacters.slice(1),
+          { characterId: "arrival", name: "Arrival", mood: "happy" },
+        ],
+        "renaming cannot disambiguate existing names, while a new row accepts repeated updates",
+      );
       const updatedCharacters = resolveTrackerGroupUpdate(
         {
           updates: [
