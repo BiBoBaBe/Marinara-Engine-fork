@@ -647,7 +647,7 @@ export function GameSetupWizard({
       !(Array.isArray(chatMetadata?.excludedLorebookIds) && chatMetadata.excludedLorebookIds.includes(book.id)) &&
       !(
         chatMetadata?.gameLorebookKeeperEnabled !== true &&
-        (book.sourceAgentId === "lorebook-keeper" || book.id === chatMetadata?.gameLorebookKeeperLorebookId)
+        (book.sourceAgentId === "game-lorebook-keeper" || book.id === chatMetadata?.gameLorebookKeeperLorebookId)
       ),
   );
   const entryQuery = useEntriesAcrossLorebooks(

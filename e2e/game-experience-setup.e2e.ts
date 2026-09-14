@@ -40,6 +40,7 @@ for (const isNewGame of [true, false]) {
       { id: "free-book", name: "Unattached lore", enabled: true },
       { id: "excluded-book", name: "Excluded lore", enabled: true },
       { id: "disabled-book", name: "Disabled lore", enabled: false },
+      { id: "keeper-book", name: "Keeper lore", enabled: true, sourceAgentId: "game-lorebook-keeper" },
     ];
     await page.route("**/api/capability-packages/installed", (route) =>
       route.fulfill({
@@ -90,6 +91,7 @@ for (const isNewGame of [true, false]) {
       }),
     );
     await page.route("**/api/lorebooks", (route) => route.fulfill({ json: books }));
+    await page.route("**/api/lorebooks/keeper-book/entries", (route) => route.fulfill({ json: [] }));
     let failEntryFetch = true;
     await page.route("**/api/lorebooks/free-book/entries", (route) =>
       failEntryFetch
@@ -184,8 +186,15 @@ for (const isNewGame of [true, false]) {
     );
     const wizard = page.locator('[data-component="GameSetupWizard"]');
     await expect(wizard).toBeVisible();
-    const next = () => wizard.getByRole("button", { name: "Next", exact: true }).click();
-    const back = () => wizard.getByRole("button", { name: "Back", exact: true }).click();
+    const navigate = async (direction: "Next" | "Back") => {
+      const heading = wizard.getByRole("heading", { level: 4 }).first();
+      const previous = await heading.innerText();
+      await wizard.getByRole("button", { name: direction, exact: true }).click();
+      await expect(heading).not.toHaveText(previous);
+      await expect(heading).toBeVisible();
+    };
+    const next = () => navigate("Next");
+    const back = () => navigate("Back");
     if (isNewGame) {
       await page.screenshot({ path: testInfo.outputPath("setup-before-experience.png") });
       await expect(wizard.getByRole("button", { name: "Import setup", exact: true })).toBeEnabled();
@@ -291,6 +300,7 @@ for (const isNewGame of [true, false]) {
     await expect(wizard.getByRole("heading", { name: "Goals", exact: true })).toBeVisible();
     await next();
     await wizard.getByRole("button", { name: "Select individual entries", exact: true }).click();
+    await expect(wizard.locator("summary").filter({ hasText: "Keeper lore" })).toHaveCount(0);
     await expect(wizard.getByRole("alert")).toContainText("Could not load the entries.");
     await next();
     await next();
