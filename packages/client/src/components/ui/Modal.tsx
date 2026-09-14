@@ -15,7 +15,7 @@ import {
 import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
-import { registerModalOverlay } from "../../lib/modal-overlay-registry";
+import { registerModalOverlay, type ModalOverlayRegistration } from "../../lib/modal-overlay-registry";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -105,19 +105,29 @@ export function Modal({
     };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Tell screens that draw their own full-page shell that a dialog is stacked
-  // above them. The Escape listener below does not stop propagation, so without
-  // this they would act on the same press.
+  // Register as an open overlay, in opening order. Two readers: screens that
+  // draw their own full-page shell learn that a dialog is stacked above them,
+  // and the Escape listener below asks whether THIS dialog is the topmost one,
+  // since every open Modal hears the same keypress and none stops propagation.
+  const overlayRegistrationRef = useRef<ModalOverlayRegistration | null>(null);
   useEffect(() => {
     if (!open) return;
-    return registerModalOverlay();
+    const registration = registerModalOverlay();
+    overlayRegistrationRef.current = registration;
+    return () => {
+      registration.release();
+      overlayRegistrationRef.current = null;
+    };
   }, [open]);
 
-  // Close on Escape
+  // Close on Escape, but only the topmost open dialog: a confirm opened over a
+  // settings dialog must not take the settings dialog down with it.
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !closeDisabled) onClose();
+      if (e.key !== "Escape" || closeDisabled) return;
+      if (!overlayRegistrationRef.current?.isTopmost()) return;
+      onClose();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
