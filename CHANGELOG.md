@@ -11,6 +11,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Unsupported installed package records no longer block supported packages on updated hosts, and remain preserved during registry writes and downgrade checks (#6181).
 - An Experience that requires custom HUD widgets on or off now applies that setting while it is on, locks the control with a line saying which Experience set it, and gives the earlier choice back when the Experience is turned off (#6181).
 - Dismissing the malformed-JSON repair dialog with Escape no longer also dismisses the Experience setup behind it (#6181).
+- Importing a game setup file now reports how many of its selected lorebook entries are missing on this machine instead of dropping them without a word (#6181).
 - Automatic translation follows the originating chat while navigating elsewhere in the app (#6187).
 - Closing a Unix terminal flushes confirmed saves and records a clean server shutdown (#6183).
 - Inventory tracker items can retain editable descriptions and locations alongside their quantities (#6192).

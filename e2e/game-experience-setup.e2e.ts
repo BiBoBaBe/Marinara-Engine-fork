@@ -316,6 +316,8 @@ for (const isNewGame of [true, false]) {
           }),
         ),
       });
+    // The picked entries have not loaded yet, so none of them may be reported as missing.
+    await expect(wizard.getByText(/available here and w/u)).toHaveCount(0);
     if (isNewGame) {
       await expect(wizard.getByRole("spinbutton", { name: "World seed" })).toHaveValue("7");
       await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
@@ -379,6 +381,10 @@ for (const isNewGame of [true, false]) {
       expect(result.config.experienceConfig).toEqual({ worldSeed: 7, generate: true });
       // Starting cannot serialize an invalid seed, blank or fractional.
       for (let step = 0; step < 6; step++) await back();
+      // The entries have loaded by now, so the one imported pick that does not exist here is reported.
+      await expect(
+        wizard.getByText("1 selected lorebook entry from this file is not available here and was skipped."),
+      ).toBeVisible();
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
       for (let step = 0; step < 6; step++) await next();
       await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
@@ -400,3 +406,106 @@ for (const isNewGame of [true, false]) {
     }
   });
 }
+
+test("Experience without inline setup keeps its own setup dialog", async ({ page }, testInfo) => {
+  // The pre-seam compatibility path: a game-surface package that declares no setup block still owns
+  // its whole setup form, so the wizard steps step aside for it and come back when the player goes back.
+  const legacy = {
+    id: "legacy-only-fixture",
+    version: "1.0.0",
+    status: "active",
+    readiness: "ready",
+    manifest: {
+      schemaVersion: 2,
+      id: "legacy-only-fixture",
+      name: "Legacy only fixture",
+      version: "1.0.0",
+      capabilityApi: { major: 1, minor: 18 },
+      kind: ["agent"],
+      entrypoints: { client: "client.mjs" },
+      contributions: { slots: ["game-surface"] },
+      permissions: ["ui"],
+    },
+  };
+  await page.route("**/api/capability-packages/installed", (route) => route.fulfill({ json: [legacy] }));
+  await page.route("**/api/capability-packages/agents", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/capability-packages/*/client?*", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: `const tag = 'marinara-capability-legacy-only-fixture';
+      if (!customElements.get(tag)) customElements.define(tag, class extends HTMLElement {
+        connectedCallback() { this.textContent = 'Legacy package setup fixture'; }
+      });`,
+    }),
+  );
+  await page.route("**/api/connections", (route) =>
+    route.fulfill({
+      json: [
+        { id: "wizard-connection", name: "Wizard connection", provider: "custom", model: "fixture", isDefault: true },
+      ],
+    }),
+  );
+  await page.route("**/api/lorebooks", (route) => route.fulfill({ json: [] }));
+  await seedUIState(page, {
+    hasCompletedOnboarding: true,
+    sidebarOpen: false,
+    rightPanelOpen: false,
+    theme: testInfo.project.name === "desktop-chromium" ? "light" : "dark",
+  });
+  await page.addInitScript((value) => localStorage.setItem("marinara:whats-new:seen-version", value), version);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { GameSetupWizard } = await import("/src/components/game/GameSetupWizard.tsx" as string);
+    const dependencyUrl = (name: string) =>
+      performance
+        .getEntriesByType("resource")
+        .find((entry) => new URL(entry.name).pathname.endsWith(`/deps/${name}.js`))!.name;
+    const { default: React } = await import(dependencyUrl("react"));
+    const { default: ReactDOM } = await import(dependencyUrl("react-dom_client"));
+    const { QueryClient, QueryClientProvider } = await import(dependencyUrl("@tanstack_react-query"));
+    const container = document.createElement("div");
+    document.body.append(container);
+    ReactDOM.createRoot(container).render(
+      React.createElement(
+        QueryClientProvider,
+        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+        React.createElement(GameSetupWizard, {
+          activeChatId: "wizard-chat",
+          isNewGame: true,
+          chatMetadata: {},
+          onSetupError: () => false,
+          onCancel: () => {},
+          isLoading: false,
+          isDraftingMap: false,
+          isLinkingSharedWorld: false,
+          characters: [],
+          onComplete: () => {},
+        }),
+      ),
+    );
+  });
+  const wizard = page.locator('[data-component="GameSetupWizard"]');
+  await expect(wizard).toBeVisible();
+  await expect(wizard.getByRole("button", { name: "Next", exact: true })).toBeVisible();
+  await wizard.getByRole("button", { name: "Show", exact: true }).click();
+  await wizard.getByRole("switch", { name: "Legacy only fixture", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Legacy only fixture", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Legacy package setup fixture", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close setup", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Back", exact: true })).toBeVisible();
+  // The package owns the whole form here, so none of the wizard's own steps stay on screen behind it.
+  await expect(wizard).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Next", exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("setup-legacy-only-dialog.png") });
+  await dialog.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(wizard).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  await expect(wizard.getByRole("button", { name: "Next", exact: true })).toBeVisible();
+  // The list comes back collapsed with the package turned off again, ready to be chosen a second time.
+  await wizard.getByRole("button", { name: "Show", exact: true }).click();
+  await expect(wizard.getByRole("switch", { name: "Legacy only fixture", exact: true })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+});

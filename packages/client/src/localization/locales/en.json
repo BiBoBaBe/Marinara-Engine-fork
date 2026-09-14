@@ -675,6 +675,8 @@
   "game.setupLore.error": "Could not load the entries. Use Retry in the Lorebooks step.",
   "game.setupLore.invalidImport": "This file has invalid selected lorebook entries.",
   "game.setupLore.loading": "Loading lorebook entries…",
+  "game.setupLore.missingImport_one": "1 selected lorebook entry from this file is not available here and was skipped.",
+  "game.setupLore.missingImport_other": "{{count}} selected lorebook entries from this file are not available here and were skipped.",
   "game.setupLore.unnamed": "Unnamed entry",
   "game.storyboard.generatingKeyframes": "Generating keyframes...",
   "game.storyboard.keyframeAlt": "Storyboard keyframe {{index}}",

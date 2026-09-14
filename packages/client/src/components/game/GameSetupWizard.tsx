@@ -545,6 +545,7 @@ export function GameSetupWizard({
   const [activeLorebookIds, setActiveLorebookIds] = useState<string[]>([]);
   const [lbSearch, setLbSearch] = useState("");
   const [activeLorebookEntryIds, setActiveLorebookEntryIds] = useState<string[]>([]);
+  const [importedLorebookEntryIds, setImportedLorebookEntryIds] = useState<string[] | null>(null);
   const [entryPickerOpened, setEntryPickerOpened] = useState(false);
   const [customWidgetsChoice, setEnableCustomWidgets] = useState(true);
   // A declaring Experience owns this control while it is active. The player's own choice stays
@@ -671,6 +672,11 @@ export function GameSetupWizard({
   const selectedEntryIds = [...new Set(activeLorebookEntryIds)]
     .filter((id) => eligibleEntries?.some((entry) => entry.id === id))
     .slice(0, 100);
+  // Imported picks are dropped silently when the entry no longer exists on this machine. The count is
+  // taken only once every book has loaded, so a pending or failed fetch never reports entries as gone.
+  const missingImportedEntryCount = eligibleEntries
+    ? new Set(importedLorebookEntryIds?.filter((id) => !eligibleEntries.some((entry) => entry.id === id))).size
+    : 0;
   const hasInstalledAgents = installedAgentIds.size > 0;
   const hierarchicalMapsInstalled = installedAgentIds.has("hierarchical-maps") && !experienceSetup;
   const musicDjInstalled = installedAgentIds.has("spotify");
@@ -1165,6 +1171,7 @@ export function GameSetupWizard({
       setEnableGameMusic(config.enableGameMusic !== false);
       setActiveLorebookIds(config.activeLorebookIds ?? []);
       setActiveLorebookEntryIds(config.activeLorebookEntryIds ?? []);
+      setImportedLorebookEntryIds(config.activeLorebookEntryIds?.length ? config.activeLorebookEntryIds : null);
       setLbSearch("");
       setEnableCustomWidgets(config.enableCustomWidgets !== false);
       setManualWidgetSetupEnabled(importedWidgets.length > 0);
@@ -1541,6 +1548,11 @@ export function GameSetupWizard({
                     {experienceImportNotice && (
                       <p role="status" className="text-xs text-[var(--muted-foreground)]">
                         {experienceImportNotice}
+                      </p>
+                    )}
+                    {missingImportedEntryCount > 0 && (
+                      <p role="status" className="text-xs text-[var(--muted-foreground)]">
+                        {localizeUi("game.setupLore.missingImport", { count: missingImportedEntryCount })}
                       </p>
                     )}
 
