@@ -82,8 +82,10 @@ import {
   type TTSConfig,
   type GameNpc,
   type SkillCheckResult,
+  type GameDicePlaceholderRecord,
   formatSkillCheckResultSummary,
 } from "@marinara-engine/shared";
+import { applyGameDiceMarkers, formatGameDiceModifier, formatGameDiceRolls } from "../../lib/game-dice-markers";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
 import { MESSAGE_SELECTION_SURFACE_CLASS } from "../chat/message-selection-styles";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -935,6 +937,23 @@ function getLogActionSegmentIndex(segments: NarrationSegment[]): number {
     0,
     segments.findIndex((segment) => segment.sourceSegmentIndex != null),
   );
+}
+
+/**
+ * The one-request dice records this turn saved, or null.
+ *
+ * They live on the message extra rather than in the content because the content has to
+ * stay a bare number: the prompt leaf and an already-saved transcript both read it as
+ * prose, and a marker baked into the text would change how an older turn reads.
+ */
+function readGameDicePlaceholderRecords(
+  message: Pick<NarrationMessage, "extra"> | null | undefined,
+): GameDicePlaceholderRecord[] | null {
+  if (!message) return null;
+  const notice = parseMessageExtraRecord(message.extra).gameDiceTurn;
+  if (!notice || typeof notice !== "object" || Array.isArray(notice)) return null;
+  const records = (notice as { placeholders?: unknown }).placeholders;
+  return Array.isArray(records) ? (records as GameDicePlaceholderRecord[]) : null;
 }
 
 function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment[] {
@@ -1984,6 +2003,52 @@ export function GameNarration({
     sourceMessagesById,
   ]);
 
+  // ── One-request dice: the inline marker (#one-request-dice) ──
+  // The substituted number is saved bare, so the breakdown is reattached here at render
+  // time and nowhere else. A record that cannot be matched to exactly one number in this
+  // text is skipped: the plain number is still true, the session log still carries the
+  // roll, and marking the wrong word would be worse than marking nothing.
+  const describeGameDiceRoll = useCallback(
+    (record: GameDicePlaceholderRecord): string => {
+      const options = { interpolation: { escapeValue: false } } as const;
+      const breakdown = formatGameDiceRolls(record);
+      const modifier = formatGameDiceModifier(record);
+      if (!modifier) {
+        return localizeUi("game.dice.marker.rolled", {
+          notation: record.raw,
+          breakdown,
+          total: record.total,
+          ...options,
+        });
+      }
+      const source = localizeUi(
+        record.modifierSource === "skill"
+          ? "game.dice.marker.sourceSkill"
+          : record.modifierSource === "attribute"
+            ? "game.dice.marker.sourceAttribute"
+            : "game.dice.marker.sourceFlat",
+      );
+      return localizeUi("game.dice.marker.rolledWithModifier", {
+        notation: record.raw,
+        modifier,
+        source,
+        breakdown,
+        total: record.total,
+        ...options,
+      });
+    },
+    [localizeUi],
+  );
+  const markGameDiceNumbers = useCallback(
+    (content: string, message: Pick<NarrationMessage, "extra"> | null | undefined, translated: boolean): string => {
+      // A translated segment is not the text the offsets were taken in, and its numbers
+      // may have been rewritten by the translator, so it is left alone.
+      if (translated) return content;
+      return applyGameDiceMarkers(content, readGameDicePlaceholderRecords(message), describeGameDiceRoll);
+    },
+    [describeGameDiceRoll],
+  );
+
   const active = segments[activeIndex] ?? null;
   const activeDisplayLen = active ? effectDisplayLength(active.content) : 0;
   const doneTyping = !!active && visibleChars >= activeDisplayLen;
@@ -2003,12 +2068,15 @@ export function GameNarration({
     !activeIsTranslating &&
     doneTyping &&
     gameTranslationMatchesMessage(activeSourceMessage, activeTranslationSource);
-  const activeVisibleContent =
+  const activeVisibleContent = markGameDiceNumbers(
     active && showActiveTranslationOnly
       ? activeTranslatedSegmentText!
       : active
         ? slicePreservingEffects(active.content, visibleChars)
-        : "";
+        : "",
+    activeSourceMessage,
+    showActiveTranslationOnly,
+  );
   const activeCopyKey = active ? `active:${active.id}` : null;
   const activeCopyText = active ? (active.readableContent ?? stripGmTagsKeepReadables(active.content)) : "";
   const gameVoiceEnabled = Boolean(ttsConfig?.enabled && ttsConfig.autoplayGame);
@@ -4156,11 +4224,15 @@ export function GameNarration({
       !!translatedSegmentText &&
       !isTranslating &&
       gameTranslationMatchesMessage(sourceMessage, translationSource);
-    const segmentDisplayContent = showTranslationOnly
-      ? translatedSegmentText!
-      : seg.type === "readable"
-        ? (seg.readableContent ?? seg.content)
-        : seg.content;
+    const segmentDisplayContent = markGameDiceNumbers(
+      showTranslationOnly
+        ? translatedSegmentText!
+        : seg.type === "readable"
+          ? (seg.readableContent ?? seg.content)
+          : seg.content,
+      sourceMessage,
+      showTranslationOnly,
+    );
     const canPeekPrompt =
       showMessageActions &&
       !!onPeekPrompt &&
@@ -5466,11 +5538,15 @@ export function GameNarration({
                         !!translatedSegmentText &&
                         !isTranslating &&
                         gameTranslationMatchesMessage(segmentSourceMessage, translationSource);
-                      const segmentDisplayContent = showTranslationOnly
-                        ? translatedSegmentText!
-                        : seg.type === "readable"
-                          ? (seg.readableContent ?? seg.content)
-                          : seg.content;
+                      const segmentDisplayContent = markGameDiceNumbers(
+                        showTranslationOnly
+                          ? translatedSegmentText!
+                          : seg.type === "readable"
+                            ? (seg.readableContent ?? seg.content)
+                            : seg.content,
+                        segmentSourceMessage,
+                        showTranslationOnly,
+                      );
                       const sourceRole = seg.sourceRole ?? sourceMessageRole;
                       const isUserAuthoredSource = sourceRole === "user" || sourceMessageRole === "user";
                       const isActiveSeg = active?.id === seg.id;

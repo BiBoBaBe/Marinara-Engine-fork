@@ -3897,6 +3897,17 @@ strong {
   line-height: 1.35;
 }
 
+/* One-request dice: a number the engine rolled after the Game Master committed the
+   sentence. The saved content carries a bare number, so this marker is reattached at
+   render time and its breakdown rides on the title attribute. Kept deliberately quiet:
+   it sits inside prose, and a loud badge on every damage number would read as noise. */
+.game-dice-marker {
+  color: var(--primary);
+  text-decoration: underline dotted currentColor;
+  text-underline-offset: 0.18em;
+  cursor: help;
+}
+
 /* Fenced code blocks */
 .mari-message-content .mari-md-codeblock {
   position: relative;

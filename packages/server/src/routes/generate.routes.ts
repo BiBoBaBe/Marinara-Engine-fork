@@ -558,6 +558,7 @@ import {
   loadSkillCheckModifierContext,
   resolveSkillCheckTagsInContent,
 } from "../services/game/skill-check-resolution.service.js";
+import { createGameChanceStreamFilter } from "../services/game/chance-stream-filter.js";
 import {
   createGameTurnChanceSession,
   isOneRequestDiceEnabled,
@@ -5979,6 +5980,14 @@ export async function generateRoutes(app: FastifyInstance) {
           hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")
             ? createAssistantSpatialDirectiveStreamFilter()
             : null;
+        // ── One-request dice: the stream filter (#one-request-dice) ──
+        // A placeholder and a branch block both stream before the chance pass runs, so
+        // without this the player watches `[[roll: 2d6+3]]` appear and silently become a
+        // number. Held here, the finished text arrives through content_replace instead.
+        const gameChanceStreamFilter =
+          chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta)
+            ? createGameChanceStreamFilter()
+            : null;
         const emitTokenTextChunked = async (text: string) => {
           for (let i = 0; i < text.length; i += TOKEN_CHUNK_SIZE) {
             const chunk = text.slice(i, i + TOKEN_CHUNK_SIZE);
@@ -5996,7 +6005,8 @@ export async function generateRoutes(app: FastifyInstance) {
         };
         const sendTokenTextChunked = async (text: string) => {
           const commandFiltered = roleplayCommandStreamFilter?.push(text) ?? text;
-          const visibleText = spatialDirectiveStreamFilter?.push(commandFiltered) ?? commandFiltered;
+          const chanceFiltered = gameChanceStreamFilter?.push(commandFiltered) ?? commandFiltered;
+          const visibleText = spatialDirectiveStreamFilter?.push(chanceFiltered) ?? chanceFiltered;
           if (visibleText) {
             recordReasoningDuration(visibleText);
             await emitTokenTextChunked(visibleText);
@@ -7520,10 +7530,17 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           if (!holdForTextRewrite) {
+            // The chance filter drains first and its leftovers go through the spatial
+            // filter, so a released candidate still meets every filter downstream of it.
+            const pendingChanceText = gameChanceStreamFilter?.flush() ?? "";
+            const pendingChanceVisible = pendingChanceText
+              ? (spatialDirectiveStreamFilter?.push(pendingChanceText) ?? pendingChanceText)
+              : "";
             const pendingSpatialText = spatialDirectiveStreamFilter?.flush() ?? "";
-            if (pendingSpatialText) {
-              recordReasoningDuration(pendingSpatialText);
-              await emitTokenTextChunked(pendingSpatialText);
+            const pendingStreamText = `${pendingChanceVisible}${pendingSpatialText}`;
+            if (pendingStreamText) {
+              recordReasoningDuration(pendingStreamText);
+              await emitTokenTextChunked(pendingStreamText);
             }
           }
 
