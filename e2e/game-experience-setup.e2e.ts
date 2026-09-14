@@ -358,7 +358,7 @@ for (const isNewGame of [true, false]) {
     const widgetToggle = wizard.getByRole("button", { name: /^Custom HUD Widgets/u });
     if (isNewGame) {
       // The declared requirement is applied and the control is locked while the Experience is on.
-      await expect(wizard.getByText("Setup fixture turns HUD widgets disabled for this game.")).toBeVisible();
+      await expect(wizard.getByText("Setup fixture turns custom HUD widgets off for this game.")).toBeVisible();
       await expect(widgetToggle).toBeDisabled();
       await expect(widgetToggle).toHaveAttribute("aria-pressed", "false");
       await widgetToggle.click({ force: true });
@@ -399,7 +399,7 @@ for (const isNewGame of [true, false]) {
       await expect(wizard.getByRole("heading", { name: "Features", exact: true })).toBeVisible();
       await expect(widgetToggle).toBeEnabled();
       await expect(widgetToggle).toHaveAttribute("aria-pressed", "true");
-      await expect(wizard.getByText(/turns HUD widgets/u)).toHaveCount(0);
+      await expect(wizard.getByText(/turns custom HUD widgets/u)).toHaveCount(0);
     } else {
       expect(result.config).not.toHaveProperty("gameExperienceId");
       expect(result.config).not.toHaveProperty("experienceConfig");

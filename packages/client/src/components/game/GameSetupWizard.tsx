@@ -2973,12 +2973,12 @@ export function GameSetupWizard({
                       </button>
                       {customWidgetsLocked && (
                         <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                          {localizeUi("game.experienceSetup.widgetRequirement", {
-                            name: activeExperience?.manifest.name,
-                            state: localizeUi(
-                              requiredCustomWidgets ? "game.experienceSetup.enabled" : "game.experienceSetup.disabled",
-                            ),
-                          })}
+                          {localizeUi(
+                            requiredCustomWidgets
+                              ? "game.experienceSetup.widgetRequirementOn"
+                              : "game.experienceSetup.widgetRequirementOff",
+                            { name: activeExperience?.manifest.name },
+                          )}
                         </p>
                       )}
                       {enableCustomWidgets && (
