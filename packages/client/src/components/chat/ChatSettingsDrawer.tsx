@@ -852,6 +852,7 @@ export function ChatSettingsDrawer({
   const drawerClosingRef = useRef(false);
   const updateChat = useUpdateChat();
   const updateMeta = useUpdateChatMetadata();
+  const updateTranslationMeta = useUpdateChatMetadata({ serialize: true });
   const updateMetaMutateAsyncRef = useRef(updateMeta.mutateAsync);
   const pendingCustomAgentImageSettingsRef = useRef<{
     chatId: string;
@@ -9470,9 +9471,10 @@ export function ChatSettingsDrawer({
 
           <div style={{ order: CHAT_SETTINGS_ORDER.translation }}>
             <TranslationSection
+              chatId={chat.id}
               metadata={metadata}
               textConnections={textConnectionsList}
-              onMetadataChange={(patch) => updateMeta.mutate({ id: chat.id, ...patch })}
+              onMetadataChange={(patch) => updateTranslationMeta.mutate({ id: chat.id, ...patch })}
             />
           </div>
 

@@ -564,8 +564,14 @@ export function GameSetupWizard({
   const [gameSystemPromptDraft, setGameSystemPromptDraft] = useState(DEFAULT_GAME_SYSTEM_PROMPT);
   const [gameSystemPromptEdited, setGameSystemPromptEdited] = useState(false);
   const [language, setLanguage] = useState("English");
-  const [autoTranslate, setAutoTranslate] = useState(false);
-  const [translationLanguage, setTranslationLanguage] = useState("en");
+  const [autoTranslate, setAutoTranslate] = useState(chatMetadata?.autoTranslate === true);
+  const [translationLanguage, setTranslationLanguage] = useState(() =>
+    typeof chatMetadata?.translationOutputTargetLang === "string"
+      ? chatMetadata.translationOutputTargetLang
+      : typeof chatMetadata?.translationTargetLang === "string"
+        ? chatMetadata.translationTargetLang
+        : "en",
+  );
   const [startMuted, setStartMuted] = useState(false);
   const [adjustGameAssetsOpen, setAdjustGameAssetsOpen] = useState(false);
   const [draftSpatialMap, setDraftSpatialMap] = useState(false);

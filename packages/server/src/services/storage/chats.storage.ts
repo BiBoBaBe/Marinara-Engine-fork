@@ -44,6 +44,8 @@ import { join } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import {
   getRoleplayCommandActivity,
+  TRANSLATOR_DEFAULTS_SETTINGS_KEY,
+  normalizeTranslatorSettings,
   type CreateChatInput,
   type CreateMessageInput,
   type RoleplayCommandActivity,
@@ -60,6 +62,8 @@ import type { ConversationStatusOverride } from "@marinara-engine/shared";
 import { resolveConversationTimeZone } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
 import { galleryFileHasReferences, unlinkGalleryFileIfUnreferenced } from "../image/gallery-file-lifecycle.js";
+
+import { createAppSettingsStorage } from "./app-settings.storage.js";
 
 const GALLERY_DIR = join(DATA_DIR, "gallery");
 const GAME_SCENE_VIDEOS_DIR = join(DATA_DIR, "game-scene-videos");
@@ -1219,6 +1223,7 @@ export function createChatsStorage(db: DB) {
       const inheritedSchedules =
         input.mode === "conversation" ? await collectConversationSchedules(input.characterIds) : {};
       const metadata: MetadataPatch = {
+        ...normalizeTranslatorSettings(await createAppSettingsStorage(db).get(TRANSLATOR_DEFAULTS_SETTINGS_KEY)),
         summary: null,
         tags: [],
         enableAgents: true,

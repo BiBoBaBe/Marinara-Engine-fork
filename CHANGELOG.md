@@ -5,6 +5,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 ## [Unreleased]
 
 - Push Story and Combat box borders follow the selected Chroma accent instead of retaining pink outlines (#6197).
+- Translator settings can be saved as defaults for new chats, including provider, language, connection, prompts, and automatic translation options (#6199).
 
 - Game setup keeps its normal steps when an Experience declares inline setup, with seed controls, individual lorebook entry selection, and setup-file import/export. Experiences can only be selected for new games; reopening an existing game preserves its saved Experience (#6181, #6182).
 - Unsupported installed package records no longer block supported packages on updated hosts, and remain preserved during registry writes and downgrade checks (#6181).
