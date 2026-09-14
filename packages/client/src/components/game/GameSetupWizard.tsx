@@ -102,7 +102,7 @@ import { CapabilityElement } from "../capabilities/CapabilityElement";
 
 import { NewGameExperienceChooser } from "./NewGameExperienceChooser";
 import { LegacyExperienceSetupDialog } from "./LegacyExperienceSetupDialog";
-import { buildExperienceSetup, parseExperienceSeed } from "../../lib/game-experience-setup";
+import { MAX_EXPERIENCE_SEED, buildExperienceSetup, parseExperienceSeed } from "../../lib/game-experience-setup";
 
 const GameAssetsBrowserView = lazy(() =>
   import("../game-assets/GameAssetsBrowserView").then((module) => ({ default: module.GameAssetsBrowserView })),
@@ -1004,7 +1004,7 @@ export function GameSetupWizard({
     !!gmConnectionId &&
     (!enableAgents || !hierarchicalMapsInstalled || !draftSpatialMap || spatialMapTargetLocationCountValid);
   const canStartMessage = experienceSeedInvalid
-    ? localizeUi("game.experienceSetup.invalidSeed")
+    ? localizeUi("game.experienceSetup.invalidSeed", { max: MAX_EXPERIENCE_SEED })
     : activeLorebookEntryIds.length && !eligibleEntries
       ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
       : !gmConnectionId
@@ -1060,9 +1060,12 @@ export function GameSetupWizard({
       const config = imported.config;
       const importedExperience = experiences.find((item) => item.id === config.gameExperienceId);
       const importedSetup = importedExperience?.manifest.contributions?.gameSurface?.setup;
-      const seed = importedSetup?.seed ? config.experienceConfig?.[importedSetup.seed.key] : null;
+      const importedSeed = importedSetup?.seed
+        ? parseExperienceSeed(config.experienceConfig?.[importedSetup.seed.key])
+        : null;
       setExperienceId(isNewGame && importedExperience ? importedExperience.id : null);
-      setExperienceSeed(typeof seed === "number" && Number.isFinite(seed) ? String(seed) : "");
+      // A setup file without a usable Experience seed leaves the prefilled seed alone instead of blanking it.
+      if (importedSeed !== null) setExperienceSeed(String(importedSeed));
       setExperienceImportNotice(
         shareFile.setup.config.gameExperienceId
           ? !isNewGame

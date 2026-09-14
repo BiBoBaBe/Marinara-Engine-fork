@@ -651,7 +651,7 @@
   "game.experienceSetup.disabled": "disabled",
   "game.experienceSetup.enabled": "enabled",
   "game.experienceSetup.existingImport": "The Experience and seed were skipped. They can only be selected for a new game.",
-  "game.experienceSetup.invalidSeed": "Enter a valid numeric seed before starting.",
+  "game.experienceSetup.invalidSeed": "Enter a whole number from 0 to {{max}} before starting.",
   "game.experienceSetup.randomize": "Randomize",
   "game.experienceSetup.seed": "World seed",
   "game.experienceSetup.summary": "Experience and seed",

@@ -241,12 +241,46 @@ for (const isNewGame of [true, false]) {
       await expect(wizard.getByText(/The saved Experience is unavailable/u)).toHaveCount(0);
       await wizard.getByRole("button", { name: "Show", exact: true }).click();
       await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
+      const seedInvalid = "Enter a whole number from 0 to 4294967295 before starting.";
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
-      await expect(wizard.getByRole("alert")).toHaveText("Enter a valid numeric seed before starting.");
+      await expect(wizard.getByRole("alert")).toHaveText(seedInvalid);
+      // The seed is an unsigned whole number, so a fraction is refused instead of being rounded silently.
+      await wizard.getByRole("spinbutton", { name: "World seed" }).fill("1.5");
+      await expect(wizard.getByRole("alert")).toHaveText(seedInvalid);
       await wizard.getByRole("button", { name: "Randomize", exact: true }).click();
+      await expect(wizard.getByRole("alert")).toHaveCount(0);
       await expect(wizard.getByRole("spinbutton", { name: "World seed" })).not.toHaveValue("");
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("4242");
       await page.screenshot({ path: testInfo.outputPath("setup-inline-experience.png") });
+      // An ordinary setup file carries no Experience, so it must leave the prefilled seed alone.
+      await wizard
+        .locator('input[type="file"]')
+        .first()
+        .setInputFiles({
+          name: "ordinary.marinara-game-setup.json",
+          mimeType: "application/json",
+          buffer: Buffer.from(
+            JSON.stringify({
+              format: "marinara-game-setup",
+              version: 1,
+              gameName: "Imported ordinary adventure",
+              setup: {
+                config: {
+                  genre: "Fantasy",
+                  setting: "Copper Harbor",
+                  tone: "Hopeful",
+                  difficulty: "Normal",
+                  rating: "sfw",
+                  gmMode: "standalone",
+                  partyCharacterIds: [],
+                  playerGoals: "Find the missing keeper",
+                },
+              },
+            }),
+          ),
+        });
+      await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
+      await expect(wizard.getByRole("spinbutton", { name: "World seed" })).toHaveValue("4242");
     } else {
       await expect(wizard.getByText("Experiences", { exact: true })).toHaveCount(0);
     }
@@ -343,9 +377,13 @@ for (const isNewGame of [true, false]) {
     if (isNewGame) {
       expect(result.config.gameExperienceId).toBe("setup-fixture");
       expect(result.config.experienceConfig).toEqual({ worldSeed: 7, generate: true });
-      // Starting cannot serialize an invalid seed.
+      // Starting cannot serialize an invalid seed, blank or fractional.
       for (let step = 0; step < 6; step++) await back();
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
+      for (let step = 0; step < 6; step++) await next();
+      await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
+      for (let step = 0; step < 6; step++) await back();
+      await wizard.getByRole("spinbutton", { name: "World seed" }).fill("1.5");
       for (let step = 0; step < 6; step++) await next();
       await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
       // Turning the Experience off unlocks the control at the player's own earlier choice.

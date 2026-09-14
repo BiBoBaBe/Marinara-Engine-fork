@@ -27,7 +27,8 @@ const experience = {
   },
 } as InstalledCapabilityPackage;
 for (const value of ["", " ", "oops", NaN, Infinity, null, {}, true]) assert.equal(parseExperienceSeed(value), null);
-for (const value of [0, -12.5, 42]) assert.equal(parseExperienceSeed(String(value)), value);
+for (const value of [0, 42]) assert.equal(parseExperienceSeed(String(value)), value);
+assert.equal(parseExperienceSeed("-12.5"), null, "Seeds are unsigned whole numbers");
 assert.deepEqual(buildExperienceSetup(experience, "42", true), {
   gameExperienceId: experience.id,
   experienceConfig: { generate: true, worldSeed: 42 },

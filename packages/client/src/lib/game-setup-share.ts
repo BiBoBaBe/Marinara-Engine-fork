@@ -13,6 +13,7 @@ import {
   type GenerationParameters,
 } from "@marinara-engine/shared";
 
+import { isExperienceSeed } from "./game-experience-setup";
 import { translate } from "../localization/i18n";
 
 export const GAME_SETUP_SHARE_FORMAT = "marinara-game-setup";
@@ -493,8 +494,7 @@ export function resolveGameSetupImport(
   const experienceSelection = experience
     ? {
         gameExperienceId: experience.id,
-        experienceConfig:
-          setup?.seed && typeof seed === "number" && Number.isFinite(seed) ? { [setup.seed.key]: seed } : {},
+        experienceConfig: setup?.seed && isExperienceSeed(seed) ? { [setup.seed.key]: seed } : {},
       }
     : {};
   const { gameExperienceId: _experienceId, experienceConfig: _experienceConfig, ...ordinaryConfig } = sourceConfig;
