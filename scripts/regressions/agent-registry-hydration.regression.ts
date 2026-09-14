@@ -219,6 +219,15 @@ const capabilityPackageRoutesSource = await readFile(
   new URL("../../packages/server/src/routes/capability-packages.routes.ts", import.meta.url),
   "utf8",
 );
+const capabilityPackageManagerSource = await readFile(
+  new URL("../../packages/server/src/services/capability-packages/package-manager.service.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  capabilityPackageManagerSource,
+  /const servable = await resolveServableInstalledPackage\(installed\);[\s\S]*?readInstalledAgentDefinitions\(servable\)/u,
+  "The capability-agent registry must retain the previous agent definitions while an update waits for restart",
+);
 assert.match(
   capabilityPackageRoutesSource,
   /if \(installed\.status !== "restart-required"\) await refreshCapabilityAgentRegistry\(\);/u,

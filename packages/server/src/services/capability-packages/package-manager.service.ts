@@ -1004,8 +1004,11 @@ export const capabilityPackageManager = {
     const definitions = [];
     const ids = new Set<string>();
     for (const installed of registry.packages) {
-      if (!isInstalledCapabilityReady(installed)) continue;
-      const parsed = await readInstalledAgentDefinitions(installed);
+      // A restart-required update still has its previous package runtime active. Keep
+      // its agent definitions visible until restart, just like the active client module.
+      const servable = await resolveServableInstalledPackage(installed);
+      if (!servable) continue;
+      const parsed = await readInstalledAgentDefinitions(servable);
       for (const definition of parsed) {
         if (ids.has(definition.id)) throw new Error(`Agent ${definition.id} is provided by more than one package`);
         ids.add(definition.id);
