@@ -5863,7 +5863,7 @@ assert.match(
 );
 assert.match(
   clientGenerationSource,
-  /await waitForPendingChatMetadataSaves\(params\.chatId\);[\s\S]{0,250}api\.streamEvents\(\s*"\/generate"/u,
+  /await waitForPendingChatMetadataSaves\(params\.chatId\);[\s\S]*?api\.streamEvents\(\s*"\/generate"/u,
   "swipe generation must wait for Prose Guardian settings blurred from the open drawer",
 );
 

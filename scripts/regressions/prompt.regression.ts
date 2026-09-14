@@ -11258,6 +11258,54 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       // findInvalidInventoryTrackerRow is what lets the Agent Suite editor refuse bad
       // input instead of silently normalizing a hand-written group down to [].
       assert.equal(findInvalidInventoryTrackerRow([{ name: "Rope" }]), null, "well-formed rows must validate");
+      const detailedItem = {
+        name: "Painkillers",
+        qty: 3,
+        description: "Small white tablets",
+        location: "Backpack side pocket",
+      };
+      assert.deepEqual(normalizeInventoryTrackerRows([detailedItem]), [detailedItem]);
+      assert.deepEqual(
+        normalizeInventoryTrackerRows([
+          { name: "Key", description: "Marked 17" },
+          { name: "key", location: "Coat pocket", description: "Ignored duplicate" },
+        ]),
+        [{ name: "Key", qty: 2, description: "Marked 17", location: "Coat pocket" }],
+        "deduplication keeps first details and fills missing fields",
+      );
+      assert.equal(findInvalidInventoryTrackerRow([detailedItem]), null);
+      assert.match(String(findInvalidInventoryTrackerRow([{ name: "Key", description: 42 }])), /description/);
+      assert.match(String(findInvalidInventoryTrackerRow([{ name: "Key", location: {} }])), /location/);
+      const detailedState = {
+        ...currentState,
+        playerStats: { ...itemState.playerStats, inventoryTrackerInventory: [detailedItem] },
+        fieldLocks: {
+          [roleplayInventoryTrackerLockKey("inventory", detailedItem, "description")]: true,
+          [roleplayInventoryTrackerLockKey("inventory", detailedItem, "location")]: true,
+        },
+      };
+      const detailPatch = buildLockedInventoryTrackerPatch({
+        data: { inventory: { updates: [{ name: "Painkillers", qty: 1, description: "Wrong", location: "Unknown" }] } },
+        snapshot: { playerStats: detailedState.playerStats },
+        lockState: detailedState,
+      });
+      const singleItem = {
+        name: detailedItem.name,
+        description: detailedItem.description,
+        location: detailedItem.location,
+      };
+      assert.deepEqual(
+        detailPatch.values.inventoryTrackerInventory,
+        [singleItem],
+        "quantity changes retain locked details",
+      );
+      assert.deepEqual(
+        buildInventoryTrackerEditPatch(detailedState.playerStats, "inventory", [
+          { ...singleItem, description: "", location: "Bedside table" },
+        ]).inventoryTrackerInventory,
+        [{ ...singleItem, description: "", location: "Bedside table" }],
+        "manual edits can explicitly clear details and retain quantity-one metadata",
+      );
       assert.match(
         String(findInvalidInventoryTrackerRow([{ foo: 1 }])),
         /row 0/u,
@@ -11664,16 +11712,30 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.match(promptBlock ?? "", /Field 62: 62/);
       assert.doesNotMatch(promptBlock ?? "", /Field 63: 63/);
 
-      const inventoryPromptBlock = buildCommittedTrackerContextBlock({
-        chatEnableAgents: true,
-        activeAgentIds: ["inventory-tracker"],
-        latestGameState: { playerStats: inventoryTrackerPatch.playerStats },
-        chatMetadata: {},
-        wrapFormat: "markdown",
-      });
-      assert.match(inventoryPromptBlock ?? "", /Currencies:\n- Silver coin x6/);
-      assert.match(inventoryPromptBlock ?? "", /Equipped:\n- Family heirloom longsword/);
-      assert.match(inventoryPromptBlock ?? "", /Inventory:\n- Scavenged axe x2/);
+      for (const wrapFormat of ["xml", "markdown", "none"] as const) {
+        const inventoryPromptBlock = buildCommittedTrackerContextBlock({
+          chatEnableAgents: true,
+          activeAgentIds: ["inventory-tracker"],
+          latestGameState: {
+            playerStats: {
+              ...inventoryTrackerPatch.playerStats,
+              inventoryTrackerInventory: [
+                { name: "Scavenged axe", qty: 2, description: "Chipped iron blade", location: "Backpack" },
+                { name: "Blank note", description: "", location: "  " },
+              ],
+            },
+          },
+          chatMetadata: {},
+          wrapFormat,
+        });
+        assert.match(inventoryPromptBlock ?? "", /Currencies:\n\s*- Silver coin x6/);
+        assert.match(inventoryPromptBlock ?? "", /Equipped:\n\s*- Family heirloom longsword/);
+        assert.match(
+          inventoryPromptBlock ?? "",
+          /Inventory:\n\s*- Scavenged axe x2 \(description: Chipped iron blade; location: Backpack\)/,
+        );
+        assert.doesNotMatch(inventoryPromptBlock ?? "", /Blank note \(/);
+      }
 
       const beholderState = normalizeBeholderState({
         characters: [

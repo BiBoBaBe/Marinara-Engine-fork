@@ -274,6 +274,8 @@ export interface GameSetupConfig {
   imageStyleProfileId?: string | null;
   /** Lorebook IDs to activate for this game */
   activeLorebookIds?: string[];
+  /** Entries explicitly selected for world generation, additive to ordinary lore. */
+  activeLorebookEntryIds?: string[];
   /** Enable custom HUD widgets (model designs them at game start and updates during play) */
   enableCustomWidgets?: boolean;
   /** User-defined starting HUD widgets. When present, these replace model-designed setup widgets. */
@@ -334,6 +336,8 @@ export interface GameInitialSetupConnectionSnapshot {
 
 /** Creation-time display names for local resources referenced by the setup. */
 export interface GameInitialSetupLabels {
+  experienceName?: string;
+  experienceSeedKey?: string;
   characterNames?: Record<string, string>;
   lorebookNames?: Record<string, string>;
   promptPresetNames?: Record<string, string>;

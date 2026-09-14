@@ -92,6 +92,8 @@ The Engine update channel also selects the official Agent channel. Stable Engine
 
 ## Validation
 
+The POSIX terminal-shutdown regression uses Python 3 from `PATH` (standard-library `pty` only) to verify real terminal closure; no Python package installation is needed.
+
 Baseline validation:
 
 ```bash

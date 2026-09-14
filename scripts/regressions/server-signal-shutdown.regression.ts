@@ -127,3 +127,23 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 console.log("Production server PID-targeted TTY interrupt and duplicate-signal graceful shutdown passed.");
+
+// A hung-up PTY returns EIO on stdout; an isTTY stub over pipes cannot test
+// the logger's exit flush or the session stamp after the terminal disappears.
+for (const nodeEnv of ["production", "development"]) {
+  for (const mode of ["hangup", "signal", "busy-hangup"]) {
+    execFileSync(
+      "python3",
+      [
+        join(root, "scripts/regressions/fixtures/posix-terminal-shutdown.py"),
+        root,
+        process.execPath,
+        pathToFileURL(serverRequire.resolve("tsx/esm")).href,
+        mode,
+        nodeEnv,
+      ],
+      { stdio: "inherit", timeout: 40_000 },
+    );
+  }
+}
+console.log("Real POSIX terminal hangup flushed confirmed saves, released the lease, and stamped a clean exit.");

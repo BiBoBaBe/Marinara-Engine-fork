@@ -22,7 +22,7 @@ type WorldTrackerField = "date" | "time" | "location" | "weather" | "temperature
 type TextCharacterField = "emoji" | "name" | "mood" | "appearance" | "outfit" | "thoughts";
 type StatField = "name" | "value" | "max";
 type InventoryField = "name" | "quantity" | "description" | "location";
-type InventoryTrackerField = "name" | "qty";
+type InventoryTrackerField = "name" | "qty" | "description" | "location";
 export type InventoryTrackerGroup = "currencies" | "equipped" | "inventory";
 type QuestField = "name" | "completed" | "currentStage";
 type QuestObjectiveField = "text" | "completed";
@@ -766,9 +766,9 @@ function mergeRoleplayInventoryTrackerRowsWithLocks(
   return mergeNamedRowsWithLocks(nextRows, currentRows, locks, {
     mergeRow: (row, currentRow, currentIndex) => {
       const next = { ...row };
-      for (const field of ["name", "qty"] as const) {
+      for (const field of ["name", "qty", "description", "location"] as const) {
         if (isTrackerFieldLocked(locks, roleplayInventoryTrackerLockKey(group, currentRow, field, currentIndex))) {
-          if (field === "qty" && currentRow.qty === undefined) delete next.qty;
+          if (currentRow[field] === undefined) delete next[field];
           else next[field] = currentRow[field] as never;
         }
       }

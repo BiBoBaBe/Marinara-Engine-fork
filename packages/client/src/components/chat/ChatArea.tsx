@@ -83,6 +83,7 @@ import { useEncounter } from "../../hooks/use-encounter";
 import { useScene } from "../../hooks/use-scene";
 import { useEncounterStore } from "../../stores/encounter.store";
 import { useTranslationStore } from "../../stores/translation.store";
+import { getChatTranslationConfig } from "../../hooks/use-translate";
 import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import {
@@ -1498,46 +1499,8 @@ export const ChatArea = memo(function ChatArea() {
   // Sync translation config from chat metadata to the translation store
   useEffect(() => {
     if (!chat?.id) return;
-    const legacyTargetLanguage = chatMeta.translationTargetLang?.trim() || "en";
-    const legacySystemPrompt = typeof chatMeta.translationPrompt === "string" ? chatMeta.translationPrompt : undefined;
-    const inputSystemPrompt =
-      chatMeta.translationInputPrompt === undefined
-        ? legacySystemPrompt
-        : typeof chatMeta.translationInputPrompt === "string"
-          ? chatMeta.translationInputPrompt
-          : undefined;
-    const outputSystemPrompt =
-      chatMeta.translationOutputPrompt === undefined
-        ? legacySystemPrompt
-        : typeof chatMeta.translationOutputPrompt === "string"
-          ? chatMeta.translationOutputPrompt
-          : undefined;
-    useTranslationStore.getState().setConfig({
-      chatId: chat.id,
-      provider: chatMeta.translationProvider ?? "google",
-      // A cleared settings field stores "" — fall back to the legacy/default
-      // language so translation never runs with an empty target.
-      inputTargetLanguage: chatMeta.translationInputTargetLang?.trim() || legacyTargetLanguage,
-      outputTargetLanguage: chatMeta.translationOutputTargetLang?.trim() || legacyTargetLanguage,
-      connectionId: chatMeta.translationConnectionId,
-      inputSystemPrompt,
-      outputSystemPrompt,
-      deeplApiKey: chatMeta.translationDeeplApiKey,
-      deeplxUrl: chatMeta.translationDeeplxUrl,
-    });
-  }, [
-    chat?.id,
-    chatMeta.translationProvider,
-    chatMeta.translationTargetLang,
-    chatMeta.translationInputTargetLang,
-    chatMeta.translationOutputTargetLang,
-    chatMeta.translationConnectionId,
-    chatMeta.translationPrompt,
-    chatMeta.translationInputPrompt,
-    chatMeta.translationOutputPrompt,
-    chatMeta.translationDeeplApiKey,
-    chatMeta.translationDeeplxUrl,
-  ]);
+    useTranslationStore.getState().setConfig(getChatTranslationConfig(chat.id, chatMeta));
+  }, [chat?.id, chatMeta]);
 
   // On chat switch, clear in-memory translations and seed from persisted extras.
   // Also re-seed when message extras arrive after a chat switch or pagination.

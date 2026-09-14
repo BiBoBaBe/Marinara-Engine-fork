@@ -1,17 +1,7 @@
 // ──────────────────────────────────────────────
 // Game: Setup Wizard (initial game setup modal)
 // ──────────────────────────────────────────────
-import {
-  lazy,
-  Suspense,
-  useState,
-  useMemo,
-  useCallback,
-  useEffect,
-  useRef,
-  type ChangeEvent,
-  type ReactNode,
-} from "react";
+import { lazy, Suspense, useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { toast } from "sonner";
@@ -88,8 +78,12 @@ import { useConnections } from "../../hooks/use-connections";
 import { useDefaultPreset, usePresets } from "../../hooks/use-presets";
 import { useCharacterGroups, usePersonas } from "../../hooks/use-characters";
 import { useSidecarStore } from "../../stores/sidecar.store";
-import { useLorebooks } from "../../hooks/use-lorebooks";
-import { useCapabilityAgentRegistry } from "../../hooks/use-capability-packages";
+import { useEntriesAcrossLorebooks, useLorebooks } from "../../hooks/use-lorebooks";
+import {
+  selectGameExperiencePackages,
+  useInstalledCapabilityPackages,
+  useCapabilityAgentRegistry,
+} from "../../hooks/use-capability-packages";
 import { useGameAssetStore } from "../../stores/game-asset.store";
 import { useUIStore } from "../../stores/ui.store";
 import {
@@ -105,6 +99,10 @@ import {
 } from "../../lib/connection-filters";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
+
+import { NewGameExperienceChooser } from "./NewGameExperienceChooser";
+import { LegacyExperienceSetupDialog } from "./LegacyExperienceSetupDialog";
+import { buildExperienceSetup, parseExperienceSeed } from "../../lib/game-experience-setup";
 
 const GameAssetsBrowserView = lazy(() =>
   import("../game-assets/GameAssetsBrowserView").then((module) => ({ default: module.GameAssetsBrowserView })),
@@ -126,8 +124,10 @@ function normalizeCapabilitySetupSelectionKind(
 }
 
 interface GameSetupWizardProps {
-  /** Optional block rendered with the other pre-start choices, used to offer installed game experiences. */
-  experiencesSlot?: ReactNode;
+  activeChatId: string;
+  isNewGame: boolean;
+  chatMetadata?: Record<string, unknown>;
+  onSetupError: (error: unknown) => boolean;
   onComplete: (
     config: GameSetupConfig,
     preferences: string,
@@ -471,7 +471,10 @@ function normalizeGameLanguage(language: string): string {
 }
 
 export function GameSetupWizard({
-  experiencesSlot,
+  activeChatId,
+  isNewGame,
+  chatMetadata,
+  onSetupError,
   onComplete,
   onCancel,
   isLoading,
@@ -483,6 +486,15 @@ export function GameSetupWizard({
   const { t: localizeUi } = useUiTranslation();
   const prefersReducedMotion = useReducedMotion();
   const [step, setStep] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const { data: installedPackages, isLoading: experiencesLoading } = useInstalledCapabilityPackages(true);
+  const experiences = useMemo(() => selectGameExperiencePackages(installedPackages), [installedPackages]);
+  const [experienceId, setExperienceId] = useState<string | null>(null);
+  const activeExperience = (isNewGame ? experiences.find((item) => item.id === experienceId) : null) ?? null;
+  const experienceSetup = activeExperience?.manifest.contributions?.gameSurface?.setup;
+  const [experienceSeed, setExperienceSeed] = useState(() => String(crypto.getRandomValues(new Uint32Array(1))[0]));
+  const experienceSeedInvalid = Boolean(experienceSetup?.seed && parseExperienceSeed(experienceSeed) === null);
+  const [experienceImportNotice, setExperienceImportNotice] = useState<string | null>(null);
   const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
   const [gameName, setGameName] = useState("");
   const [genres, setGenres] = useState<string[]>(["Fantasy"]);
@@ -532,7 +544,14 @@ export function GameSetupWizard({
   const [sceneConnectionId, setSceneConnectionId] = useState<string | null>(null);
   const [activeLorebookIds, setActiveLorebookIds] = useState<string[]>([]);
   const [lbSearch, setLbSearch] = useState("");
-  const [enableCustomWidgets, setEnableCustomWidgets] = useState(true);
+  const [activeLorebookEntryIds, setActiveLorebookEntryIds] = useState<string[]>([]);
+  const [entryPickerOpened, setEntryPickerOpened] = useState(false);
+  const [customWidgetsChoice, setEnableCustomWidgets] = useState(true);
+  const [customWidgetsTouched, setCustomWidgetsTouched] = useState(false);
+  const enableCustomWidgets =
+    !customWidgetsTouched && experienceSetup?.requires?.enableCustomWidgets !== undefined
+      ? experienceSetup.requires.enableCustomWidgets
+      : customWidgetsChoice;
   const [manualWidgetSetupEnabled, setManualWidgetSetupEnabled] = useState(false);
   const [customHudWidgets, setCustomHudWidgets] = useState(() =>
     normalizeGameHudWidgets([createDefaultGameHudWidget("progress_bar", [])]),
@@ -622,8 +641,29 @@ export function GameSetupWizard({
     () => new Set(installedAgentManifests.map((agent) => agent.id)),
     [installedAgentManifests],
   );
+  const eligibleBooks = (lorebooksList ?? []).filter(
+    (book) =>
+      book.enabled &&
+      !(Array.isArray(chatMetadata?.excludedLorebookIds) && chatMetadata.excludedLorebookIds.includes(book.id)) &&
+      !(
+        chatMetadata?.gameLorebookKeeperEnabled !== true &&
+        (book.sourceAgentId === "game-lorebook-keeper" || book.id === chatMetadata?.gameLorebookKeeperLorebookId)
+      ),
+  );
+  const entryQuery = useEntriesAcrossLorebooks(
+    entryPickerOpened || activeLorebookEntryIds.length > 0 ? eligibleBooks.map((book) => book.id) : [],
+  );
+  const entryOverrides = (chatMetadata?.entryStateOverrides ?? chatMetadata?.lorebookEntryStateOverrides) as
+    | Record<string, { enabled?: boolean }>
+    | undefined;
+  const eligibleEntries = entryQuery.entries?.filter(
+    (entry) => entry.enabled && entryOverrides?.[entry.id]?.enabled !== false,
+  );
+  const selectedEntryIds = [...new Set(activeLorebookEntryIds)]
+    .filter((id) => eligibleEntries?.some((entry) => entry.id === id))
+    .slice(0, 100);
   const hasInstalledAgents = installedAgentIds.size > 0;
-  const hierarchicalMapsInstalled = installedAgentIds.has("hierarchical-maps");
+  const hierarchicalMapsInstalled = installedAgentIds.has("hierarchical-maps") && !experienceSetup;
   const musicDjInstalled = installedAgentIds.has("spotify");
   const lorebookKeeperInstalled = installedAgentIds.has("lorebook-keeper");
   const illustratorInstalled = installedAgentIds.has("illustrator");
@@ -728,7 +768,7 @@ export function GameSetupWizard({
     [lorebooksList],
   );
   const setupImportResourcesReady =
-    !connectionsLoading && !promptPresetsLoading && !personasLoading && !lorebooksLoading;
+    !connectionsLoading && !promptPresetsLoading && !personasLoading && !lorebooksLoading && !experiencesLoading;
 
   const availableLorebooks = useMemo(
     () =>
@@ -950,15 +990,21 @@ export function GameSetupWizard({
   const spatialMapTargetLocationCountValid =
     normalizeSpatialMapTargetLocationCount(spatialMapTargetLocationCountInput) !== null;
   const canStart =
+    !experienceSeedInvalid &&
+    (!activeLorebookEntryIds.length || Boolean(eligibleEntries)) &&
     !!gmConnectionId &&
     (!enableAgents || !hierarchicalMapsInstalled || !draftSpatialMap || spatialMapTargetLocationCountValid);
-  const canStartMessage = !gmConnectionId
-    ? localizeUi("ui.game.gamesetupwizard.selectAConnectionOnTheFirstStepBeforeStarting")
-    : !spatialMapTargetLocationCountValid && enableAgents && hierarchicalMapsInstalled && draftSpatialMap
-      ? localizeUi("ui.game.gamesetupwizard.chooseAnyWholeNumberFrom1ToValue1Places", {
-          value1: SPATIAL_CUSTOM_TARGET_LOCATION_LIMIT,
-        })
-      : null;
+  const canStartMessage = experienceSeedInvalid
+    ? localizeUi("game.experienceSetup.invalidSeed")
+    : activeLorebookEntryIds.length && !eligibleEntries
+      ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
+      : !gmConnectionId
+        ? localizeUi("ui.game.gamesetupwizard.selectAConnectionOnTheFirstStepBeforeStarting")
+        : !spatialMapTargetLocationCountValid && enableAgents && hierarchicalMapsInstalled && draftSpatialMap
+          ? localizeUi("ui.game.gamesetupwizard.chooseAnyWholeNumberFrom1ToValue1Places", {
+              value1: SPATIAL_CUSTOM_TARGET_LOCATION_LIMIT,
+            })
+          : null;
   const normalizedLanguage = normalizeGameLanguage(language);
   const illustratorEnabled = enableAgents && illustratorInstalled && enableSpriteGeneration;
   const musicDjEnabled = enableAgents && musicDjInstalled && enableSpotifyDj;
@@ -999,8 +1045,24 @@ export function GameSetupWizard({
         lorebooks,
         personas,
         promptPresets,
+        experiencePackages: experiences,
+        isNewGame,
       });
       const config = imported.config;
+      const importedExperience = experiences.find((item) => item.id === config.gameExperienceId);
+      const importedSetup = importedExperience?.manifest.contributions?.gameSurface?.setup;
+      const seed = importedSetup?.seed ? config.experienceConfig?.[importedSetup.seed.key] : null;
+      setExperienceId(isNewGame && importedExperience ? importedExperience.id : null);
+      setExperienceSeed(typeof seed === "number" && Number.isFinite(seed) ? String(seed) : "");
+      setExperienceImportNotice(
+        shareFile.setup.config.gameExperienceId
+          ? !isNewGame
+            ? localizeUi("game.experienceSetup.existingImport")
+            : !importedExperience
+              ? localizeUi("game.experienceSetup.unavailableImport")
+              : null
+          : null,
+      );
       const importedGenres = config.genre
         .split(",")
         .map((value) => value.trim())
@@ -1090,8 +1152,10 @@ export function GameSetupWizard({
       setEnableGameSoundEffects(config.enableGameSoundEffects !== false);
       setEnableGameMusic(config.enableGameMusic !== false);
       setActiveLorebookIds(config.activeLorebookIds ?? []);
+      setActiveLorebookEntryIds(config.activeLorebookEntryIds ?? []);
       setLbSearch("");
       setEnableCustomWidgets(config.enableCustomWidgets !== false);
+      setCustomWidgetsTouched(config.enableCustomWidgets !== undefined || config.customHudWidgets !== undefined);
       setManualWidgetSetupEnabled(importedWidgets.length > 0);
       setCustomHudWidgets(
         importedWidgets.length > 0
@@ -1161,6 +1225,7 @@ export function GameSetupWizard({
     const trimmedGameSpecialInstructions = gameSpecialInstructions.trim();
 
     return {
+      ...buildExperienceSetup(activeExperience, experienceSeed, isNewGame),
       genre: genres.join(", ") || "Fantasy",
       setting: setting || `A ${(genres[0] ?? "fantasy").toLowerCase()} world`,
       tone: tones.join(", ") || "Heroic",
@@ -1204,6 +1269,7 @@ export function GameSetupWizard({
       enableGameMusic: enableGameMusic && audioConnectionSupportsMusic ? undefined : false,
       ...(importedArtStyleSettingsRef.current ?? {}),
       activeLorebookIds: activeLorebookIds.length > 0 ? activeLorebookIds : undefined,
+      ...(selectedEntryIds.length ? { activeLorebookEntryIds: selectedEntryIds } : {}),
       enableCustomWidgets,
       customHudWidgets:
         enableCustomWidgets && manualWidgetSetupEnabled ? normalizeGameHudWidgets(customHudWidgets) : undefined,
@@ -1232,6 +1298,8 @@ export function GameSetupWizard({
   };
 
   const buildSetupShareLabels = (): GameInitialSetupLabels => ({
+    experienceName: activeExperience?.manifest.name,
+    experienceSeedKey: experienceSetup?.seed?.key,
     characterNames: Object.fromEntries(
       characters
         .filter((character) => [...partyCharacterIds, ...(gmCharacterId ? [gmCharacterId] : [])].includes(character.id))
@@ -1343,6 +1411,19 @@ export function GameSetupWizard({
     );
   };
 
+  if (activeExperience && !experienceSetup) {
+    return (
+      <LegacyExperienceSetupDialog
+        activeChatId={activeChatId}
+        experience={activeExperience}
+        onCancelSetup={onCancel}
+        onSetupError={onSetupError}
+        onBack={() => setExperienceId(null)}
+        restoreFocusRef={panelRef}
+      />
+    );
+  }
+
   return (
     <>
       <div
@@ -1353,6 +1434,8 @@ export function GameSetupWizard({
         <AnimatePresence mode="wait">
           <motion.div
             key={currentStep.key}
+            ref={panelRef}
+            tabIndex={-1}
             data-component="GameSetupWizard"
             role="dialog"
             aria-modal="true"
@@ -1432,7 +1515,23 @@ export function GameSetupWizard({
                     </div>
 
                     {/* Absent when nothing provides an experience, leaving this step exactly as it was. */}
-                    {experiencesSlot}
+                    {isNewGame && (
+                      <NewGameExperienceChooser
+                        experiences={experiences}
+                        activeId={activeExperience?.id ?? null}
+                        onSelect={setExperienceId}
+                        seed={experienceSeed}
+                        onSeedChange={setExperienceSeed}
+                        onRandomize={() => setExperienceSeed(String(crypto.getRandomValues(new Uint32Array(1))[0]))}
+                        seedInvalid={experienceSeedInvalid}
+                        launching={isLoading}
+                      />
+                    )}
+                    {experienceImportNotice && (
+                      <p role="status" className="text-xs text-[var(--muted-foreground)]">
+                        {experienceImportNotice}
+                      </p>
+                    )}
 
                     <div>
                       <label className={GAME_SETUP_FIELD_LABEL}>{localizeUi("ui.game.gamesetupwizard.gameName")}</label>
@@ -2810,6 +2909,7 @@ export function GameSetupWizard({
                     <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
                       <button
                         onClick={() => {
+                          setCustomWidgetsTouched(true);
                           const nextEnabled = !enableCustomWidgets;
                           setEnableCustomWidgets(nextEnabled);
                           if (!nextEnabled) setManualWidgetSetupEnabled(false);
@@ -2846,6 +2946,23 @@ export function GameSetupWizard({
                           />
                         </div>
                       </button>
+                      {experienceSetup?.requires?.enableCustomWidgets !== undefined && (
+                        <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                          {localizeUi(
+                            enableCustomWidgets === experienceSetup.requires.enableCustomWidgets
+                              ? "game.experienceSetup.widgetRequirement"
+                              : "game.experienceSetup.widgetOverride",
+                            {
+                              name: activeExperience?.manifest.name,
+                              state: localizeUi(
+                                experienceSetup.requires.enableCustomWidgets
+                                  ? "game.experienceSetup.enabled"
+                                  : "game.experienceSetup.disabled",
+                              ),
+                            },
+                          )}
+                        </p>
+                      )}
                       {enableCustomWidgets && (
                         <div className="mt-3 space-y-3 border-t border-[var(--border)] pt-3">
                           <GameWidgetFileControls
@@ -3042,6 +3159,83 @@ export function GameSetupWizard({
                       </div>
                     </div>
                   </>
+                )}
+
+                {step === 4 && (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => setEntryPickerOpened((open) => !open)}
+                      aria-expanded={entryPickerOpened}
+                      className="flex min-h-11 w-full items-center justify-between gap-2 text-left text-xs font-medium text-[var(--foreground)]"
+                    >
+                      {localizeUi("game.setupLore.entries")}
+                      <ChevronDown size={14} />
+                    </button>
+                    {entryPickerOpened && (
+                      <>
+                        <p className="text-xs text-[var(--muted-foreground)]">
+                          {localizeUi("game.setupLore.description")}
+                        </p>
+                        {entryQuery.isFetching && (
+                          <p role="status" className="text-xs">
+                            {localizeUi("game.setupLore.loading")}
+                          </p>
+                        )}
+                        {entryQuery.isError && (
+                          <div className="space-y-2">
+                            <p role="alert" className="text-xs text-[var(--destructive)]">
+                              {localizeUi("game.setupLore.error")}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void entryQuery.refetch()}
+                              disabled={entryQuery.isFetching}
+                              className="flex min-h-11 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40 disabled:cursor-wait disabled:opacity-50"
+                            >
+                              {localizeUi("ui.game.gamesurfacecomponent.retry")}
+                            </button>
+                          </div>
+                        )}
+                        {eligibleBooks.map((book) => (
+                          <details key={book.id} className="border-b border-[var(--border)] py-1">
+                            <summary className="cursor-pointer py-2 text-xs font-medium">{book.name}</summary>
+                            <div className="max-h-48 overflow-y-auto">
+                              {eligibleEntries
+                                ?.filter((entry) => entry.lorebookId === book.id)
+                                .sort((a, b) => Number(b.constant) - Number(a.constant) || a.order - b.order)
+                                .map((entry) => (
+                                  <label key={entry.id} className="flex min-h-11 items-start gap-2 py-2 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedEntryIds.includes(entry.id)}
+                                      disabled={
+                                        isLoading ||
+                                        (!selectedEntryIds.includes(entry.id) && selectedEntryIds.length >= 100)
+                                      }
+                                      className="mt-0.5 accent-[var(--primary)]"
+                                      onChange={(event) =>
+                                        setActiveLorebookEntryIds(
+                                          event.target.checked
+                                            ? [...selectedEntryIds, entry.id]
+                                            : selectedEntryIds.filter((id) => id !== entry.id),
+                                        )
+                                      }
+                                    />
+                                    <span className="min-w-0 break-words">
+                                      {entry.name || localizeUi("game.setupLore.unnamed")}
+                                    </span>
+                                  </label>
+                                ))}
+                            </div>
+                          </details>
+                        ))}
+                        {!entryQuery.isLoading && eligibleEntries?.length === 0 && (
+                          <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("game.setupLore.empty")}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
 
                 {step === 5 && enableAgents && hierarchicalMapsInstalled && (

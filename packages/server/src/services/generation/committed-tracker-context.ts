@@ -138,7 +138,11 @@ function formatInventoryTrackerLine(item: any): string | null {
   const name = asText(item?.name);
   if (!name) return null;
   const quantity = finiteNumberText(item?.qty);
-  return `- ${name}${quantity && Number(quantity) > 1 ? ` x${quantity}` : ""}`;
+  const details = [
+    formatNamedValueLine({ name: "description", value: item?.description }),
+    formatNamedValueLine({ name: "location", value: item?.location }),
+  ].filter(isNonEmptyLine);
+  return `- ${name}${quantity && Number(quantity) > 1 ? ` x${quantity}` : ""}${details.length ? ` (${details.join("; ")})` : ""}`;
 }
 
 export function buildCommittedTrackerContextBlock(args: {

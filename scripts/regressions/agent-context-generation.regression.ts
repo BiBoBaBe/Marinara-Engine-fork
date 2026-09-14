@@ -174,6 +174,8 @@ try {
     content: "Two guards carry a rope and map.",
   });
   const stateStore = createGameStateStorage(db);
+  const detailedRope = { name: "Rope", description: "Braided hemp", location: "Backpack" };
+  const detailedCompass = { name: "Compass", description: "Points north", location: "Pouch" };
   const initialState = {
     chatId: trackerChat.id,
     messageId: priorMessage.id,
@@ -201,7 +203,7 @@ try {
       inventory: [],
       activeQuests: [],
       status: "",
-      inventoryTrackerInventory: [{ name: "Rope", qty: 3 }, { name: "Map" }, { name: "Compass" }],
+      inventoryTrackerInventory: [{ ...detailedRope, qty: 3 }, { name: "Map" }, detailedCompass],
       customTrackerFields: [
         { name: "Clue", value: "south" },
         { name: "Mood", value: "calm" },
@@ -225,7 +227,7 @@ try {
       worldCustomFields: { updates: [{ name: "Note", value: "High" }], removed: ["Moon", "Locked"] },
     },
     "character-tracker": { presentCharacters: { updates: [{ characterId: "a", mood: "alert" }], removed: ["b"] } },
-    "inventory-tracker": { inventory: { updates: [{ name: "Rope", qty: 1 }], removed: ["Map"] } },
+    "inventory-tracker": { inventory: { updates: [{ name: "Rope", qty: 1, location: "Belt" }], removed: ["Map"] } },
     "custom-tracker": { fields: { updates: [{ name: "Clue", value: "north" }], removed: ["Mood"] } },
   };
   const generated = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: trackerChat.id } });
@@ -243,7 +245,19 @@ try {
     normalState.presentCharacters.map(({ name, mood, outfit }) => ({ name, mood, outfit })),
     [{ name: "Alice", mood: "alert", outfit: "coat" }],
   );
-  assert.deepEqual(normalState.playerStats?.inventoryTrackerInventory, [{ name: "Rope" }, { name: "Compass" }]);
+  assert.deepEqual(normalState.playerStats?.inventoryTrackerInventory, [
+    { ...detailedRope, location: "Belt" },
+    detailedCompass,
+  ]);
+  const inventoryEvent = generated.body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)))
+    .find((event) => event.type === "game_state_patch" && event.data.playerStats?.inventoryTrackerInventory);
+  assert.deepEqual(
+    inventoryEvent?.data.playerStats.inventoryTrackerInventory,
+    normalState.playerStats?.inventoryTrackerInventory,
+  );
   assert.deepEqual(normalState.playerStats?.customTrackerFields, [
     { name: "Clue", value: "north" },
     { name: "Luck", value: "5" },
@@ -290,7 +304,7 @@ try {
   };
   const retried = await retry();
   assert.deepEqual(retried.presentCharacters, []);
-  assert.deepEqual(retried.playerStats?.inventoryTrackerInventory, [{ name: "Compass" }]);
+  assert.deepEqual(retried.playerStats?.inventoryTrackerInventory, [detailedCompass]);
   assert.deepEqual(retried.playerStats?.customTrackerFields, [{ name: "Luck", value: "5" }]);
   assert.deepEqual(
     retried.worldCustomFields.map((field) => field.name),
@@ -299,12 +313,14 @@ try {
   trackerOutputs = {
     "world-state": { weather: "Sun" },
     "character-tracker": { presentCharacters: [{ characterId: "legacy", name: "Legacy", mood: "calm" }] },
-    "inventory-tracker": { inventory: [{ name: "Lantern" }] },
+    "inventory-tracker": { inventory: [{ name: "Lantern", description: "Oil lamp", location: "Pack" }] },
     "custom-tracker": { fields: [{ name: "Full", value: "legacy" }] },
   };
   const legacy = await retry();
   assert.equal(legacy.weather, "Sun");
-  assert.deepEqual(legacy.playerStats?.inventoryTrackerInventory, [{ name: "Lantern" }]);
+  assert.deepEqual(legacy.playerStats?.inventoryTrackerInventory, [
+    { name: "Lantern", description: "Oil lamp", location: "Pack" },
+  ]);
   assert.deepEqual(legacy.playerStats?.customTrackerFields, [{ name: "Full", value: "legacy" }]);
   assert.equal(legacy.presentCharacters[0]?.name, "Legacy");
   assert.ok(trackerPrompts.length >= 3);

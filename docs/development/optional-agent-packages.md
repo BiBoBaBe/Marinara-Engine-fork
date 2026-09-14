@@ -581,3 +581,51 @@ Desktop uses a browse list with an adjacent detail region. Mobile uses one pane 
 ## Extraction gate
 
 An extraction is complete only when the base production client and server bundles no longer contain the package implementation, a fresh install cannot activate it without downloading the package, an upgraded install retains it, and package install/update/uninstall passes on desktop, mobile, and Termux-compatible filesystems.
+
+### Capability API 1.18: keep Experience setup in the Game wizard
+
+A `game-surface` package can declare `contributions.gameSurface.setup` with schema
+version 2 and Capability API 1.18. The Engine keeps its usual seven setup steps,
+including Party, goals, models, and lorebooks. Only new games offer Experiences;
+reopening setup for an existing game preserves its Experience and package config.
+Packages without this declaration retain their legacy setup dialog.
+
+```json
+{
+  "setup": {
+    "seed": { "key": "seed", "label": "World seed" },
+    "config": { "generate": true, "packWanted": true },
+    "requires": { "enableCustomWidgets": false }
+  }
+}
+```
+
+All three fields are optional. The declared seed appears beneath the selected
+Experience with a Randomize button. Blank or non-finite input blocks Start.
+The host writes the numeric seed and declared constants to `experienceConfig`;
+`config` cannot contain the seed key. Constants must serialize to at most 8,000
+characters. A seed label is package-authored display text; omit it to use the
+Engine's localized label.
+
+A declared widget requirement supplies the default only until the player changes
+that control. Turning the Experience off restores the ordinary default, while
+explicit player choices remain unchanged. The control explains the Experience's
+expectation and remains editable. The spatial-map setup controls are hidden for
+these Experiences, so no separate map draft, template, or builder is launched.
+
+The Lorebooks step can select up to 100 individual enabled entries, including
+entries from unattached books. Disabled books, entries, and chat exclusions are
+respected. These ids travel in `GameSetupConfig.activeLorebookEntryIds`. On
+`/game/setup` they are additive forced entries: they skip probability rolls but
+retain ordinary token limits. Global, character-bound, and attached lore still
+participate in the ordinary scan. Packages can read the same selected ids from
+the setup config for their own world-generation request.
+
+A setup-file import restores an installed compatible Experience and its valid
+numeric seed, but discards arbitrary package config. The current manifest supplies
+constants again. Existing games skip Experience imports with an explanation.
+Creation snapshots retain the Experience name and seed for the setup summary.
+
+Use the existing startup-readiness declaration independently when the world must
+be prepared before the opening turn. Declare API 1.18 as the package minimum;
+older hosts cannot interpret this setup declaration.

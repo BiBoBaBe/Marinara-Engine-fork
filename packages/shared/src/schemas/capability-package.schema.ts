@@ -84,6 +84,28 @@ const capabilityPackageManifestBaseSchema = z
           .object({
             /** Mount before the first GM turn and wait for setStartupReady on the surface props. */
             prepareBeforeStart: z.boolean().optional(),
+            /** Engine-owned setup: one optional seed and package-owned constant defaults. */
+            setup: z
+              .object({
+                seed: z
+                  .object({
+                    key: z
+                      .string()
+                      .regex(/^[a-zA-Z][a-zA-Z0-9_]*$/)
+                      .max(120)
+                      .refine((key) => !["__proto__", "constructor", "prototype"].includes(key)),
+                    label: z.string().min(1).max(100).optional(),
+                  })
+                  .strict()
+                  .optional(),
+                config: z
+                  .record(z.string().max(120), z.unknown())
+                  .refine((value) => JSON.stringify(value).length <= 8_000)
+                  .optional(),
+                requires: z.object({ enableCustomWidgets: z.boolean().optional() }).strict().optional(),
+              })
+              .strict()
+              .optional(),
             /** Class the host puts on the game area while this surface is mounted, so the package can
              *  restyle the shared chrome that renders outside its element. Declared rather than pushed at
              *  runtime, so the theme applies on first paint. */
@@ -200,7 +222,8 @@ const capabilityPackageManifestBaseSchema = z
 //        chat-metadata key or delivers live as a `gm_verb` event (soft seam: read from the asset
 //        regardless of declared capabilityApi; declare 1.16 only to REQUIRE it. Needs `chat-write`).
 // 1.17: opted-in Experience surfaces prepare before startup and supply first-turn world context.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 17 } as const);
+// 1.18: Experience seed/default declarations in the Engine setup wizard.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 18 } as const);
 
 const capabilityApiVersionSchema = z
   .object({
@@ -233,6 +256,24 @@ export const capabilityPackageManifestV2Schema = capabilityPackageManifestBaseSc
 export const capabilityPackageManifestSchema = z
   .discriminatedUnion("schemaVersion", [capabilityPackageManifestV1Schema, capabilityPackageManifestV2Schema])
   .superRefine((manifest, ctx) => {
+    const setup = manifest.contributions?.gameSurface?.setup;
+    if (setup) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major !== 1 || api.minor < 18 || !manifest.contributions?.slots?.includes("game-surface")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "gameSurface", "setup"],
+          message: "Experience setup requires the game-surface slot, schemaVersion 2 and capabilityApi 1.18 or newer",
+        });
+      }
+      if (setup.seed && Object.hasOwn(setup.config ?? {}, setup.seed.key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "gameSurface", "setup", "config"],
+          message: "Experience config cannot override the declared seed key",
+        });
+      }
+    }
     if (manifest.contributions?.gameSurface?.prepareBeforeStart) {
       const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
       if (!api || api.major < 1 || (api.major === 1 && api.minor < 17)) {

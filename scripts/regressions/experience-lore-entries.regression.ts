@@ -883,6 +883,92 @@ try {
     assert.equal(res.json().lorebook.includedEntries, 2);
     assert.deepEqual(res.json().lorebook.skippedEntries, []);
   }
+
+  // #6182: the built-in setup picker is additive; the package route above remains exact-only.
+  {
+    const ambient = await createBook("Setup global lore", { isGlobal: true });
+    const attached = await createBook("Setup attached lore");
+    const selected = await createBook("Setup explicitly selected lore");
+    const excluded = await createBook("Setup excluded lore");
+    const disabledBook = await createBook("Setup disabled book");
+    await lorebooks.update(disabledBook.id, { enabled: false });
+    const add = (bookId: string, marker: string, extra: Record<string, unknown> = {}) =>
+      lorebooks.createEntry({
+        lorebookId: bookId,
+        name: marker,
+        content: marker,
+        ...extra,
+      } as Parameters<typeof lorebooks.createEntry>[0]);
+    await add(ambient.id, "SETUPGLOBAL", { constant: true });
+    await add(attached.id, "SETUPATTACHED", { constant: true });
+    const picked = await add(selected.id, "SETUPPICKED", { probability: 0 });
+    const disabled = await add(selected.id, "SETUPDISABLED", { enabled: false });
+    const overridden = await add(selected.id, "SETUPOVERRIDDEN");
+    const excludedEntry = await add(excluded.id, "SETUPEXCLUDED");
+    const disabledBookEntry = await add(disabledBook.id, "SETUPDISABLEDBOOK");
+    const oversized = await add(selected.id, "SETUPOVERSIZED", {
+      content: `SETUPOVERSIZED ${"Long history of the valley. ".repeat(1_000)}`,
+    });
+    assert.ok(picked && disabled && overridden && excludedEntry && disabledBookEntry && oversized);
+    const chat = await createExperienceChat("Built-in additive setup lore");
+    const setupConfig = {
+      genre: "Fantasy",
+      setting: "A quiet valley",
+      tone: "Hopeful",
+      difficulty: "normal",
+      playerGoals: "Explore",
+      gmMode: "standalone",
+      rating: "sfw",
+      partyCharacterIds: [],
+      enableCustomWidgets: false,
+      activeLorebookEntryIds: [
+        picked.id,
+        disabled.id,
+        overridden.id,
+        excludedEntry.id,
+        disabledBookEntry.id,
+        oversized.id,
+      ],
+    };
+    providerContent = JSON.stringify({
+      storyArc: "Explore the valley",
+      worldOverview: "A quiet valley",
+      plotTwists: ["An old road has reopened"],
+      startingNpcs: [{ name: "Mira", description: "A local guide" }],
+    });
+    try {
+      for (const includeAttached of [true, false]) {
+        await chats.patchMetadata(chat.id, () => ({
+          gameSetupConfig: { ...setupConfig, activeLorebookIds: includeAttached ? [attached.id] : [] },
+          excludedLorebookIds: [excluded.id],
+          entryStateOverrides: { [overridden.id]: { enabled: false } },
+        }));
+        upstreamBodies = [];
+        const response = await app.inject({
+          method: "POST",
+          url: "/api/game/setup",
+          payload: { chatId: chat.id, connectionId: conn.id, streaming: false },
+        });
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(upstreamBodies.length, 1, "Valid setup output needs no repair request");
+        const prompt = systemPromptOf();
+        assert.ok(prompt.includes("SETUPGLOBAL"), "Forced picks must retain ordinary global constants");
+        assert.equal(prompt.includes("SETUPATTACHED"), includeAttached, "Attached constants remain additive");
+        assert.ok(prompt.includes("SETUPPICKED"), "An unattached probability-zero pick reaches world generation");
+        for (const marker of [
+          "SETUPDISABLED",
+          "SETUPOVERRIDDEN",
+          "SETUPEXCLUDED",
+          "SETUPDISABLEDBOOK",
+          "SETUPOVERSIZED",
+        ]) {
+          assert.ok(!prompt.includes(marker), `${marker} must respect scope/enabled/budget gates`);
+        }
+      }
+    } finally {
+      providerContent = VALID_BRIEF;
+    }
+  }
 } catch (error) {
   scenarioFailed = true;
   scenarioError = error;
