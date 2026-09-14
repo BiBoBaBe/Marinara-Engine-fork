@@ -283,12 +283,23 @@ function withSlashCommandTimeout<T>(promise: Promise<T>, timeoutMs: number, mess
   });
 }
 
-function buildSlashHelpText(availability: SlashCommandAvailability): string {
+export function getSlashCommandUsage(
+  command: SlashCommand,
+  translate: (key: string, options: { defaultValue: string }) => string,
+): string {
+  return translate(`ui.chat.slash.usage.${command.name}`, { defaultValue: command.usage });
+}
+
+async function buildSlashHelpText(availability: SlashCommandAvailability): Promise<string> {
+  const { translate } = await import("../localization/i18n");
   const availableCommands = getAvailableSlashCommands(availability);
   return [
-    "Available Commands:",
+    translate("ui.chat.slash.help.title"),
     "",
-    ...availableCommands.map((command) => `${command.usage} - ${command.description}`),
+    translate("ui.chat.slash.help.arguments"),
+    translate("ui.chat.slash.help.ranges"),
+    "",
+    ...availableCommands.map((command) => `${getSlashCommandUsage(command, translate)} - ${command.description}`),
   ].join("\n");
 }
 
@@ -569,9 +580,18 @@ export function parseTargetedHideArguments(
   const trimmed = input.trim();
   const quoted = parseLeadingQuotedSegment(trimmed);
   const unquoted = trimmed.match(/^(\S+)\s+(.+)$/u);
-  const targetName = (quoted?.value ?? unquoted?.[1] ?? "").trim();
+  let targetName = (quoted?.value ?? unquoted?.[1] ?? "").trim();
   const indexExpression = (quoted?.rest ?? unquoted?.[2] ?? "").trim();
-  const indices = parseMessageIndices(indexExpression);
+  let indices = parseMessageIndices(indexExpression);
+  const rangeFirst = trimmed.match(/^(\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*)\s+(.+)$/u);
+  // Keep resolvable name-first syntax, including numeric names. Quotes can
+  // disambiguate a numeric target when the range comes first.
+  const hasLegacyTarget =
+    indices && characters.some((character) => normalizeLookup(character.name).includes(normalizeLookup(targetName)));
+  if (rangeFirst && !hasLegacyTarget) {
+    targetName = stripSingleWrappingQuotePair(rangeFirst[2]!.trim());
+    indices = parseMessageIndices(rangeFirst[1]!);
+  }
   if (!targetName || !indices) return { kind: "error", reason: "usage" };
   if (mode !== "roleplay") return { kind: "error", reason: "roleplay_only" };
 
@@ -612,7 +632,7 @@ const COMMANDS: SlashCommand[] = [
     async execute(_args, ctx) {
       return {
         handled: true,
-        feedback: buildSlashHelpText({
+        feedback: await buildSlashHelpText({
           mode: ctx.mode,
           availableCapabilityIds: ctx.availableCapabilityIds,
           conversationGames: ctx.conversationGames,
@@ -624,7 +644,7 @@ const COMMANDS: SlashCommand[] = [
     name: "roll",
     aliases: ["r", "dice"],
     description: "Roll dice (e.g. 2d6, 1d20+5)",
-    usage: "/roll <notation>",
+    usage: "/roll [dice (optional)]",
     local: true,
     async execute(args, ctx) {
       const notation = args.trim() || "1d20";
@@ -668,7 +688,7 @@ const COMMANDS: SlashCommand[] = [
     name: "sys",
     aliases: ["system"],
     description: "Insert a system message",
-    usage: "/sys <message>",
+    usage: "/sys [message]",
     local: true,
     async execute(args, ctx) {
       if (!args.trim()) return { handled: true, feedback: "Usage: /sys <message text>" };
@@ -679,7 +699,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "send",
     description: "Post a message as your persona without triggering generation",
-    usage: "/send <message>",
+    usage: "/send [message]",
     local: true,
     async execute(args, ctx) {
       const content = stripSingleWrappingQuotePair(args);
@@ -692,7 +712,7 @@ const COMMANDS: SlashCommand[] = [
     name: "guided",
     aliases: ["narrator", "narrate", "nar"],
     description: "Steer the narrative — the AI will narrate events in the direction you describe",
-    usage: "/guided [respond for <character>] <direction>",
+    usage: "/guided [direction] | /guided respond for [name] [direction (optional)]",
     async execute(args, ctx) {
       if (!args.trim()) return { handled: true, feedback: "Usage: /guided <direction to steer the narrative>" };
       const characters = ctx.characters ?? [];
@@ -751,7 +771,7 @@ const COMMANDS: SlashCommand[] = [
     name: "as",
     aliases: ["respond"],
     description: "Post a message as a character, or generate that character's next response",
-    usage: '/as <character name> "message" | /as <character name>',
+    usage: "/as [name] [message (optional)]",
     async execute(args, ctx) {
       const characters: Array<{ id: string | null; name: string }> = [...(ctx.characters ?? [])];
       for (const name of ctx.characterNames) {
@@ -795,7 +815,7 @@ const COMMANDS: SlashCommand[] = [
     name: "emote",
     aliases: ["emotion", "sprite"],
     description: "List or switch roleplay sprite expressions",
-    usage: '/emote [expression] | /emote "Character" <expression>',
+    usage: '/emote [expression (optional)] | /emote "[name]" [expression (optional)]',
     local: true,
     async execute(args, ctx) {
       const sceneCharacters = ctx.characters ?? [];
@@ -945,7 +965,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "status",
     description: "Set or clear a conversation status override",
-    usage: "/status <status|clear> [character name]",
+    usage: "/status [online|idle|dnd|offline|clear] [name (optional)]",
     local: true,
     async execute(args, ctx) {
       if (ctx.mode !== "conversation") {
@@ -1049,7 +1069,7 @@ const COMMANDS: SlashCommand[] = [
     name: "impersonate",
     aliases: ["imp"],
     description: "Generate a response as your character ({{user}}), optionally with a direction",
-    usage: "/impersonate [direction]",
+    usage: "/impersonate [direction (optional)]",
     async execute(args, ctx) {
       const direction = args.trim();
       const { impersonatePresetId, impersonateConnectionId, impersonateBlockAgents, impersonatePromptTemplate } =
@@ -1072,7 +1092,7 @@ const COMMANDS: SlashCommand[] = [
     name: "impersonate_prompt",
     aliases: ["imp_prompt"],
     description: "Set the prompt prefix used by /impersonate in this chat",
-    usage: '/impersonate_prompt <prompt|reset>  (e.g. /impersonate_prompt "You will now play as my OC:")',
+    usage: "/impersonate_prompt [prompt|reset]",
     local: true,
     async execute(args, ctx) {
       const raw = args.trim();
@@ -1104,7 +1124,7 @@ const COMMANDS: SlashCommand[] = [
     name: "remind",
     aliases: ["reminder", "timer"],
     description: "Set a timed reminder — the AI will message you after the specified time",
-    usage: "/remind <time> <message>  (e.g. /remind 30m hang up laundry)",
+    usage: "/remind [time] [message]",
     local: true,
     async execute(args, ctx) {
       const parsed = parseReminder(args.trim());
@@ -1162,7 +1182,7 @@ const COMMANDS: SlashCommand[] = [
     name: "scene",
     aliases: ["rp"],
     description: "Start a roleplay scene branching from this conversation",
-    usage: "/scene [description]",
+    usage: "/scene [description (optional)]",
     local: true,
     async execute(args, ctx) {
       const prompt = args.trim();
@@ -1196,7 +1216,7 @@ const COMMANDS: SlashCommand[] = [
     name: "goto",
     aliases: ["jump", "scroll"],
     description: "Scroll to a specific message number (e.g. /goto 27)",
-    usage: "/goto <number>",
+    usage: "/goto [number]",
     local: true,
     async execute(args, ctx) {
       const raw = args.trim();
@@ -1212,7 +1232,7 @@ const COMMANDS: SlashCommand[] = [
     name: "illustrate",
     aliases: ["ill"],
     description: "Generate a gallery illustration for the current chat",
-    usage: "/illustrate [prompt]",
+    usage: "/illustrate [prompt (optional)]",
     requiredCapabilityId: "illustrator",
     modes: ["roleplay"],
     local: true,
@@ -1242,7 +1262,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "selfie",
     description: "Generate a Conversation selfie",
-    usage: "/selfie [character]",
+    usage: "/selfie [name (optional)]",
     requiredCapabilityId: "illustrator",
     modes: ["conversation"],
     local: true,
@@ -1284,7 +1304,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "hide",
     description: "Hide messages from AI context (won't be sent to the LLM on future turns)",
-    usage: "/hide [character] <indices>  (e.g. /hide 3-8, /hide Maukie 34-40)",
+    usage: "/hide [range] [name (optional)]",
     local: true,
     async execute(args, ctx) {
       const parsed = parseTargetedHideArguments(args, ctx.mode, ctx.characters);
@@ -1353,7 +1373,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "unhide",
     description: "Restore previously hidden messages back into AI context",
-    usage: "/unhide <indices>  (e.g. /unhide 5, /unhide 3-8, /unhide 2-5,9,12)",
+    usage: "/unhide [range]",
     local: true,
     async execute(args, ctx) {
       const indices = parseMessageIndices(args);

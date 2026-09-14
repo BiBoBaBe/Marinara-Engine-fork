@@ -11,6 +11,84 @@ const extra = (value: unknown): Record<string, any> => (typeof value === "string
 const contentOf = (body: any) => body.messages.map((message: any) => message.content).join("\n");
 const sharp = createRequire(new URL("../packages/server/package.json", import.meta.url))("sharp");
 
+for (const mode of ["roleplay", "conversation"] as const) {
+  test(`Slash command argument syntax stays visible in ${mode}`, async ({ page, request }, info) => {
+    const response = await request.post("/api/chats", { data: { name: "Command syntax", mode } });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const chat = (await response.json()) as { id: string };
+    try {
+      await openChat(page, chat.id, {
+        chatHelpSeenModes: ["roleplay", "conversation"],
+        trackerPanelEnabled: false,
+        trackerPanelOpen: false,
+        enterToSendRP: true,
+        enterToSendConvo: true,
+        theme: info.project.name === "desktop-chromium" ? "light" : "dark",
+        appAccentColor: "#3b9fe8",
+      });
+      const composer = page.locator("textarea[data-chat-composer]");
+      const input = page.locator(".chat-input-container");
+      await expect(composer).toBeVisible();
+      await composer.fill("/as");
+      const asSuggestion = input.getByRole("button", { name: /^\/as\b/u });
+      await expect(asSuggestion).toBeVisible();
+      await page.screenshot({ path: info.outputPath(`${mode}-slash-suggestion.png`) });
+      await asSuggestion.click();
+      await expect(composer).toHaveValue("/as ");
+
+      await composer.fill("/help");
+      await input.getByRole("button", { name: /^\/help\b/u }).click();
+      await expect(composer).toHaveValue("/help ");
+      await composer.press("Enter");
+      const help = input.locator("section").filter({ has: page.getByRole("heading", { name: "Available Commands" }) });
+      await expect(help).toBeVisible();
+      await expect(help).toHaveCSS("opacity", "1");
+      await page.screenshot({ path: info.outputPath(`${mode}-slash-help.png`) });
+      const usages = [
+        ["as", "/as [name] [message (optional)]"],
+        ["roll", "/roll [dice (optional)]"],
+        ["hide", "/hide [range] [name (optional)]"],
+        ["send", "/send [message]"],
+      ] as const;
+      for (const [, usage] of usages) await expect(help.locator("code")).toContainText([usage]);
+      await help.getByRole("button", { name: "Dismiss", exact: true }).click();
+      for (const [command, usage] of usages) {
+        await composer.fill(`/${command}`);
+        const suggestion = input.getByRole("button", { name: new RegExp(`^/${command}\\b`, "u") });
+        await expect(suggestion).toBeVisible();
+        await expect(suggestion).toContainText(usage);
+        const bounds = await suggestion.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            left: rect.left,
+            right: rect.right,
+            viewport: innerWidth,
+            overflow: element.scrollWidth - element.clientWidth,
+          };
+        });
+        expect(bounds.left).toBeGreaterThanOrEqual(-1);
+        expect(bounds.right).toBeLessThanOrEqual(bounds.viewport + 1);
+        expect(bounds.overflow).toBeLessThanOrEqual(1);
+        await suggestion.click();
+        await expect(composer).toHaveValue(`/${command} `);
+      }
+      await composer.fill("/dice");
+      await input.getByRole("button", { name: /^\/roll\b/u }).click();
+      await expect(composer).toHaveValue("/roll ");
+      if (mode === "conversation") {
+        await composer.fill("/status");
+        const status = input.getByRole("button", { name: /^\/status online\b/u });
+        await expect(status).toContainText("/status online [name (optional)]");
+        await status.click();
+        await expect(composer).toHaveValue("/status online ");
+      }
+      expect(await (await request.get(`/api/chats/${chat.id}/messages`)).json()).toEqual([]);
+    } finally {
+      await request.delete(`/api/chats/${chat.id}`);
+    }
+  });
+}
+
 test("Roleplay interruptions trim the latest message and restore its original safely", async ({
   page,
   request,
