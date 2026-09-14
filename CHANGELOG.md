@@ -4,6 +4,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Game setup keeps its normal steps when an Experience declares inline setup, with seed controls and individual lorebook entry selection (#6181, #6182).
+- Automatic translation follows the originating chat while navigating elsewhere in the app (#6187).
+- Closing a Unix terminal flushes confirmed saves and records a clean server shutdown (#6183).
+- Inventory tracker items can retain editable descriptions and locations alongside their quantities (#6192).
+
 - Scenes now offer the selected preset’s variables before entering the new chat and wait for confirmed choices to save (#6184).
 - Trackers can update or remove individual rows while keeping untouched values and field locks; existing full-list responses remain supported (#6185).
 - Experiences can prepare their world before the opening Game narration and provide that world’s context to the first turn (#6180).
