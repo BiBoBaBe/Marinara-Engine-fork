@@ -547,12 +547,15 @@ export function GameSetupWizard({
   const [activeLorebookEntryIds, setActiveLorebookEntryIds] = useState<string[]>([]);
   const [entryPickerOpened, setEntryPickerOpened] = useState(false);
   const [customWidgetsChoice, setEnableCustomWidgets] = useState(true);
-  const [customWidgetsTouched, setCustomWidgetsTouched] = useState(false);
-  const enableCustomWidgets =
-    !customWidgetsTouched && experienceSetup?.requires?.enableCustomWidgets !== undefined
-      ? experienceSetup.requires.enableCustomWidgets
-      : customWidgetsChoice;
+  // A declaring Experience owns this control while it is active. The player's own choice stays
+  // untouched underneath and comes back on its own once the Experience is turned off.
+  const requiredCustomWidgets = experienceSetup?.requires?.enableCustomWidgets;
+  const customWidgetsLocked = requiredCustomWidgets !== undefined;
+  const enableCustomWidgets = requiredCustomWidgets ?? customWidgetsChoice;
   const [manualWidgetSetupEnabled, setManualWidgetSetupEnabled] = useState(false);
+  useEffect(() => {
+    if (requiredCustomWidgets === false) setManualWidgetSetupEnabled(false);
+  }, [requiredCustomWidgets]);
   const [customHudWidgets, setCustomHudWidgets] = useState(() =>
     normalizeGameHudWidgets([createDefaultGameHudWidget("progress_bar", [])]),
   );
@@ -1161,7 +1164,6 @@ export function GameSetupWizard({
       setActiveLorebookEntryIds(config.activeLorebookEntryIds ?? []);
       setLbSearch("");
       setEnableCustomWidgets(config.enableCustomWidgets !== false);
-      setCustomWidgetsTouched(config.enableCustomWidgets !== undefined || config.customHudWidgets !== undefined);
       setManualWidgetSetupEnabled(importedWidgets.length > 0);
       setCustomHudWidgets(
         importedWidgets.length > 0
@@ -2914,13 +2916,19 @@ export function GameSetupWizard({
                     {/* Custom Widgets Toggle */}
                     <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
                       <button
+                        type="button"
+                        aria-pressed={enableCustomWidgets}
+                        disabled={customWidgetsLocked}
                         onClick={() => {
-                          setCustomWidgetsTouched(true);
+                          if (customWidgetsLocked) return;
                           const nextEnabled = !enableCustomWidgets;
                           setEnableCustomWidgets(nextEnabled);
                           if (!nextEnabled) setManualWidgetSetupEnabled(false);
                         }}
-                        className="flex w-full items-center justify-between gap-2 text-left"
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 text-left",
+                          customWidgetsLocked && "cursor-not-allowed opacity-50",
+                        )}
                       >
                         <div className="flex items-center gap-2">
                           <Sparkles
@@ -2952,21 +2960,14 @@ export function GameSetupWizard({
                           />
                         </div>
                       </button>
-                      {experienceSetup?.requires?.enableCustomWidgets !== undefined && (
+                      {customWidgetsLocked && (
                         <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                          {localizeUi(
-                            enableCustomWidgets === experienceSetup.requires.enableCustomWidgets
-                              ? "game.experienceSetup.widgetRequirement"
-                              : "game.experienceSetup.widgetOverride",
-                            {
-                              name: activeExperience?.manifest.name,
-                              state: localizeUi(
-                                experienceSetup.requires.enableCustomWidgets
-                                  ? "game.experienceSetup.enabled"
-                                  : "game.experienceSetup.disabled",
-                              ),
-                            },
-                          )}
+                          {localizeUi("game.experienceSetup.widgetRequirement", {
+                            name: activeExperience?.manifest.name,
+                            state: localizeUi(
+                              requiredCustomWidgets ? "game.experienceSetup.enabled" : "game.experienceSetup.disabled",
+                            ),
+                          })}
                         </p>
                       )}
                       {enableCustomWidgets && (

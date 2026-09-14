@@ -607,11 +607,12 @@ The host writes the numeric seed and declared constants to `experienceConfig`;
 characters. A seed label is package-authored display text; omit it to use the
 Engine's localized label.
 
-A declared widget requirement supplies the default only until the player changes
-that control. Turning the Experience off restores the ordinary default, while
-explicit player choices remain unchanged. The control explains the Experience's
-expectation and remains editable. The spatial-map setup controls are hidden for
-these Experiences, so no separate map draft, template, or builder is launched.
+A declared widget requirement is enforced while the Experience is active. The
+host sets the control to the declared value, locks it, and explains which
+Experience set it. A setup-file import cannot override the declared value. The
+player's own earlier choice is kept untouched and is restored as soon as the
+Experience is turned off. The spatial-map setup controls are hidden for these
+Experiences, so no separate map draft, template, or builder is launched.
 
 The Lorebooks step can select up to 100 individual enabled entries, including
 entries from unattached books. Disabled books, entries, and chat exclusions are

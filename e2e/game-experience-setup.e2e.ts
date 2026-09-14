@@ -319,12 +319,14 @@ for (const isNewGame of [true, false]) {
     await page.screenshot({ path: testInfo.outputPath("setup-lore-entry-picker.png") });
     await next();
     await expect(wizard.getByRole("heading", { name: "Features", exact: true })).toBeVisible();
+    const widgetToggle = wizard.getByRole("button", { name: /^Custom HUD Widgets/u });
     if (isNewGame) {
-      await expect(
-        wizard.getByText("Setup fixture uses HUD widgets disabled. You can change this setting."),
-      ).toBeVisible();
-      await wizard.getByRole("button", { name: /^Custom HUD Widgets/u }).click();
-      await expect(wizard.getByText("Setup fixture expects HUD widgets disabled; your choice is kept.")).toBeVisible();
+      // The declared requirement is applied and the control is locked while the Experience is on.
+      await expect(wizard.getByText("Setup fixture turns HUD widgets disabled for this game.")).toBeVisible();
+      await expect(widgetToggle).toBeDisabled();
+      await expect(widgetToggle).toHaveAttribute("aria-pressed", "false");
+      await widgetToggle.click({ force: true });
+      await expect(widgetToggle).toHaveAttribute("aria-pressed", "false");
       await expect(wizard.getByText("Hierarchical world map", { exact: true })).toHaveCount(0);
     } else {
       await expect(wizard.getByText("Hierarchical world map", { exact: true })).toBeVisible();
@@ -346,6 +348,14 @@ for (const isNewGame of [true, false]) {
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
       for (let step = 0; step < 6; step++) await next();
       await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
+      // Turning the Experience off unlocks the control at the player's own earlier choice.
+      for (let step = 0; step < 6; step++) await back();
+      await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
+      for (let step = 0; step < 5; step++) await next();
+      await expect(wizard.getByRole("heading", { name: "Features", exact: true })).toBeVisible();
+      await expect(widgetToggle).toBeEnabled();
+      await expect(widgetToggle).toHaveAttribute("aria-pressed", "true");
+      await expect(wizard.getByText(/turns HUD widgets/u)).toHaveCount(0);
     } else {
       expect(result.config).not.toHaveProperty("gameExperienceId");
       expect(result.config).not.toHaveProperty("experienceConfig");
