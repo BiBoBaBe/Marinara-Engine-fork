@@ -997,7 +997,8 @@ try {
   );
 
   // The seam is advertised only now that the runtime behind it exists.
-  assert.deepEqual({ ...supportedCapabilityApi }, { major: 1, minor: 16 });
+  assert.equal(supportedCapabilityApi.major, 1);
+  assert.ok(supportedCapabilityApi.minor >= 16, "the host advertises the GM verb runtime introduced in API 1.16");
   const manifestSchema = readFileSync(
     join(repositoryRoot, "packages/shared/src/schemas/capability-package.schema.ts"),
     "utf8",

@@ -12,6 +12,7 @@ import {
   applyTrackerFieldLocksToGameStatePatch,
   roleplayInventoryTrackerLockKey,
   characterTrackerLockKey,
+  worldCustomFieldTrackerLockKey,
   applyRegexReplacement,
   buildNarratorInstructionMessage,
   compileChatSummaryEntries,
@@ -741,6 +742,8 @@ import {
   canonicalizeGamePartySpeakerLabels,
   buildGenerationGuideInstruction,
   buildLockedInventoryTrackerPatch,
+  buildLockedPlayerStatsArrayPatch,
+  resolveTrackerGroupUpdate,
   appendSeparateAgentInjectionMessage,
   collectLatestTrackerCharacterHistory,
   computeSummaryHideIds,
@@ -7239,6 +7242,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         "regression-model",
       );
       assert.equal(results.length, 2);
+      assert.match(calls[0]![0]!.content, /tracker_incremental_updates: supported/);
       const messages = calls[0]!;
       const system = messages[0]!;
       const last = messages[messages.length - 1]!;
@@ -10868,6 +10872,270 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         inventoryTrackerInventory: [{ name: "Scavenged axe", qty: 2 }],
       });
 
+      // Explicit incremental groups keep omitted state, while arrays still replace it.
+      const itemState = {
+        ...inventoryLockState,
+        playerStats: {
+          ...inventoryLockState.playerStats,
+          inventoryTrackerInventory: [{ name: "Billhook" }, { name: "Rope" }, { name: "Map" }],
+        },
+      };
+      const itemSnapshot = { playerStats: JSON.stringify(itemState.playerStats) };
+      const incrementalItems = buildLockedInventoryTrackerPatch({
+        data: {
+          currencies: { updates: [{ name: "Silver coin", qty: 2 }], removed: ["Silver coin"] },
+          inventory: { updates: [{ name: " rope ", qty: 3 }, { name: "Key" }], removed: ["Billhook", "unknown"] },
+        },
+        snapshot: itemSnapshot,
+        lockState: itemState,
+      });
+      assert.deepEqual(incrementalItems.playerStats.inventoryTrackerCurrencies, [{ name: "Silver coin", qty: 6 }]);
+      assert.deepEqual(incrementalItems.playerStats.inventoryTrackerInventory, [
+        { name: "Rope", qty: 3 },
+        { name: "Map" },
+        { name: "Key" },
+      ]);
+      assert.deepEqual(
+        buildLockedInventoryTrackerPatch({
+          data: { inventory: { updates: [{ name: "Rope", qty: 1 }] } },
+          snapshot: { playerStats: incrementalItems.playerStats },
+          lockState: null,
+        }).playerStats.inventoryTrackerInventory?.find((row) => row.name === "Rope"),
+        { name: "Rope" },
+        "qty:1 explicitly reduces an existing quantity",
+      );
+      assert.deepEqual(
+        buildLockedInventoryTrackerPatch({
+          data: { inventory: { updates: [{ name: "Rope" }] } },
+          snapshot: { playerStats: incrementalItems.playerStats },
+          lockState: null,
+        }).playerStats.inventoryTrackerInventory?.find((row) => row.name === "Rope"),
+        { name: "Rope", qty: 3 },
+        "omitted quantity preserves the existing total",
+      );
+      assert.equal(
+        itemSnapshot.playerStats,
+        JSON.stringify(itemState.playerStats),
+        "normalization does not mutate its source",
+      );
+      assert.deepEqual(
+        buildLockedInventoryTrackerPatch({ data: { inventory: [] }, snapshot: itemSnapshot, lockState: null })
+          .playerStats.inventoryTrackerInventory,
+        [],
+        "legacy empty arrays still clear their group",
+      );
+      assert.equal(
+        buildLockedInventoryTrackerPatch({
+          data: { inventory: { updates: "bad", removed: ["Map"] } },
+          snapshot: itemSnapshot,
+          lockState: null,
+        }).changed,
+        false,
+        "malformed operation must not partially delete state",
+      );
+
+      const customFields = [
+        { name: "Health", value: "10", locked: true },
+        { name: "Clue", value: "gate" },
+        { name: "Mood", value: "calm" },
+      ];
+      const customState = {
+        ...currentState,
+        playerStats: { ...itemState.playerStats, customTrackerFields: customFields },
+      };
+      const updatedFields = resolveTrackerGroupUpdate(
+        {
+          updates: [
+            { name: "Clue", value: "north gate" },
+            { name: "Count", value: "1" },
+          ],
+          removed: ["Mood", "Health"],
+        },
+        customFields,
+        customState,
+        "customTrackerFields",
+      )!;
+      const customPatch = buildLockedPlayerStatsArrayPatch({
+        field: "customTrackerFields",
+        values: updatedFields,
+        snapshot: { playerStats: customState.playerStats },
+        lockState: customState,
+      });
+      assert.deepEqual(customPatch.values, [
+        { name: "Health", value: "10", locked: true },
+        { name: "Clue", value: "north gate" },
+        { name: "Count", value: "1" },
+      ]);
+
+      const attemptedUnlock = resolveTrackerGroupUpdate(
+        {
+          updates: [
+            { name: "Health", value: "0", locked: false },
+            { name: "New", value: "kept" },
+          ],
+          removed: ["Health"],
+        },
+        customFields,
+        customState,
+        "customTrackerFields",
+      )!;
+      const lockedResult = buildLockedPlayerStatsArrayPatch({
+        field: "customTrackerFields",
+        values: attemptedUnlock,
+        snapshot: { playerStats: customState.playerStats },
+        lockState: customState,
+      });
+      assert.deepEqual(lockedResult.values, [...customFields, { name: "New", value: "kept" }]);
+      const nextLockedState = { ...customState, playerStats: lockedResult.playerStats };
+      const subsequentRemoval = resolveTrackerGroupUpdate(
+        { removed: ["Health"] },
+        lockedResult.values,
+        nextLockedState,
+        "customTrackerFields",
+      );
+      assert.deepEqual(subsequentRemoval, lockedResult.values, "a model update cannot unlock the saved row");
+
+      const trackedCharacters = [
+        {
+          characterId: "guard-a",
+          name: "Guard",
+          mood: "calm",
+          outfit: "coat",
+          customFields: { Goal: "Watch", Secret: "kept" },
+          stats: [
+            { name: "HP", value: 10, max: 20 },
+            { name: "MP", value: 4, max: 5 },
+          ],
+        },
+        { characterId: "guard-b", name: "Guard", mood: "tired" },
+        { characterId: "visitor", name: "Visitor", mood: "happy" },
+      ];
+      const characterState = { ...currentState, presentCharacters: trackedCharacters };
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          { removed: ["guard-a", "Guard"] },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        trackedCharacters.slice(1),
+        "removing an ID must not disambiguate a name in the original snapshot",
+      );
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          { updates: [{ characterId: "guard-a", name: "Captain" }], removed: ["Guard"] },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        [{ ...trackedCharacters[0], name: "Captain" }, ...trackedCharacters.slice(1)],
+        "renaming an ID must not disambiguate a removal from the original snapshot",
+      );
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          {
+            updates: [
+              { characterId: "guard-a", name: "Captain" },
+              { name: "Guard", mood: "angry" },
+              { characterId: "arrival", name: "Arrival", mood: "calm" },
+              { name: "Arrival", mood: "happy" },
+            ],
+          },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        [
+          { ...trackedCharacters[0], name: "Captain" },
+          ...trackedCharacters.slice(1),
+          { characterId: "arrival", name: "Arrival", mood: "happy" },
+        ],
+        "renaming cannot disambiguate existing names, while a new row accepts repeated updates",
+      );
+      const updatedCharacters = resolveTrackerGroupUpdate(
+        {
+          updates: [
+            {
+              characterId: "guard-a",
+              mood: "alert",
+              customFields: { Goal: "Search" },
+              stats: [{ name: "HP", value: 9 }],
+            },
+            { name: "Guard", mood: "wrong" },
+            { characterId: "unknown", name: "Guard", mood: "wrong" },
+          ],
+          removed: ["Guard", "unknown", "visitor"],
+        },
+        trackedCharacters,
+        characterState,
+        "presentCharacters",
+      )!;
+      assert.equal(updatedCharacters.length, 2, "ambiguous names and unknown IDs do not remove or replace characters");
+      assert.deepEqual(updatedCharacters[0], {
+        ...trackedCharacters[0],
+        mood: "alert",
+        customFields: { Goal: "Search", Secret: "kept" },
+        stats: [
+          { name: "HP", value: 9, max: 20 },
+          { name: "MP", value: 4, max: 5 },
+        ],
+      });
+      preserveTrackerCharacterUiFields(updatedCharacters, trackedCharacters);
+      assert.equal(updatedCharacters.length, 2, "history enrichment must not resurrect a removed character");
+      assert.deepEqual(
+        resolveTrackerGroupUpdate(
+          { removed: ["guard-a", "guard-b", "visitor"] },
+          trackedCharacters,
+          characterState,
+          "presentCharacters",
+        ),
+        [],
+        "explicit removal can remove the last character",
+      );
+      const lockedCharacterState = {
+        ...characterState,
+        fieldLocks: { [characterTrackerLockKey(trackedCharacters[0]!, 0, "mood")]: true },
+      };
+      assert.equal(
+        resolveTrackerGroupUpdate(
+          { removed: ["guard-a"], updates: [{ characterId: "arrival", name: "Arrival" }] },
+          trackedCharacters,
+          lockedCharacterState,
+          "presentCharacters",
+        )?.length,
+        4,
+        "locked removal does not consume a new arrival",
+      );
+
+      const worldOps = { updates: [{ name: "Tension", value: "High" }], removed: ["Moon Phase", "unknown"] };
+      const worldPatch = applyTrackerFieldLocksToGameStatePatch({ worldCustomFields: worldOps }, currentState);
+      assert.deepEqual(worldPatch.worldCustomFields, [{ name: "Tension", value: "High", icon: "flame" }]);
+      const worldStreamPatch = {
+        worldCustomFields: { updates: worldPatch.worldCustomFields, removed: ["Moon Phase"] },
+      };
+      assert.deepEqual(
+        applyTrackerFieldLocksToGameStatePatch(worldStreamPatch, currentState).worldCustomFields,
+        worldPatch.worldCustomFields,
+        "live client merge honors explicit removal",
+      );
+      assert.deepEqual(
+        applyTrackerFieldLocksToGameStatePatch(worldStreamPatch, null).worldCustomFields,
+        worldPatch.worldCustomFields,
+        "early SSE seeds arrays before a snapshot is loaded",
+      );
+      const worldLockedState = {
+        ...currentState,
+        fieldLocks: { [worldCustomFieldTrackerLockKey(currentState.worldCustomFields[0]!, "value", 0)]: true },
+      };
+      assert.equal(
+        (
+          applyTrackerFieldLocksToGameStatePatch({ worldCustomFields: worldOps }, worldLockedState)
+            .worldCustomFields as unknown as unknown[]
+        ).length,
+        2,
+        "locked world rows survive explicit removal",
+      );
+
       // A group the agent did not mention must survive the turn. Treating an
       // absent key as an empty array silently wipes tracked state (#2370, #2724).
       const partialInventoryPatch = buildLockedInventoryTrackerPatch({
@@ -11438,6 +11706,31 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.match(beholderPromptBlock ?? "", /left hand: holding: silver key/u);
       assert.match(beholderPromptBlock ?? "", /shallow cut \(minor, bleeding\)/u);
       assert.equal(resolveAgentResultType({ type: "beholder", settings: {} }), "context_injection");
+    },
+  },
+  {
+    name: "tracker singleton requests advertise incremental support without changing parsed responses",
+    async run() {
+      for (const type of ["world-state", "character-tracker", "custom-tracker", "inventory-tracker"]) {
+        const output = { fields: { updates: [{ name: "Clue", value: "found" }], removed: [] } };
+        const { calls, provider } = makeCapturingProvider(JSON.stringify(output));
+        const config = makeRegressionAgentConfig({
+          id: `builtin:${type}`,
+          type,
+          name: type,
+          promptTemplate: "Return tracker JSON.",
+          settings: {},
+        });
+        const result = await executeAgent(
+          config as any,
+          makeRegressionAgentContext(),
+          provider as any,
+          "regression-model",
+        );
+        assert.equal(result.success, true);
+        assert.deepEqual(result.data, output);
+        assert.match(calls[0]!.map((message) => message.content).join("\n"), /tracker_incremental_updates: supported/);
+      }
     },
   },
   {

@@ -47,6 +47,7 @@ import {
   normalizeThinkingTagPairs,
   applyTrackerFieldLocksToGameStatePatch,
   normalizeWorldCustomFields,
+  isTrackerRowsUpdate,
   normalizeTrackerFieldLocksForState,
   trackerFieldLocksAreEmpty,
   customAgentHasCapability,
@@ -297,6 +298,8 @@ import {
   buildUserMessageRegenerationPromptFromSource,
   buildLockedPlayerStatsArrayPatch,
   buildLockedInventoryTrackerPatch,
+  resolveTrackerGroupUpdate,
+  buildWorldCustomFieldsStreamValue,
   buildLockedPersonaTrackerPatch,
   applyTrackerCharacterCardIdentity,
   canonicalizeGamePartySpeakerLabels,
@@ -10070,7 +10073,9 @@ export async function generateRoutes(app: FastifyInstance) {
                   : null;
                 const nextWorldCustomFields =
                   gs.worldCustomFields !== undefined
-                    ? normalizeWorldCustomFields(gs.worldCustomFields)
+                    ? isTrackerRowsUpdate(gs.worldCustomFields)
+                      ? gs.worldCustomFields
+                      : normalizeWorldCustomFields(gs.worldCustomFields)
                     : snapshotWorldCustomFields;
                 const lockedWorldStatePatch = applyTrackerFieldLocksToGameStatePatch(
                   {
@@ -10125,7 +10130,15 @@ export async function generateRoutes(app: FastifyInstance) {
                   location: newLocation,
                   weather: newWeather,
                   temperature: newTemperature,
-                  ...(gs.worldCustomFields !== undefined ? { worldCustomFields: newWorldCustomFields } : {}),
+                  ...(gs.worldCustomFields !== undefined
+                    ? {
+                        worldCustomFields: buildWorldCustomFieldsStreamValue(
+                          gs.worldCustomFields,
+                          snapshotWorldCustomFields,
+                          newWorldCustomFields,
+                        ),
+                      }
+                    : {}),
                 };
                 logger.debug("[game_state_patch] world-state: %j", worldStatePatch);
                 sendSseEvent(reply, { type: "game_state_patch", data: worldStatePatch });
@@ -10179,11 +10192,13 @@ export async function generateRoutes(app: FastifyInstance) {
             ) {
               try {
                 const ctData = result.data as Record<string, unknown>;
-                if (!Array.isArray(ctData.presentCharacters) || ctData.presentCharacters.length === 0) {
+                if (
+                  !isTrackerRowsUpdate(ctData.presentCharacters) &&
+                  (!Array.isArray(ctData.presentCharacters) || ctData.presentCharacters.length === 0)
+                ) {
                   logger.debug("[generate] character-tracker emitted no presentCharacters; keeping existing snapshot");
                   continue;
                 }
-                let chars = ctData.presentCharacters as any[];
                 const snapBeforeUpdate = await gameStateStore.getByChatAndMessage(
                   input.chatId,
                   messageId,
@@ -10194,14 +10209,21 @@ export async function generateRoutes(app: FastifyInstance) {
                   trackerBaseGameStateSnapshot ??
                   (allowLatestGameStateFallback ? await gameStateStore.getLatest(input.chatId) : null);
                 const oldChars = parseJsonField<any[]>(previousCharacterSnapshot?.presentCharacters, []);
+                const characterLockState = previousCharacterSnapshot
+                  ? parseGameStateRow(previousCharacterSnapshot as Record<string, unknown>)
+                  : null;
+                let chars =
+                  resolveTrackerGroupUpdate(
+                    ctData.presentCharacters,
+                    oldChars,
+                    characterLockState,
+                    "presentCharacters",
+                  ) ?? oldChars;
                 const cardCharacterIds = applyTrackerCharacterCardIdentity(chars, charInfo, {
                   previousCharacters: [...oldChars, ...characterTrackerHistory],
                 });
                 preserveTrackerCharacterUiFields(chars, oldChars);
                 preserveTrackerCharacterUiFields(chars, characterTrackerHistory);
-                const characterLockState = previousCharacterSnapshot
-                  ? parseGameStateRow(previousCharacterSnapshot as Record<string, unknown>)
-                  : null;
                 const lockedCharacterPatch = applyTrackerFieldLocksToGameStatePatch(
                   { presentCharacters: chars },
                   characterLockState,
@@ -10498,7 +10520,7 @@ export async function generateRoutes(app: FastifyInstance) {
               }
             }
 
-            // Inventory Tracker agent → replace its three dedicated playerStats lists
+            // Inventory Tracker agent → apply full lists or incremental item changes
             if (
               result.success &&
               result.type === "inventory_tracker_update" &&
@@ -10563,8 +10585,7 @@ export async function generateRoutes(app: FastifyInstance) {
             ) {
               try {
                 const ctData = result.data as Record<string, unknown>;
-                const hasFields = Array.isArray(ctData.fields);
-                const rawFields = hasFields ? (ctData.fields as any[]) : [];
+                const hasFields = Array.isArray(ctData.fields) || isTrackerRowsUpdate(ctData.fields);
                 if (hasFields) {
                   // Ensure a snapshot exists for this (messageId, swipeIndex)
                   let snap = await gameStateStore.getByChatAndMessage(input.chatId, messageId, targetSwipeIndex);
@@ -10575,6 +10596,13 @@ export async function generateRoutes(app: FastifyInstance) {
                     snap = await gameStateStore.getByChatAndMessage(input.chatId, messageId, targetSwipeIndex);
                   }
                   const customLockState = snap ? parseGameStateRow(snap as Record<string, unknown>) : null;
+                  const rawFields =
+                    resolveTrackerGroupUpdate(
+                      ctData.fields,
+                      parseSnapshotPlayerStats(snap).customTrackerFields ?? [],
+                      customLockState,
+                      "customTrackerFields",
+                    ) ?? [];
                   const customTrackerPatch = buildLockedPlayerStatsArrayPatch<any>({
                     field: "customTrackerFields",
                     values: rawFields,

@@ -82,6 +82,8 @@ const capabilityPackageManifestBaseSchema = z
         /** Options for the `game-surface` slot. */
         gameSurface: z
           .object({
+            /** Mount before the first GM turn and wait for setStartupReady on the surface props. */
+            prepareBeforeStart: z.boolean().optional(),
             /** Class the host puts on the game area while this surface is mounted, so the package can
              *  restyle the shared chrome that renders outside its element. Declared rather than pushed at
              *  runtime, so the theme applies on first paint. */
@@ -197,7 +199,8 @@ const capabilityPackageManifestBaseSchema = z
 //        into the GM prompt, parses back out of the turn, and either writes into the package's own
 //        chat-metadata key or delivers live as a `gm_verb` event (soft seam: read from the asset
 //        regardless of declared capabilityApi; declare 1.16 only to REQUIRE it. Needs `chat-write`).
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 16 } as const);
+// 1.17: opted-in Experience surfaces prepare before startup and supply first-turn world context.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 17 } as const);
 
 const capabilityApiVersionSchema = z
   .object({
@@ -230,6 +233,23 @@ export const capabilityPackageManifestV2Schema = capabilityPackageManifestBaseSc
 export const capabilityPackageManifestSchema = z
   .discriminatedUnion("schemaVersion", [capabilityPackageManifestV1Schema, capabilityPackageManifestV2Schema])
   .superRefine((manifest, ctx) => {
+    if (manifest.contributions?.gameSurface?.prepareBeforeStart) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major < 1 || (api.major === 1 && api.minor < 17)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "gameSurface", "prepareBeforeStart"],
+          message: "prepareBeforeStart requires schemaVersion 2 and capabilityApi 1.17 or newer",
+        });
+      }
+      if (!manifest.contributions.slots?.includes("game-surface")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["contributions", "gameSurface", "prepareBeforeStart"],
+          message: 'prepareBeforeStart requires the "game-surface" slot',
+        });
+      }
+    }
     // A game-surface package draws the whole mode from its client bundle: without a client entrypoint the
     // module loader skips it, so it would be offered in the setup wizard and then render nothing. Caught
     // here so it fails at install with a clear reason rather than as an empty screen later.

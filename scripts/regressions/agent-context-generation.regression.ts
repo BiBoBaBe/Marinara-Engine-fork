@@ -18,7 +18,14 @@ const { generateRoutes } = await import("../../packages/server/src/routes/genera
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
+const { createGameStateStorage } = await import("../../packages/server/src/services/storage/game-state.storage.js");
+const { applyTrackerFieldLocksToGameStatePatch, replaceBuiltInAgentDefinitions, worldCustomFieldTrackerLockKey } =
+  await import("../../packages/shared/dist/index.js");
+const { parseGameStateRow } = await import("../../packages/server/src/routes/generate/generate-route-utils.js");
 const prompts: string[] = [];
+const trackerPrompts: string[] = [];
+let trackerOutputs: Record<string, unknown> = {};
+
 const provider = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -26,9 +33,14 @@ const provider = createServer(async (req, res) => {
   const prompt = body.messages.map((message: { content: unknown }) => JSON.stringify(message.content)).join("\n");
   const isAgent = prompt.includes("CONTEXT_FIXTURE");
   if (isAgent) prompts.push(prompt);
-  const content = isAgent
-    ? JSON.stringify({ text: "Public hint", "agent-context": `SECRET_${prompts.length}` })
-    : "The story continues.";
+  const trackerType = Object.keys(trackerOutputs).find((type) => prompt.includes(`TRACKER_FIXTURE_${type}`));
+  if (trackerType) trackerPrompts.push(prompt);
+  const trackerOutput = prompt.includes("<agent_task ") ? trackerOutputs : trackerOutputs[trackerType ?? ""];
+  const content = trackerType
+    ? JSON.stringify(trackerOutput)
+    : isAgent
+      ? JSON.stringify({ text: "Public hint", "agent-context": `SECRET_${prompts.length}` })
+      : "The story continues.";
   if (body.stream) {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end(
@@ -125,6 +137,187 @@ try {
     !prompts[2]?.includes("SECRET_2"),
     "The next iteration must not read the discarded turn's pre-generation context",
   );
+  // The same real provider/route harness exercises ordinary batched tracking and manual retry.
+  const trackerTypes = ["world-state", "character-tracker", "inventory-tracker", "custom-tracker"];
+  replaceBuiltInAgentDefinitions(
+    trackerTypes.map((type) => ({
+      id: type,
+      name: type,
+      description: "Synthetic tracker",
+      phase: "post_processing" as const,
+      enabledByDefault: false,
+      category: "tracker" as const,
+      defaultTools: [],
+      defaultPromptTemplate: `TRACKER_FIXTURE_${type} Return JSON.`,
+    })),
+  );
+  for (const type of trackerTypes) {
+    await agents.create({
+      type,
+      name: type,
+      phase: "post_processing",
+      connectionId: connection.id,
+      promptTemplate: `TRACKER_FIXTURE_${type} Return JSON.`,
+    });
+  }
+  const trackerChat = await chats.create({
+    name: "Incremental tracker fixture",
+    mode: "roleplay",
+    characterIds: [],
+    connectionId: connection.id,
+    promptPresetId: null,
+  });
+  await chats.patchMetadata(trackerChat.id, { enableAgents: true, activeAgentIds: trackerTypes });
+  const priorMessage = await chats.createMessage({
+    chatId: trackerChat.id,
+    role: "assistant",
+    content: "Two guards carry a rope and map.",
+  });
+  const stateStore = createGameStateStorage(db);
+  const initialState = {
+    chatId: trackerChat.id,
+    messageId: priorMessage.id,
+    swipeIndex: 0,
+    date: null,
+    time: null,
+    location: "Lab",
+    weather: "Clear",
+    temperature: null,
+    worldCustomFields: [
+      { name: "Moon", value: "Full", icon: "moon" },
+      { name: "Note", value: "Low", icon: "tag" },
+      { name: "Locked", value: "kept", icon: "tag" },
+    ],
+    presentCharacters: [
+      { characterId: "a", name: "Alice", mood: "calm", outfit: "coat" },
+      { characterId: "b", name: "Bob", mood: "calm" },
+    ],
+    recentEvents: [],
+    personaStats: null,
+    playerStats: {
+      stats: [],
+      attributes: null,
+      skills: {},
+      inventory: [],
+      activeQuests: [],
+      status: "",
+      inventoryTrackerInventory: [{ name: "Rope", qty: 3 }, { name: "Map" }, { name: "Compass" }],
+      customTrackerFields: [
+        { name: "Clue", value: "south" },
+        { name: "Mood", value: "calm" },
+        { name: "Luck", value: "5" },
+      ],
+    },
+    fieldLocks: { [worldCustomFieldTrackerLockKey({ name: "Locked" }, "value", 2)]: true },
+  };
+  const priorStateId = await stateStore.create(initialState);
+  const priorState = await stateStore.getById(priorStateId);
+  assert.ok(priorState);
+  await stateStore.commit(priorState.id, trackerChat.id);
+  await chats.createMessage({
+    chatId: trackerChat.id,
+    role: "user",
+    content: "Bob leaves; the rope is used and the map discarded.",
+  });
+  trackerOutputs = {
+    "world-state": {
+      weather: "Rain",
+      worldCustomFields: { updates: [{ name: "Note", value: "High" }], removed: ["Moon", "Locked"] },
+    },
+    "character-tracker": { presentCharacters: { updates: [{ characterId: "a", mood: "alert" }], removed: ["b"] } },
+    "inventory-tracker": { inventory: { updates: [{ name: "Rope", qty: 1 }], removed: ["Map"] } },
+    "custom-tracker": { fields: { updates: [{ name: "Clue", value: "north" }], removed: ["Mood"] } },
+  };
+  const generated = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: trackerChat.id } });
+  assert.equal(generated.statusCode, 200, generated.body);
+  assert.ok(!generated.body.includes('"type":"error"'), generated.body);
+  const target = (await chats.listMessages(trackerChat.id)).filter((message) => message.role === "assistant").at(-1)!;
+  assert.notEqual(target.id, priorMessage.id);
+  const readTarget = async () => {
+    const row = await stateStore.getByChatAndMessage(trackerChat.id, target.id, 0);
+    assert.ok(row);
+    return parseGameStateRow(row as Record<string, unknown>);
+  };
+  const normalState = await readTarget();
+  assert.deepEqual(
+    normalState.presentCharacters.map(({ name, mood, outfit }) => ({ name, mood, outfit })),
+    [{ name: "Alice", mood: "alert", outfit: "coat" }],
+  );
+  assert.deepEqual(normalState.playerStats?.inventoryTrackerInventory, [{ name: "Rope" }, { name: "Compass" }]);
+  assert.deepEqual(normalState.playerStats?.customTrackerFields, [
+    { name: "Clue", value: "north" },
+    { name: "Luck", value: "5" },
+  ]);
+  assert.deepEqual(
+    normalState.worldCustomFields.map((field) => field.name),
+    ["Note", "Locked"],
+  );
+  const worldEvent = generated.body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)))
+    .find((event) => event.type === "game_state_patch" && event.data.worldCustomFields);
+  assert.ok(worldEvent, generated.body);
+  assert.deepEqual(
+    worldEvent.data.worldCustomFields.removed,
+    ["Moon"],
+    "the SSE patch excludes rejected locked removals",
+  );
+  assert.deepEqual(
+    applyTrackerFieldLocksToGameStatePatch(worldEvent.data, parseGameStateRow(priorState as Record<string, unknown>))
+      .worldCustomFields,
+    normalState.worldCustomFields,
+  );
+  assert.deepEqual(
+    applyTrackerFieldLocksToGameStatePatch(worldEvent.data, null).worldCustomFields,
+    normalState.worldCustomFields,
+  );
+  trackerOutputs = {
+    "world-state": { worldCustomFields: { removed: ["Note"] } },
+    "character-tracker": { presentCharacters: { removed: ["a"] } },
+    "inventory-tracker": { inventory: { removed: ["Rope"] } },
+    "custom-tracker": { fields: { removed: ["Clue"] } },
+  };
+  const retry = async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/generate/retry-agents",
+      payload: { chatId: trackerChat.id, agentTypes: trackerTypes, forMessageId: target.id },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.ok(!response.body.includes('"type":"error"'), response.body);
+    return readTarget();
+  };
+  const retried = await retry();
+  assert.deepEqual(retried.presentCharacters, []);
+  assert.deepEqual(retried.playerStats?.inventoryTrackerInventory, [{ name: "Compass" }]);
+  assert.deepEqual(retried.playerStats?.customTrackerFields, [{ name: "Luck", value: "5" }]);
+  assert.deepEqual(
+    retried.worldCustomFields.map((field) => field.name),
+    ["Locked"],
+  );
+  trackerOutputs = {
+    "world-state": { weather: "Sun" },
+    "character-tracker": { presentCharacters: [{ characterId: "legacy", name: "Legacy", mood: "calm" }] },
+    "inventory-tracker": { inventory: [{ name: "Lantern" }] },
+    "custom-tracker": { fields: [{ name: "Full", value: "legacy" }] },
+  };
+  const legacy = await retry();
+  assert.equal(legacy.weather, "Sun");
+  assert.deepEqual(legacy.playerStats?.inventoryTrackerInventory, [{ name: "Lantern" }]);
+  assert.deepEqual(legacy.playerStats?.customTrackerFields, [{ name: "Full", value: "legacy" }]);
+  assert.equal(legacy.presentCharacters[0]?.name, "Legacy");
+  assert.ok(trackerPrompts.length >= 3);
+  assert.ok(
+    trackerPrompts.some((prompt) => prompt.includes("<agent_task ")),
+    "normal trackers share the real batch path",
+  );
+  assert.deepEqual(
+    parseGameStateRow((await stateStore.getById(priorState.id))! as Record<string, unknown>).playerStats,
+    initialState.playerStats,
+    "tracker writes must not change the preceding snapshot",
+  );
+  for (const prompt of trackerPrompts) assert.ok(prompt.includes("tracker_incremental_updates: supported"));
 } finally {
   provider.closeAllConnections();
   await new Promise<void>((done) => provider.close(() => done()));
@@ -132,4 +325,6 @@ try {
   await closeDB();
   rmSync(dir, { recursive: true, force: true });
 }
-console.log("Real generation and regeneration keep custom-agent context anchored to the active assistant swipe.");
+console.log(
+  "Real generation/retry preserve tracker increments, explicit removals, locks, legacy arrays, and prior context.",
+);

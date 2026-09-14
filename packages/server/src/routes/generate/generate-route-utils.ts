@@ -4,17 +4,23 @@ import {
   GENERATION_PARAMETER_SEND_KEYS,
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
+  characterTrackerLockPrefix,
+  customTrackerFieldLockPrefix,
   generationParametersSchema,
   normalizeInventoryTrackerRows,
+  normalizeTrackerFieldLocksForState,
   extractCharacterCardCastMembers,
   normalizeTextForMatch,
   type CharacterCardCastSource,
   normalizeSummaryTailMessages,
   normalizeWorldCustomFields,
+  isTrackerRowsUpdate,
   normalizeThinkingTagPairs,
   parseTrackerFieldLocks,
   parseTrackerHiddenFields,
   resolveMacros,
+  resolveTrackerRowsUpdate,
+  roleplayInventoryTrackerRowLockPrefix,
   resolveChatPersonaCandidate,
   unwrapConversationInstructions,
   wrapConversationInstructions,
@@ -23,6 +29,7 @@ import {
   type GenerationParameterSendMap,
   type GenerationParameters,
   type InventoryTrackerRow,
+  type InventoryTrackerGroup,
   type MacroContext,
   type PlayerStats,
   type WrapFormat,
@@ -168,6 +175,48 @@ type PlayerStatsArrayField = {
   [K in keyof PlayerStats]-?: NonNullable<PlayerStats[K]> extends unknown[] ? K : never;
 }[keyof PlayerStats];
 
+/** Resolve explicit item updates before the existing lock/persistence path. */
+export function resolveTrackerGroupUpdate(
+  value: unknown,
+  previous: readonly unknown[],
+  lockState: GameState | null | undefined,
+  group: InventoryTrackerGroup | "customTrackerFields" | "presentCharacters",
+) {
+  const locks = normalizeTrackerFieldLocksForState(lockState?.fieldLocks, lockState);
+  return resolveTrackerRowsUpdate(
+    value,
+    previous,
+    group === "presentCharacters" ? "characterId" : "name",
+    (row, index) => {
+      if (group === "customTrackerFields" && row.locked === true) return false;
+      const identity = {
+        name: typeof row.name === "string" ? row.name : "",
+        characterId: typeof row.characterId === "string" ? row.characterId : "",
+      };
+      const prefix =
+        group === "presentCharacters"
+          ? characterTrackerLockPrefix(identity, index)
+          : group === "customTrackerFields"
+            ? customTrackerFieldLockPrefix(identity, index)
+            : roleplayInventoryTrackerRowLockPrefix(group, identity, index);
+      return !Object.entries(locks).some(([key, locked]) => locked && key.startsWith(`${prefix}.`));
+    },
+  );
+}
+
+/** Keep explicit world removals through the client lock merge, without re-sending rejected removals. */
+export function buildWorldCustomFieldsStreamValue(source: unknown, previous: unknown, next: unknown) {
+  const fields = normalizeWorldCustomFields(next);
+  if (!isTrackerRowsUpdate(source)) return fields;
+  const names = new Set(fields.map((field) => field.name));
+  return {
+    updates: fields,
+    removed: normalizeWorldCustomFields(previous)
+      .filter((field) => !names.has(field.name))
+      .map((field) => field.name),
+  };
+}
+
 export function buildLockedPlayerStatsArrayPatch<T>({
   field,
   values,
@@ -258,18 +307,36 @@ export function buildLockedInventoryTrackerPatch({
   // Only a group the agent actually emitted may rewrite that group. Treating an
   // absent key as an empty array wipes state the model simply did not mention
   // this turn — the destructive absent-vs-empty failure mode from #2370/#2724.
-  const emittedCurrencies = Array.isArray(data.currencies);
-  const emittedEquipped = Array.isArray(data.equipped);
-  const emittedInventory = Array.isArray(data.inventory);
+  const currencyUpdate = resolveTrackerGroupUpdate(
+    data.currencies,
+    existingRows("inventoryTrackerCurrencies"),
+    lockState,
+    "currencies",
+  );
+  const equippedUpdate = resolveTrackerGroupUpdate(
+    data.equipped,
+    existingRows("inventoryTrackerEquipped"),
+    lockState,
+    "equipped",
+  );
+  const inventoryUpdate = resolveTrackerGroupUpdate(
+    data.inventory,
+    existingRows("inventoryTrackerInventory"),
+    lockState,
+    "inventory",
+  );
+  const emittedCurrencies = currencyUpdate !== undefined;
+  const emittedEquipped = equippedUpdate !== undefined;
+  const emittedInventory = inventoryUpdate !== undefined;
 
   const currencies = emittedCurrencies
-    ? normalizeInventoryTrackerRows(data.currencies)
+    ? normalizeInventoryTrackerRows(currencyUpdate)
     : existingRows("inventoryTrackerCurrencies");
   const equipped = emittedEquipped
-    ? normalizeInventoryTrackerRows(data.equipped)
+    ? normalizeInventoryTrackerRows(equippedUpdate)
     : existingRows("inventoryTrackerEquipped");
   const carried = emittedInventory
-    ? normalizeInventoryTrackerRows(data.inventory)
+    ? normalizeInventoryTrackerRows(inventoryUpdate)
     : existingRows("inventoryTrackerInventory");
 
   const excludedNames = new Set([...currencies, ...equipped].map((row) => normalizeTextForMatch(row.name)));
