@@ -7590,6 +7590,106 @@ test("new Roleplay chats seed character Tracker custom-field defaults without re
   }
 });
 
+test("Roleplay Tracker preserves named characters with missing or malformed card IDs", async ({
+  page,
+  request,
+}, testInfo) => {
+  let characterId = "";
+  let chatId = "";
+  try {
+    const characterResponse = await request.post("/api/characters", { data: { data: { name: "Named visitor" } } });
+    expect(characterResponse.ok()).toBeTruthy();
+    characterId = (await characterResponse.json()).id;
+    const avatarResponse = await request.post(`/api/characters/${characterId}/avatar`, {
+      data: {
+        avatar: `data:image/png;base64,${readFileSync(new URL("../packages/client/public/sprites/mari/Mari_wave.png", import.meta.url)).toString("base64")}`,
+        filename: "tracker-fixture.png",
+      },
+    });
+    expect(avatarResponse.ok()).toBeTruthy();
+    const avatarPath = (await (await request.get(`/api/characters/${characterId}`)).json()).avatarPath;
+    const chatResponse = await request.post("/api/chats", {
+      data: { name: "Tracker legacy IDs", mode: "roleplay", characterIds: [characterId] },
+    });
+    expect(chatResponse.ok()).toBeTruthy();
+    chatId = (await chatResponse.json()).id;
+    await request.patch(`/api/chats/${chatId}/metadata`, {
+      data: { enableAgents: true, activeAgentIds: ["character-tracker"] },
+    });
+    const characters = [
+      { name: "Named visitor" },
+      { name: "Null visitor", characterId: null },
+      { name: "Numeric visitor", characterId: 42 },
+      { name: "Linked companion", characterId },
+    ].map((character) => ({
+      ...character,
+      emoji: "🧭",
+      mood: "Curious",
+      appearance: "Travelling coat",
+      outfit: "Blue scarf",
+      thoughts: "The atlas is still safe.",
+      stats: [{ name: "Resolve", value: 7, max: 10 }],
+      customFields: { Goal: "Preserve the atlas" },
+    }));
+    expect(
+      (
+        await request.patch(`/api/chats/${chatId}/game-state`, {
+          data: { presentCharacters: characters, manual: true },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    const readCharacters = async () =>
+      (await (await request.get(`/api/chats/${chatId}/game-state`)).json()).presentCharacters;
+    const originalCharacters = await readCharacters();
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["roleplay"],
+      trackerPanelEnabled: true,
+      trackerPanelOpen: false,
+      trackerPanelSide: "left",
+      trackerPanelSizeProfile: "expanded",
+      trackerPanelUseExpressionSprites: false,
+      trackerPanelHideHudWidgets: false,
+      trackerStatDisplayMode: "bars",
+      theme: testInfo.project.name === "desktop-chromium" ? "light" : "dark",
+    });
+    await page.addInitScript((id) => localStorage.setItem("marinara-active-chat-id", id), chatId);
+    const renderErrors: string[] = [];
+    page.on("pageerror", (error) => renderErrors.push(error.message));
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 0) await page.goto("/");
+      else await page.reload();
+      const toggle = page.locator('[data-tracker-panel-toggle="roleplay-hud"]:visible').first();
+      await expect(toggle).toBeVisible();
+      await toggle.click();
+      const tracker = page.locator('[data-component="TrackerDataSidebar"]:visible');
+      await expect(tracker).toBeVisible();
+      for (const character of characters)
+        await expect(tracker.getByRole("button", { name: character.name, exact: true })).toBeVisible();
+      for (const name of ["Named visitor", "Linked companion"]) {
+        const avatar = tracker.getByRole("button", { name: `Change ${name} avatar`, exact: true }).locator("img");
+        await expect(avatar).toHaveAttribute("src", avatarPath);
+        await expect
+          .poll(() => avatar.evaluate((image) => (image as HTMLImageElement).naturalWidth))
+          .toBeGreaterThan(0);
+      }
+      expect(await readCharacters()).toEqual(originalCharacters);
+      expect(renderErrors).toEqual([]);
+      if (pass === 1) await page.screenshot({ path: testInfo.outputPath("tracker-missing-card-ids.png") });
+    }
+  } catch (error) {
+    await page.screenshot({ path: testInfo.outputPath("tracker-opening-failure.png") }).catch(() => undefined);
+    throw error;
+  } finally {
+    await page.close();
+    if (chatId) await bestEffortDelete(request, `/api/chats/${chatId}`);
+    if (characterId) await bestEffortDelete(request, `/api/characters/${characterId}`);
+  }
+});
+
 test("desktop Tracker scales into either Roleplay gutter without shifting chat", async ({ page }, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Desktop Tracker gutter behavior is covered on desktop.");
 

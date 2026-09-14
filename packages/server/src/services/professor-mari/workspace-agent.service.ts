@@ -16,6 +16,7 @@ import type {
 } from "../llm/base-provider.js";
 import { parseTextualToolCalls } from "../llm/textual-tool-call-parser.js";
 import { createLLMProvider } from "../llm/provider-registry.js";
+import { GeminiNoContentError } from "../llm/providers/google.provider.js";
 import { setConnectionRateLimit } from "../llm/connection-rate-limit-registry.js";
 import { getLocalSidecarProvider, LOCAL_SIDECAR_MODEL } from "../llm/local-sidecar.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
@@ -216,7 +217,7 @@ const SKIPPED_DIRS = new Set([
 ]);
 
 export function professorMariWorkspaceResponseFormat(provider: string): ChatOptions["responseFormat"] | undefined {
-  return provider === "openrouter" ? { type: "json_object" } : undefined;
+  return ["openrouter", "google", "google_vertex"].includes(provider) ? { type: "json_object" } : undefined;
 }
 
 export const PROFESSOR_MARI_APP_DATA_ACTIONS = [
@@ -2714,7 +2715,23 @@ export class ProfessorMariWorkspaceService {
 
       for (let round = 0; round < MAX_COMMAND_ROUNDS; round += 1) {
         if (controller.signal.aborted) throw new Error("aborted");
-        const result = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {}, debugLog);
+        let result: ChatCompletionResult;
+        try {
+          result = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {}, debugLog);
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          if (
+            !(error instanceof GeminiNoContentError) ||
+            error.finishReason.trim().toUpperCase() !== "MALFORMED_FUNCTION_CALL"
+          )
+            throw error;
+          // No command was returned or executed: reuse the bounded protocol repair loop below.
+          logger.warn(
+            error,
+            "Professor Mari received a malformed Gemini function call; repairing the JSON command frame",
+          );
+          result = { content: null, toolCalls: [], finishReason: "error", usage: error.usage };
+        }
         latestUsage = result.usage;
         latestFinishReason = result.finishReason ?? null;
         const usage = mapUsage(result.usage);
