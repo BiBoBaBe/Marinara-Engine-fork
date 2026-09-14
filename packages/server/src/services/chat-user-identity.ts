@@ -81,8 +81,9 @@ export async function resolveChatUserIdentity(
     };
   }
 
+  if (!chat.personaId) return null;
   const personas = preloadedPersonas ?? (await storage.listPersonas());
-  const persona = resolveChatPersonaCandidate(personas, chat.personaId, chat.mode);
+  const persona = resolveChatPersonaCandidate(personas, chat.personaId);
   if (!persona) return null;
   return {
     source: "persona",

@@ -478,7 +478,7 @@ async function resolveMostRecentPersona(
   }
 
   const personas = await charactersStorage.listPersonas();
-  return personas.find((persona) => persona.isActive === "true") ?? personas[0] ?? null;
+  return personas[0] ?? null;
 }
 
 async function buildRecentChatContext(args: {

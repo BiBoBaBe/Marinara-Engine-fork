@@ -1,4 +1,10 @@
-import { normalizeTextForMatch, resolveMacros, type MacroContext, type Persona } from "@marinara-engine/shared";
+import {
+  normalizeTextForMatch,
+  resolveChatPersonaCandidate,
+  resolveMacros,
+  type MacroContext,
+  type Persona,
+} from "@marinara-engine/shared";
 
 export interface MacroCharacterData {
   id?: string;
@@ -126,11 +132,7 @@ export function selectActivePersona(
 ): MacroPersonaData | undefined {
   if (!personas?.length) return undefined;
 
-  const chatPersonaId = typeof chat?.personaId === "string" ? chat.personaId : null;
-  const allowGlobalFallback = chat?.mode !== "game";
-  const selectedPersona =
-    (chatPersonaId ? personas.find((persona) => persona.id === chatPersonaId) : null) ??
-    (allowGlobalFallback ? personas.find((persona) => persona.isActive) : null);
+  const selectedPersona = resolveChatPersonaCandidate(personas, chat?.personaId);
 
   return selectedPersona ? toMacroPersonaData(selectedPersona) : undefined;
 }

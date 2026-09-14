@@ -99,9 +99,9 @@ export function hasProviderMessagePayload(message: {
 
 /**
  * Preserve the route-layer export while sharing the same Persona policy with
- * the client: only Conversation falls back to the globally active Persona.
+ * the client: every mode requires an explicit chat Persona selection.
  */
-export function resolveActivePersonaCandidate<T extends { id: string; isActive?: unknown }>(
+export function resolveActivePersonaCandidate<T extends { id: string }>(
   personas: readonly T[],
   chatPersonaId: string | null | undefined,
   chatMode: string | null | undefined,

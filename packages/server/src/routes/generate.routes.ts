@@ -1850,8 +1850,7 @@ export async function generateRoutes(app: FastifyInstance) {
       const isHomeProfessorMariAssistantChat =
         chatMeta.internalAssistant === PROFESSOR_MARI_INTERNAL_CHAT_MARKER && characterIds.includes(PROFESSOR_MARI_ID);
 
-      // Resolve Persona — explicit selection always wins, while only
-      // Conversation may fall back to the globally active Persona.
+      // Resolve only the Persona or character identity selected for this chat.
       let personaId: string | null = null;
       let personaName = "User";
       let personaPhoneticName = "";

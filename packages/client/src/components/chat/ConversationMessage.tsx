@@ -316,7 +316,7 @@ export const ConversationMessage = memo(function ConversationMessage({
 
   // Conversation-only cosmetic display name (convoDisplayName). This component only
   // ever mounts in Conversation mode, so reading it here can't leak into RP/Game.
-  // It's read live (character map / active persona), so renaming reflects on
+  // It's read live (character map / chat persona), so renaming reflects on
   // existing messages. Identity and macros keep the base `name`; only the visible
   // label swaps. For personas we only have the *current* persona's live name, so we
   // never stamp it onto a different persona's historical messages.
@@ -328,13 +328,18 @@ export const ConversationMessage = memo(function ConversationMessage({
         : undefined
     : primaryCharInfo?.convoDisplayName;
   const headerDisplayName = convoDisplayName && convoDisplayName.trim() ? convoDisplayName : displayName;
+  const macroUserName = plainUserMessages
+    ? "User"
+    : msgPersona
+      ? (msgPersona.name ?? "User")
+      : (personaInfo?.name ?? "User");
 
   const macroContext = useMemo(
     () => ({
       variables: presetVariables,
-      userName: displayName,
+      userName: macroUserName,
       persona: {
-        name: displayName,
+        name: macroUserName,
         description: plainUserMessages ? undefined : msgPersona ? msgPersona.description : personaInfo?.description,
         personality: plainUserMessages ? undefined : msgPersona ? msgPersona.personality : personaInfo?.personality,
         backstory: plainUserMessages ? undefined : msgPersona ? msgPersona.backstory : personaInfo?.backstory,
@@ -350,6 +355,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     }),
     [
       displayName,
+      macroUserName,
       presetVariables,
       msgPersona,
       personaInfo?.appearance,
