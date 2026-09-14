@@ -406,6 +406,237 @@ test("Game translation follows changed narration and remains manually accessible
   }
 });
 
+for (const mode of ["conversation", "roleplay", "game"] as const) {
+  test(`${mode} automatic translation survives navigation and evicted chat settings`, async ({ page, request }) => {
+    const chat = await (
+      await request.post("/api/chats", { data: { name: "Background translation fixture", mode, characterIds: [] } })
+    ).json();
+    const metadata = {
+      autoTranslate: true,
+      enableAgents: false,
+      translationProvider: "ai",
+      translationOutputTargetLang: "pl",
+      translationConnectionId: "origin-connection",
+      translationOutputPrompt: "Translate the originating story.",
+    };
+    await request.patch(`/api/chats/${chat.id}/metadata`, { data: metadata });
+    let pendingGeneration: Route | undefined;
+    const translations: Array<Record<string, unknown>> = [];
+    await page.route("**/api/generate", (route) => {
+      pendingGeneration = route;
+    });
+    await page.route("**/api/translate", (route) => {
+      translations.push(route.request().postDataJSON());
+      return route.fulfill({ json: { translatedText: "Gotowe tłumaczenie." } });
+    });
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation", "roleplay", "game"],
+      streamingSpeed: 100,
+    });
+    await page.addInitScript((version) => {
+      localStorage.removeItem("marinara-active-chat-id");
+      localStorage.setItem("marinara:whats-new:seen-version", version);
+    }, version);
+    try {
+      await page.goto("/");
+      // The real hooks run under an isolated QueryClient so eviction can be
+      // deterministic, without waiting for the inactive cache's five-minute GC.
+      await page.evaluate(
+        async ({ chat, metadata }) => {
+          const { useGenerate } = await import("/src/hooks/use-generate.ts" as string);
+          const { useTranslate } = await import("/src/hooks/use-translate.ts" as string);
+          const { chatKeys } = await import("/src/hooks/use-chats.ts" as string);
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+          const { trackChatMetadataSave } = await import("/src/lib/chat-metadata-save-barrier.ts" as string);
+          const dependencyUrl = (name: string) =>
+            performance
+              .getEntriesByType("resource")
+              .find((entry) => new URL(entry.name).pathname.endsWith(`/deps/${name}.js`))!.name;
+          const { default: React } = await import(dependencyUrl("react"));
+          const { default: ReactDOM } = await import(dependencyUrl("react-dom_client"));
+          const { QueryClient, QueryClientProvider } = await import(dependencyUrl("@tanstack_react-query"));
+          const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+          const origin = { ...chat, metadata };
+          const config = {
+            chatId: chat.id,
+            provider: "ai",
+            inputTargetLanguage: "en",
+            outputTargetLanguage: "pl",
+            connectionId: "origin-connection",
+            outputSystemPrompt: "Translate the originating story.",
+          };
+          let generated: Promise<unknown> | undefined;
+          let releaseMetadataSave: (() => void) | undefined;
+          let root: ReturnType<typeof ReactDOM.createRoot> | undefined;
+          const container = document.createElement("div");
+          container.style.cssText = "position:fixed;inset:0;z-index:99999;background:#16151c;color:white;padding:24px";
+          document.body.append(container);
+          function GenerationView() {
+            const { generate } = useGenerate();
+            const { translations } = useTranslate();
+            return React.createElement(
+              "div",
+              null,
+              React.createElement(
+                "button",
+                {
+                  onClick: () => {
+                    generated = generate({ chatId: chat.id, connectionId: null });
+                  },
+                },
+                "Generate translation fixture",
+              ),
+              React.createElement(
+                "output",
+                { "data-testid": "translation-fixture-output" },
+                Object.values(translations).join(" "),
+              ),
+            );
+          }
+          const mount = () => {
+            root = ReactDOM.createRoot(container);
+            root.render(React.createElement(QueryClientProvider, { client }, React.createElement(GenerationView)));
+          };
+          (window as any).translationFixture = {
+            reset(pendingSettings: boolean) {
+              root?.unmount();
+              root = undefined;
+              const initialChat = pendingSettings
+                ? { ...origin, metadata: { ...metadata, autoTranslate: false } }
+                : origin;
+              useChatStore.getState().setActiveChatId(null);
+              useChatStore.getState().setActiveChat(initialChat);
+              useTranslationStore.getState().clearAll();
+              useTranslationStore.getState().setConfig(config);
+              client.setQueryData(chatKeys.detail(chat.id), initialChat);
+              client.setQueryData(chatKeys.messages(chat.id), { pages: [[]], pageParams: [undefined] });
+              if (pendingSettings) {
+                void trackChatMetadataSave(
+                  chat.id,
+                  () =>
+                    new Promise<void>((resolve) => {
+                      releaseMetadataSave = () => {
+                        client.setQueryData(chatKeys.detail(chat.id), origin);
+                        useChatStore.getState().setActiveChat(origin);
+                        resolve();
+                      };
+                    }),
+                );
+              }
+              mount();
+            },
+            finishSettingsSave: () => releaseMetadataSave?.(),
+            leave(evict: boolean) {
+              root?.unmount();
+              root = undefined;
+              container.textContent = "Browsing another page";
+              useChatStore.getState().setActiveChat(null);
+              useTranslationStore.getState().clearAll();
+              useTranslationStore.getState().setConfig({
+                ...config,
+                chatId: "another-chat",
+                provider: "google",
+                outputTargetLanguage: "de",
+                connectionId: undefined,
+              });
+              if (evict) client.removeQueries({ queryKey: chatKeys.detail(chat.id), exact: true });
+            },
+            settled: () => generated,
+            cached(id: string) {
+              const data = client.getQueryData(chatKeys.messages(chat.id));
+              return data?.pages.flat().find((row: { id: string }) => row.id === id)?.extra;
+            },
+            showSaved() {
+              useTranslationStore.getState().setConfig(config);
+              useTranslationStore
+                .getState()
+                .seedFromMessages(client.getQueryData(chatKeys.messages(chat.id))?.pages.flat() ?? []);
+              mount();
+            },
+            cleanup() {
+              root?.unmount();
+              client.clear();
+              container.remove();
+              useChatStore.getState().setActiveChat(null);
+            },
+          };
+        },
+        { chat, metadata },
+      );
+      const scenarios = ["visible", "evicted", "another-chat", "pending-settings"] as const;
+      for (const scenario of scenarios) {
+        const navigated = scenario === "evicted" || scenario === "another-chat";
+        pendingGeneration = undefined;
+        await page.evaluate(
+          (pending) => (window as any).translationFixture.reset(pending),
+          scenario === "pending-settings",
+        );
+        await page.getByRole("button", { name: "Generate translation fixture", exact: true }).click();
+        if (scenario === "pending-settings") {
+          expect(pendingGeneration).toBeUndefined();
+          await page.evaluate(() => (window as any).translationFixture.finishSettingsSave());
+        }
+        await expect.poll(() => Boolean(pendingGeneration)).toBe(true);
+        if (navigated) {
+          await page.evaluate((evict) => (window as any).translationFixture.leave(evict), scenario === "evicted");
+          await expect(page.getByRole("button", { name: "Generate translation fixture", exact: true })).toHaveCount(0);
+        }
+        const source = `The ${scenario} story continues.`;
+        const saved = await (
+          await request.post(`/api/chats/${chat.id}/messages`, { data: { role: "assistant", content: source } })
+        ).json();
+        await pendingGeneration!.fulfill({
+          contentType: "text/event-stream",
+          body: [
+            { type: "token", data: source },
+            { type: "message_saved", data: saved },
+            { type: "done", data: {} },
+          ]
+            .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+            .join(""),
+        });
+        await page.evaluate(() => (window as any).translationFixture.settled());
+        await expect.poll(() => translations.length).toBe(scenarios.indexOf(scenario) + 1);
+        expect(translations.at(-1)).toMatchObject({
+          text: source,
+          provider: "ai",
+          targetLanguage: "pl",
+          connectionId: "origin-connection",
+          systemPrompt: metadata.translationOutputPrompt,
+        });
+        await expect
+          .poll(async () => {
+            const messages = await (await request.get(`/api/chats/${chat.id}/messages`)).json();
+            const extra = messages.find((row: { id: string }) => row.id === saved.id).extra;
+            return typeof extra === "string" ? JSON.parse(extra).translation : extra.translation;
+          })
+          .toBe("Gotowe tłumaczenie.");
+        if (navigated) {
+          await expect
+            .poll(() => page.evaluate((id) => (window as any).translationFixture.cached(id)?.translation, saved.id))
+            .toBe("Gotowe tłumaczenie.");
+          expect(
+            await page.evaluate(async (id) => {
+              const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+              return useTranslationStore.getState().translations[id];
+            }, saved.id),
+          ).toBeUndefined();
+          await page.evaluate(() => (window as any).translationFixture.showSaved());
+        }
+        await expect(page.getByTestId("translation-fixture-output")).toContainText("Gotowe tłumaczenie.");
+      }
+    } finally {
+      await page.evaluate(() => (window as any).translationFixture?.cleanup()).catch(() => {});
+      await request.delete(`/api/chats/${chat.id}`);
+    }
+  });
+}
+
 test("Notification position is selectable, moves errors, and survives reload", async ({ page }) => {
   page.setDefaultTimeout(10_000);
   await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));

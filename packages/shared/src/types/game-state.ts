@@ -109,6 +109,9 @@ export interface InventoryTrackerRow {
   name: string;
   /** Omitted when the quantity is one. */
   qty?: number;
+  description?: string;
+  /** Where this item is kept, such as a backpack pocket or a storage chest. */
+  location?: string;
 }
 
 /** Player-specific stats and inventory. */

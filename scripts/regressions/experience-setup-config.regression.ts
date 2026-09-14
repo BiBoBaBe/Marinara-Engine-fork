@@ -3,6 +3,38 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { buildExperienceSetup, parseExperienceSeed } from "../../packages/client/src/lib/game-experience-setup.js";
+import {
+  buildGameSetupShareFile,
+  parseGameSetupShareFileJson,
+  resolveGameSetupImport,
+} from "../../packages/client/src/lib/game-setup-share.js";
+import type { InstalledCapabilityPackage, GameSetupConfig } from "../../packages/shared/src/index.js";
+
+const experience = {
+  id: "test-experience",
+  manifest: {
+    name: "Test Experience",
+    contributions: {
+      gameSurface: {
+        setup: {
+          seed: { key: "worldSeed" },
+          config: { generate: true },
+          requires: { enableCustomWidgets: false },
+        },
+      },
+    },
+  },
+} as InstalledCapabilityPackage;
+for (const value of ["", " ", "oops", NaN, Infinity, null, {}, true]) assert.equal(parseExperienceSeed(value), null);
+for (const value of [0, -12.5, 42]) assert.equal(parseExperienceSeed(String(value)), value);
+assert.deepEqual(buildExperienceSetup(experience, "42", true), {
+  gameExperienceId: experience.id,
+  experienceConfig: { generate: true, worldSeed: 42 },
+});
+assert.deepEqual(buildExperienceSetup(experience, "42", false), {}, "Existing chats must not receive clearing keys");
+assert.deepEqual(buildExperienceSetup(null, "42", true), {}, "Classic wizard omits Experience fields");
+
 const dataDir = mkdtempSync(join(tmpdir(), "marinara-experience-config-"));
 process.env.DATA_DIR = dataDir;
 process.env.FILE_STORAGE_DIR = join(dataDir, "storage");
@@ -23,6 +55,67 @@ const setupConfig = {
   gameExperienceId: "test-experience",
 };
 try {
+  const importedSource = {
+    ...setupConfig,
+    setting: "A quiet harbor",
+    rating: "sfw",
+    playerGoals: "Find my lost friend",
+    experienceConfig: {
+      worldSeed: 0,
+      stalePackageState: { ignored: true },
+      generate: false,
+    },
+    activeLorebookEntryIds: ["selected-entry"],
+  } as GameSetupConfig;
+  const file = parseGameSetupShareFileJson(
+    JSON.stringify(
+      buildGameSetupShareFile({
+        gameName: "Test",
+        config: importedSource,
+        labels: { experienceName: "Test Experience", experienceSeedKey: "worldSeed" },
+      }),
+    ),
+  );
+  const resources = {
+    characters: [],
+    connections: [],
+    lorebooks: [],
+    personas: [],
+    promptPresets: [],
+    experiencePackages: [experience],
+  };
+  const imported = resolveGameSetupImport(file, resources);
+  assert.deepEqual(imported.config.experienceConfig, { worldSeed: 0 }, "Imports restore only the numeric seed");
+  assert.equal(imported.config.gameExperienceId, experience.id);
+  assert.equal(file.setup.labels?.experienceSeedKey, "worldSeed");
+  assert.equal(resolveGameSetupImport(file, { ...resources, isNewGame: false }).config.gameExperienceId, undefined);
+  assert.equal(
+    resolveGameSetupImport(file, { ...resources, experiencePackages: [] }).config.experienceConfig,
+    undefined,
+  );
+  for (const seed of ["42", null, {}]) {
+    file.setup.config.experienceConfig = { worldSeed: seed };
+    assert.deepEqual(
+      resolveGameSetupImport(file, resources).config.experienceConfig,
+      {},
+      "Only numeric imported seeds are restored",
+    );
+  }
+  const inline = await app.inject({
+    method: "POST",
+    url: "/api/game/create",
+    payload: {
+      name: "Inline setup",
+      setupConfig: { ...importedSource, ...buildExperienceSetup(experience, "42", true) },
+    },
+  });
+  assert.equal(inline.statusCode, 200, inline.body);
+  const inlineMeta = JSON.parse(inline.json().sessionChat.metadata);
+  assert.equal(inlineMeta.gameExperienceId, experience.id);
+  assert.deepEqual(inlineMeta.gameSetupConfig.experienceConfig, { worldSeed: 42, generate: true });
+  assert.deepEqual(inlineMeta.gameSetupConfig.activeLorebookEntryIds, ["selected-entry"]);
+  assert.equal(inlineMeta.gameSetupConfig.playerGoals, "Find my lost friend");
+
   for (const experienceConfig of [{ world: "Detailed map. ".repeat(4000) }, setupConfig]) {
     const response = await app.inject({
       method: "POST",

@@ -634,6 +634,7 @@ import { isDiceRollResult } from "../lib/dice-roll-result";
 import { useGameModeStore } from "../stores/game-mode.store";
 import { useGameStateStore } from "../stores/game-state.store";
 import { useTranslationStore } from "../stores/translation.store";
+import { getChatTranslationConfig, translateMessage } from "./use-translate";
 import { useUIStore } from "../stores/ui.store";
 import {
   applyRecentMessageContentEditsToData,
@@ -1284,6 +1285,7 @@ export function useGenerate() {
       // buffer, etc.) so that a background chat's events don't corrupt the active view.
       const isActiveChat = () => useChatStore.getState().activeChatId === params.chatId;
       const isGameGeneration = getCachedChatMode(qc, params.chatId) === "game";
+      let outputTranslationConfig: ReturnType<typeof getChatTranslationConfig> | null = null;
       const shouldRefreshGameState = shouldRefreshGameStateAfterGeneration(qc, params.chatId);
       let spriteChangeReceived = false;
 
@@ -1815,6 +1817,12 @@ export function useGenerate() {
         if (flushPatch) await flushPatch();
 
         await waitForPendingChatMetadataSaves(params.chatId);
+        // Capture settled settings before the stream can outlive this chat's mounted view/cache.
+        const translationChat = getCachedChatForGeneration(qc, params.chatId);
+        const translationMeta = parseChatMetadata(translationChat?.metadata);
+        outputTranslationConfig = translationMeta.autoTranslate
+          ? getChatTranslationConfig(params.chatId, translationMeta)
+          : null;
         const currentBackground = getActiveChatBackgroundForGeneration(params.chatId);
 
         for await (const event of api.streamEvents(
@@ -3511,45 +3519,21 @@ export function useGenerate() {
         // Auto-translate newly generated assistant messages if enabled
         if (receivedContent) {
           try {
-            const chatData = qc.getQueryData<Chat>(chatKeys.detail(params.chatId));
-            const meta = parseChatMetadata(chatData?.metadata);
-            if (meta.autoTranslate) {
+            if (outputTranslationConfig) {
               const store = useTranslationStore.getState();
               for (const [id, msg] of persistedMessages) {
-                const textToTranslate =
-                  chatData?.mode === "game" ? stripGmTagsKeepReadables(msg.content ?? "").trim() : (msg.content ?? "");
+                const textToTranslate = isGameGeneration
+                  ? stripGmTagsKeepReadables(msg.content ?? "").trim()
+                  : (msg.content ?? "");
                 if (
                   msg.role === "assistant" &&
                   textToTranslate &&
                   !store.translations[id] &&
                   !store.hiddenTranslationIds[id]
                 ) {
-                  store.setTranslating(id, true);
-                  api
-                    .post<{ translatedText: string }>("/translate", {
-                      text: textToTranslate,
-                      provider: store.config.provider,
-                      targetLanguage: store.config.outputTargetLanguage,
-                      connectionId: store.config.connectionId,
-                      systemPrompt: store.config.outputSystemPrompt,
-                      deeplApiKey: store.config.deeplApiKey,
-                      deeplxUrl: store.config.deeplxUrl,
-                    })
-                    .then((result) => {
-                      store.setTranslation(id, result.translatedText, textToTranslate);
-                      store.setTranslating(id, false);
-                      // Persist to message extra
-                      api
-                        .patch(`/chats/${params.chatId}/messages/${id}/extra`, {
-                          translation: result.translatedText,
-                          translationSource: textToTranslate,
-                          translationHidden: false,
-                        })
-                        .catch(() => {});
-                    })
-                    .catch(() => {
-                      store.setTranslating(id, false);
-                    });
+                  void translateMessage(qc, id, textToTranslate, outputTranslationConfig, params.chatId).catch(
+                    () => {},
+                  );
                 }
               }
             }

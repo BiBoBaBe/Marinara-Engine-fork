@@ -1836,6 +1836,7 @@ const gameSetupConfigSchema = z.object({
   useCampaignArtStyle: z.boolean().optional(),
   imageStyleProfileId: z.string().nullable().optional(),
   activeLorebookIds: z.array(z.string()).optional(),
+  activeLorebookEntryIds: z.array(z.string().min(1)).max(100).optional(),
   enableCustomWidgets: z.boolean().optional(),
   customHudWidgets: z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS).optional(),
   enableSpotifyDj: z.boolean().optional(),
@@ -1859,6 +1860,8 @@ const createGameSchema = z.object({
   preferences: z.string().max(5000).default(""),
   shareLabels: z
     .object({
+      experienceName: z.string().max(120).optional(),
+      experienceSeedKey: z.string().max(120).optional(),
       characterNames: z.record(z.string(), z.string().max(500)).optional(),
       lorebookNames: z.record(z.string(), z.string().max(500)).optional(),
       promptPresetNames: z.record(z.string(), z.string().max(500)).optional(),
@@ -6717,7 +6720,7 @@ export async function gameRoutes(app: FastifyInstance) {
     }
 
     let setupLorebookContext: string | undefined;
-    if ((setupConfig.activeLorebookIds?.length ?? 0) > 0) {
+    if ((setupConfig.activeLorebookIds?.length ?? 0) > 0 || (setupConfig.activeLorebookEntryIds?.length ?? 0) > 0) {
       const setupPromptMacroContext = await buildPromptMacroContext({
         db: app.db,
         characterIds: setupConfig.partyCharacterIds,
@@ -6742,6 +6745,8 @@ export async function gameRoutes(app: FastifyInstance) {
         characterIds: setupConfig.partyCharacterIds,
         personaId: setupPersonaId,
         activeLorebookIds: setupConfig.activeLorebookIds,
+        forcedEntryIds: setupConfig.activeLorebookEntryIds,
+        ignoreForcedEntryProbability: true,
         entryStateOverrides: (meta.entryStateOverrides ?? meta.lorebookEntryStateOverrides) as
           | Record<string, { ephemeral?: number | null; enabled?: boolean }>
           | undefined,
@@ -6760,10 +6765,7 @@ export async function gameRoutes(app: FastifyInstance) {
         .join("\n\n");
       if (combinedLore) {
         setupLorebookContext = combinedLore;
-        logger.info(
-          "[game/setup] Injecting %d constant lorebook entries into world generation",
-          lorebookResult.totalEntries,
-        );
+        logger.info("[game/setup] Injecting %d lorebook entries into world generation", lorebookResult.totalEntries);
       }
     }
 
