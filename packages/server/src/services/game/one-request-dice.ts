@@ -63,6 +63,7 @@ import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
 import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
+import type { GameSkillModifierView } from "./gm-prompts.js";
 import {
   isResolvableSkillCheckRequest,
   loadSkillCheckModifierContext,
@@ -470,6 +471,42 @@ export function resolveSheetModifier(
     value: Number(rawSkillMod) + (governing === null ? 0 : attributeModifier(governing)),
     source: "skill",
   };
+}
+
+/** The short sheet spellings, in the order a character sheet lists them. */
+const SHEET_ATTRIBUTE_LABELS: ReadonlyArray<[keyof RPGAttributes, string]> = [
+  ["str", "STR"],
+  ["dex", "DEX"],
+  ["con", "CON"],
+  ["int", "INT"],
+  ["wis", "WIS"],
+  ["cha", "CHA"],
+];
+
+/**
+ * The names the prompt may advertise for a `[[roll: 1d8+NAME]]` placeholder this turn.
+ *
+ * Only names this same module would resolve are listed, and skill names are carried exactly
+ * as the sheet spells them rather than re-cased: `resolveSheetModifier` looks a skill up by
+ * the written name and then by its lowercase form, so re-casing "sleight_of_hand" into
+ * something prettier would print a name that then refuses. An empty view is the normal
+ * default configuration, where no game-state snapshot means no skills, and it is what drops the
+ * sheet-modifier sentence from the block entirely.
+ */
+export function buildGameSkillModifierView(context: SkillCheckModifierContext): GameSkillModifierView {
+  const skills: string[] = [];
+  for (const [name, value] of Object.entries(context.skills ?? {})) {
+    const trimmed = typeof name === "string" ? name.trim() : "";
+    if (!trimmed || !Number.isFinite(Number(value))) continue;
+    skills.push(trimmed);
+  }
+
+  const attributes: string[] = [];
+  for (const [key, label] of SHEET_ATTRIBUTE_LABELS) {
+    if (readAttributeScore(context, key) !== null) attributes.push(label);
+  }
+
+  return { skills, attributes };
 }
 
 /** The snapshot's engine-shape attributes first, then the player card's sheet, exactly as a check reads them. */
