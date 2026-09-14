@@ -3914,17 +3914,20 @@ export async function generateRoutes(app: FastifyInstance) {
                 entryTimingStates: lorebookResult.updatedEntryTimingStates,
               }),
             );
-            const loreContent = [lorebookResult.worldInfoBefore, lorebookResult.worldInfoAfter]
-              .filter(Boolean)
-              .join("\n");
-            if (loreContent) {
-              const loreBlock = `<lore>\n${loreContent}\n</lore>`;
-              // Append lore to the GM system prompt
+            const loreBefore = lorebookResult.worldInfoBefore
+              ? `<lore>\n${lorebookResult.worldInfoBefore}\n</lore>`
+              : "";
+            const loreAfter = lorebookResult.worldInfoAfter ? `<lore>\n${lorebookResult.worldInfoAfter}\n</lore>` : "";
+            if (loreBefore || loreAfter) {
+              // Keep world-info positions on either side of the GM's character and game context.
               const sysMsg = finalMessages.find((m) => m.role === "system");
               if (sysMsg) {
-                sysMsg.content += "\n\n" + loreBlock;
+                sysMsg.content = [loreBefore, sysMsg.content, loreAfter].filter(Boolean).join("\n\n");
               } else {
-                finalMessages.unshift({ role: "system" as const, content: loreBlock });
+                finalMessages.unshift({
+                  role: "system" as const,
+                  content: [loreBefore, loreAfter].filter(Boolean).join("\n\n"),
+                });
               }
             }
             if (lorebookResult.depthEntries.length > 0) {
