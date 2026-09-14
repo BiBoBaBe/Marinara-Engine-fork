@@ -26,29 +26,32 @@
 // either, and no second provider request is ever made. Nothing here invents a die
 // result, a modifier, a total or an outcome.
 //
-// The two arms are skeletons in this slice. The branch block fills arm 1 and the
-// placeholder grammar fills arm 2; the wrapper, the ledger and the gate are what
-// this file ships now, so both arms land into a contract that already holds.
+// Arm 2 is real: it rolls `[[roll: 2d6+3]]` live with the session's crypto roller and
+// substitutes the total, adding sheet modifiers by name through the same arithmetic a
+// skill check uses. The grammar and the bounded-span walk live in the shared
+// placeholder module; what lives here is the chat-shaped half — the sheet, the ledger,
+// the dice history and the log. Arm 1 is still a skeleton and the branch slice fills it.
 // ──────────────────────────────────────────────
 
-import type { GameDiceTurnNotice } from "@marinara-engine/shared";
+import {
+  parseRollPlaceholderBody,
+  replaceRollPlaceholdersWithNotice,
+  resolveRollPlaceholders,
+  scanRollPlaceholders,
+  type DiceRollResult,
+  type GameDiceTurnNotice,
+  type GameDicePlaceholderRecord,
+  type RollPlaceholderRefusalRecord,
+  type RollPlaceholderSheetModifier,
+  type RPGAttributes,
+} from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
+import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
 import { loadSkillCheckModifierContext, type SkillCheckModifierContext } from "./skill-check-resolution.service.js";
 
-/** Replacement for a roll the engine refused to read. No bracket, no colon, no brace. */
-export const ROLL_UNAVAILABLE_TEXT = "(roll unavailable)";
-
-/**
- * The scan is an opener walk, not a bounded regex. A bounded regex cannot see an
- * over-long body, a body containing `]`, or an opener with no closer, and a span that
- * is never matched cannot be replaced — so the "never leave a raw span" contract
- * would be unenforceable for exactly the cases that need it.
- */
-const PLACEHOLDER_OPENER_SOURCE = "\\[\\[roll:";
-/** A body longer than this is a rejection reason inside the pass, not a matching precondition. */
-export const PLACEHOLDER_BODY_MAX = 64;
+export { PLACEHOLDER_BODY_MAX, ROLL_UNAVAILABLE_TEXT } from "@marinara-engine/shared";
 
 /** `[branch: id]` is an ordinary `[name:` head. The other three delimiters are not. */
 const BRANCH_OPENER_PATTERN = /\[branch:[^\]\r\n]*\]/gi;
@@ -96,6 +99,15 @@ export interface GameTurnChanceSession {
   loadModifierContext(): Promise<SkillCheckModifierContext>;
   /** Everything the pass resolved or refused, in the order it happened. */
   readonly ledger: GameTurnChanceLedgerEntry[];
+  /**
+   * Rolls this turn's pass threw, for the message extra and the session log. The route
+   * pushes them onto the turn's dice results; deliberately WITHOUT the `tool_result`
+   * frame that pops a full-screen dice card, because a damage placeholder popping a
+   * card would bury the narration and three placeholders would queue three.
+   */
+  readonly diceRolls: DiceRollResult[];
+  /** One audit record per substituted placeholder, in reading order. */
+  readonly placeholders: GameDicePlaceholderRecord[];
   /** True once an arm threw and the fallback rewrite took over. */
   failed: boolean;
 }
@@ -145,6 +157,8 @@ export function createGameTurnChanceSession(options: GameTurnChanceSessionOption
       return pending;
     },
     ledger: [],
+    diceRolls: [],
+    placeholders: [],
     failed: false,
   };
 }
@@ -171,23 +185,126 @@ export async function resolveGameTurnBranches(
 /**
  * Placeholder arm. The opener walk, resolved and spliced in reading order.
  *
- * This slice ships the walk and the refusal, not the grammar: every span it finds is a
- * span it cannot read yet, so every span is refused and replaced with the visible
- * notice. That is deliberate rather than provisional. It means no raw `[[roll:` can
- * reach saved content at any point in the rollout for a downstream stripper to
- * half-eat, and it means nothing is ever substituted with an invented number. The
- * grammar slice replaces the refusal with resolution for the bodies it can read and
- * leaves this exact path for the bodies it cannot.
+ * Every bounded span is either rolled or replaced with the visible notice, so no raw
+ * `[[roll:` can reach saved content for a downstream stripper to half-eat, and nothing
+ * is ever substituted with a number the engine did not throw.
+ *
+ * The chat's sheet is read at most once per turn, and only when a placeholder actually
+ * names one: resolving N placeholders in one narration must not mean N snapshot reads,
+ * and every roll in one turn must see the same sheet.
  */
 export async function resolveGameTurnPlaceholders(
   content: string,
   session: GameTurnChanceSession,
 ): Promise<GameTurnChanceRewrite> {
-  const refused = replaceUnreadablePlaceholders(content, session.chatId);
-  for (const span of refused.spans) {
-    session.ledger.push({ stage: "placeholder", outcome: "unreadable", span });
+  const spans = scanRollPlaceholders(content);
+  if (spans.length === 0) return { content, changed: false };
+
+  // The sheet is read only when a body actually names one. A turn of pure `2d6+3`
+  // damage needs no snapshot at all, and in the default configuration there is no
+  // snapshot to read: agents off means no game-state row was ever created.
+  const namesSheet = spans.some(
+    (span) => span.refusal === null && parseRollPlaceholderBody(span.body)?.sheetName != null,
+  );
+  const context = namesSheet ? await session.loadModifierContext() : null;
+  const pass = resolveRollPlaceholders(content, {
+    nextValue: session.roll,
+    ...(context ? { resolveSheetName: (name: string) => resolveSheetModifier(context, name) } : {}),
+  });
+
+  for (const record of pass.records) {
+    session.diceRolls.push({
+      notation: record.notation,
+      rolls: record.rolls,
+      modifier: record.modifier,
+      total: record.total,
+    });
+    session.placeholders.push(record);
+    session.ledger.push({ stage: "placeholder", outcome: "resolved", span: record.raw });
   }
-  return await Promise.resolve({ content: refused.content, changed: refused.changed });
+  for (const clamp of pass.clamps) {
+    // The shipped policy for this path is to clamp rather than refuse, so the player
+    // still gets a number. The log is the only place the difference is visible.
+    logger.warn(
+      "[game/one-request-dice] Clamped placeholder %s to %s in chat %s",
+      clamp.requested,
+      clamp.thrown,
+      session.chatId,
+    );
+  }
+  for (const refusal of pass.refusals) {
+    logRefusedPlaceholder(refusal, session.chatId);
+    session.ledger.push({ stage: "placeholder", outcome: "unreadable", span: refusal.raw.slice(0, LOGGED_SPAN_MAX) });
+  }
+  return { content: pass.content, changed: pass.changed };
+}
+
+/** Plain words for each refusal, so the log says what the model did rather than what a flag is called. */
+const REFUSAL_REASONS: Record<RollPlaceholderRefusalRecord["reason"], string> = {
+  unterminated: "the opener never closed before the line ended",
+  "over-long": "the body ran past the length cap",
+  "closing-bracket": "the body carried a closing bracket",
+  notation: "the body is not one NdM term with at most one flat modifier and one sheet name",
+  "unresolved-name": "the named sheet modifier does not resolve for this chat",
+};
+
+function logRefusedPlaceholder(refusal: RollPlaceholderRefusalRecord, chatId: string): void {
+  logger.warn(
+    "[game/one-request-dice] Refused a roll placeholder in chat %s: %s (%s)%s",
+    chatId,
+    refusal.raw.slice(0, LOGGED_SPAN_MAX),
+    REFUSAL_REASONS[refusal.reason],
+    refusal.name ? ` name=${refusal.name}` : "",
+  );
+}
+
+/**
+ * Resolve one `+NAME` term against the sheet this turn loaded, or refuse it.
+ *
+ * The two forms are deliberately not the same sum, and this is the only place that
+ * difference is written down:
+ *
+ *   - `+<attribute>` adds `attributeModifier(score)` and nothing else. `1d8+STR` with
+ *     STR 14 adds +2.
+ *   - `+<skill>` adds the skill bonus PLUS its governing attribute's modifier, which is
+ *     exactly what a skill check already does. `2d6+Athletics` with Athletics +3 and
+ *     STR 14 adds +5. Anything else would make two numbers in the same turn follow
+ *     different arithmetic with nothing telling the player which was which.
+ *
+ * A name that resolves to neither returns null, and the placeholder becomes the notice.
+ * Refused, never defaulted to zero: a check with an unknown skill still has a defined
+ * shape, so the check path's fallback is defensible, but a placeholder's name is only a
+ * modifier source, and defaulting it would add a number nobody asked for to a sentence
+ * the player reads as fact.
+ */
+export function resolveSheetModifier(
+  context: SkillCheckModifierContext,
+  name: string,
+): RollPlaceholderSheetModifier | null {
+  const attribute = mapSheetAttributeName(name);
+  if (attribute) {
+    const score = readAttributeScore(context, attribute);
+    if (score === null) return null;
+    return { value: attributeModifier(score), source: "attribute" };
+  }
+
+  const skills = context.skills;
+  const rawSkillMod = skills ? (skills[name] ?? skills[name.toLowerCase()]) : undefined;
+  if (rawSkillMod === undefined || !Number.isFinite(Number(rawSkillMod))) return null;
+  const governing = readAttributeScore(context, getGoverningAttribute(name));
+  return {
+    value: Number(rawSkillMod) + (governing === null ? 0 : attributeModifier(governing)),
+    source: "skill",
+  };
+}
+
+/** The snapshot's engine-shape attributes first, then the player card's sheet, exactly as a check reads them. */
+function readAttributeScore(context: SkillCheckModifierContext, attribute: keyof RPGAttributes): number | null {
+  if (context.attributes && Number.isFinite(Number(context.attributes[attribute]))) {
+    return Number(context.attributes[attribute]);
+  }
+  const sheet = context.sheetAttributes[attribute];
+  return sheet == null ? null : sheet;
 }
 
 /**
@@ -262,66 +379,24 @@ export function stripBranchDelimiters(content: string): GameTurnChanceRewrite {
 }
 
 /**
- * Replace every `[[roll:` span with a visible notice. Never with a number: an invented
- * number is read back as fact on the next turn, which is the one thing the shipped
- * never-invent contract forbids without exception.
+ * Replace every `[[roll:` span with a visible notice, reading none of them. Never with
+ * a number: an invented number is read back as fact on the next turn, which is the one
+ * thing the shipped never-invent contract forbids without exception.
  *
- * The span is always bounded, which is what makes the replacement absolute:
- *
- *   1. The first `]]` before the next line break closes it.
- *   2. Any run of `]` straight after that is swallowed too, so `[[roll: 2d6 [x]]]` is
- *      consumed whole and leaves no stray bracket.
- *   3. With no `]]` before the line break, the span ends at the line break or at
- *      `PLACEHOLDER_BODY_MAX` characters past the opener, whichever comes first.
- *
- * The cost of rule 3 is stated rather than hidden: an unterminated opener can take a
- * few words of that line's prose with it. It is only reachable when the model wrote a
- * malformed tag, the raw span is logged verbatim, and the turn notice fires.
+ * This is the failure path, not the resolution path. The span is always bounded, which
+ * is what makes the replacement absolute; the bounding rules live with the scanner in
+ * the shared placeholder module, beside the grammar they belong to.
  */
 export function replaceUnreadablePlaceholders(
   content: string,
   chatId: string,
 ): GameTurnChanceRewrite & { spans: string[] } {
-  const opener = new RegExp(PLACEHOLDER_OPENER_SOURCE, "gi");
-  const spans: string[] = [];
-  let result = "";
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = opener.exec(content)) !== null) {
-    const start = match.index;
-    const end = findPlaceholderSpanEnd(content, start + match[0].length);
-    const span = content.slice(start, end);
-    spans.push(span.slice(0, LOGGED_SPAN_MAX));
-    logger.warn(
-      "[game/one-request-dice] Refused an unreadable roll placeholder in chat %s: %s",
-      chatId,
-      span.slice(0, LOGGED_SPAN_MAX),
-    );
-    result += content.slice(cursor, start) + ROLL_UNAVAILABLE_TEXT;
-    cursor = end;
-    opener.lastIndex = end;
+  const swept = replaceRollPlaceholdersWithNotice(content);
+  const spans = swept.spans.map((span) => span.slice(0, LOGGED_SPAN_MAX));
+  for (const span of spans) {
+    logger.warn("[game/one-request-dice] Refused an unreadable roll placeholder in chat %s: %s", chatId, span);
   }
-  if (spans.length === 0) return { content, changed: false, spans };
-  result += content.slice(cursor);
-  return { content: result, changed: true, spans };
-}
-
-function findPlaceholderSpanEnd(content: string, bodyStart: number): number {
-  let lineEnd = content.length;
-  for (let index = bodyStart; index < content.length; index += 1) {
-    const char = content[index];
-    if (char === "\n" || char === "\r") {
-      lineEnd = index;
-      break;
-    }
-  }
-  const closer = content.indexOf("]]", bodyStart);
-  if (closer !== -1 && closer < lineEnd) {
-    let end = closer + 2;
-    while (content[end] === "]") end += 1;
-    return end;
-  }
-  return Math.min(lineEnd, bodyStart + PLACEHOLDER_BODY_MAX);
+  return { content: swept.content, changed: swept.changed, spans };
 }
 
 /**
@@ -344,6 +419,7 @@ export function summarizeGameDiceTurn(session: GameTurnChanceSession): GameDiceT
   }
   const notice: GameDiceTurnNotice = {
     ...(forms.length > 0 ? { forms } : {}),
+    ...(session.placeholders.length > 0 ? { placeholders: [...session.placeholders] } : {}),
     ...(unreadablePlaceholders > 0 ? { unreadablePlaceholders } : {}),
     ...(branchFailures > 0 ? { branchFailures } : {}),
     ...(session.failed ? { passFailed: true } : {}),

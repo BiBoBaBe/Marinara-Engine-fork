@@ -157,6 +157,17 @@ const ATTRIBUTE_NAME_MAP: Record<string, keyof RPGAttributes> = {
   charisma: "cha",
 };
 
+/**
+ * Read one free-form attribute name as a strict `RPGAttributes` key, or `null` when it
+ * names no attribute. Exported so a caller that resolves a single name — the dice
+ * placeholder's `+STR` term — folds the same way the sheet mapper does rather than
+ * carrying a second spelling of the same table.
+ */
+export function mapSheetAttributeName(name: string): keyof RPGAttributes | null {
+  if (typeof name !== "string") return null;
+  return ATTRIBUTE_NAME_MAP[name.trim().toLowerCase()] ?? null;
+}
+
 export function mapSheetAttributesToRPG(
   attrs: ReadonlyArray<{ name: string; value: number }> | null | undefined,
 ): Partial<RPGAttributes> {
@@ -164,7 +175,7 @@ export function mapSheetAttributesToRPG(
   const out: Partial<RPGAttributes> = {};
   for (const attr of attrs) {
     if (!attr || typeof attr.name !== "string") continue;
-    const key = ATTRIBUTE_NAME_MAP[attr.name.trim().toLowerCase()];
+    const key = mapSheetAttributeName(attr.name);
     if (!key) continue;
     const value = Number(attr.value);
     if (!Number.isFinite(value)) continue;

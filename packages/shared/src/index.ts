@@ -168,5 +168,6 @@ export * from "./utils/spatial-context.js";
 export * from "./utils/inventory-tracker-rows.js";
 export * from "./utils/tracker-updates.js";
 export * from "./utils/dice-notation.js";
+export * from "./utils/dice-placeholder.js";
 
 export { parseChoiceOptions, resolveChoiceVariableValue, type ChoiceOptionValue } from "./utils/preset-choices.js";

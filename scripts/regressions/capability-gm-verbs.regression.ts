@@ -37,11 +37,13 @@ import {
   GM_VERB_TABLE_ASSET_PATH,
   GM_VERB_TABLE_MAX_BYTES,
   gmVerbMetadataKeyIssue,
+  gmVerbSchema,
   gmVerbTableSchema,
   parseGmVerbTableWithCompat,
   RESERVED_GM_TAG_NAMES,
 } from "../../packages/shared/src/schemas/gm-verb-table.schema.js";
 import { CHAT_PRESET_EXCLUDED_METADATA_KEYS } from "../../packages/shared/src/types/chat-preset.js";
+import { CAPABILITY_COMMAND_TAG_PATTERN } from "../../packages/server/src/services/capability-packages/capability-command-registry.service.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -335,6 +337,24 @@ assert.deepEqual(unpinnedTags, [], `new built-in GM tags are not in RESERVED_GM_
 // Case-folding is the point of the pin: the reminder renders [Note:/[Book: capitalized while the
 // shipped parse regex is case-insensitive.
 assert.ok(reserved.has("note") && reserved.has("book"), "the journal tags are pinned case-folded");
+// `roll` is reserved BY HAND, because neither sweep above can reach it: Roleplay's own `[roll:`
+// command is parsed in a mode this corpus does not cover, and the Game placeholder's inner
+// `[roll: 2d6+3]` is written by the model rather than rendered by a reminder. Both are shadowable —
+// a verb intercepts a tag by matching the capability command pattern, which both spellings do — so
+// the pin is the assertion below rather than a derivation.
+assert.ok(reserved.has("roll"), "`roll` stays reserved: a package verb named roll shadows both [roll: readers");
+const capabilityCommandTag = new RegExp(`^${CAPABILITY_COMMAND_TAG_PATTERN}$`, "i");
+assert.match(
+  "[roll: 2d6+3]",
+  capabilityCommandTag,
+  "the placeholder's inner tag is shadowable, which is why roll is reserved",
+);
+assert.match('[roll: character="Mari" notation="2d6"]', capabilityCommandTag, "so is the Roleplay command");
+assert.equal(
+  gmVerbSchema.safeParse({ name: "roll", description: "Shadow the dice", effect: "event" }).success,
+  false,
+  "and the schema refuses a package verb that would claim the name",
+);
 
 // ── Pin 2: engine-owned metadata namespaces ──────────────────────────────────
 

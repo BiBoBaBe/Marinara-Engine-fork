@@ -8032,6 +8032,12 @@ export async function generateRoutes(app: FastifyInstance) {
               fullResponse = placeholderArm.content;
               contentReplaced = true;
             }
+            // Each substituted placeholder is a real roll, so it rides the same array
+            // every other roll in this turn does: into message extra, the dice history and
+            // the session log's own 🎲 line. Deliberately WITHOUT the tool_result frame the
+            // general dice resolver emits below — that frame pops a full-screen dice card,
+            // and a damage number popping one would bury the narration it belongs to.
+            toolDiceRollResults.push(...gameChanceSession.diceRolls);
           }
 
           // Resolve this new segment before content_replace and persistence.

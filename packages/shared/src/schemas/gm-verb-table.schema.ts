@@ -59,7 +59,12 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
  *  parse regex is case-insensitive, so a lowercase `note` verb would shadow the journal tag.
  *  `party-chat`/`party-turn` cannot collide anyway — a verb name may not contain a hyphen — and are
  *  kept so the pin matches its sources exactly, which is also what leaves them free to serve as the
- *  tag parser's canary. */
+ *  tag parser's canary.
+ *  `roll` is the one name here that no sweep above yields, and it is reserved by hand for two
+ *  colliding readers a package verb would shadow: Roleplay mode's own `[roll: character="…"]`
+ *  command (`packages/server/src/services/generation/roleplay-commands.ts`), and the inner
+ *  `[roll: 2d6+3]` of a Game placeholder, both of which match `CAPABILITY_COMMAND_TAG_PATTERN`
+ *  exactly. `capability-gm-verbs.regression.ts` pins the reservation rather than derives it. */
 export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "action",
   "ambient",
@@ -86,6 +91,7 @@ export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "qte_bonus",
   "qte_result",
   "reputation",
+  "roll",
   "session_end",
   "sfx",
   "side",

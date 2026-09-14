@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 
 import type { MariWorkspaceTraceItem } from "./professor-mari-workspace.js";
+import type { GameDicePlaceholderRecord } from "../utils/dice-placeholder.js";
 import type { GenerationGuideSource } from "../utils/generation-guide.js";
 import type { HapticFeedbackSensitivity } from "./haptic.js";
 import type { CustomEmojiSelectionPrefs } from "../schemas/custom-emoji.schema.js";
@@ -932,6 +933,13 @@ export interface MessageExtra {
 export interface GameDiceTurnNotice {
   /** Which blind forms actually resolved this turn, in first-seen order. */
   forms?: Array<"branch" | "placeholder">;
+  /**
+   * One record per substituted placeholder, in reading order: the body as the model
+   * wrote it, the dice actually thrown, and where the number landed. The saved content
+   * carries a bare number so the prompt leaf and the transcript both read as prose, so
+   * this is the only audit trail of what that number was.
+   */
+  placeholders?: GameDicePlaceholderRecord[];
   /** Spans the pass refused to read and replaced with a visible notice. Never a number. */
   unreadablePlaceholders?: number;
   /** Branch blocks the pass could not read. The roll stands, the narration does not. */
