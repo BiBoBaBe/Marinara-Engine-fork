@@ -129,6 +129,21 @@ for (const visible of everyChunking(danglingOpener)) {
   assert.equal(visible, danglingOpener, "the flush hands back whatever never closed");
 }
 
+// A malformed candidate releases ONLY its own bounded prefix. Dumping the whole carry and
+// returning would hand back everything that happened to arrive in the same provider chunk
+// behind it, so a well-formed placeholder after a malformed one would stream raw and then
+// silently become a number when the replace frame lands — and the streamed view would
+// depend on how the provider chunked its tokens, which a filter bounded by an OFFSET is
+// supposed to make impossible. A non-streaming provider hands the whole turn over at once.
+const brokenThenValid = "Broken [[roll: 2d6\nand [[roll: 1d4]] more";
+for (const visible of everyChunking(brokenThenValid)) {
+  assert.equal(
+    visible,
+    "Broken [[roll: 2d6\nand  more",
+    "the span behind a malformed one is still held, in every chunking",
+  );
+}
+
 // A nested closer run is consumed whole, the same way the scanner bounds its span, so no
 // stray `]` is left standing in the streamed sentence either.
 for (const visible of everyChunking("Odd [[roll: 2d6 [x]]] here.")) {
@@ -142,6 +157,14 @@ const branch = "Before. [branch: swing]\n[on success]\nYou hit.\n[on failure]\nY
 for (const visible of everyChunking(branch)) {
   assert.equal(visible, "Before.  After.");
   assert.doesNotMatch(visible, /on success|on failure|You hit|You miss/);
+}
+// The hold is cut at the closer's position in the ORIGINAL text, not at an offset taken
+// from a lowercased copy: `İ` (U+0130) lowercases to two code units, so such an offset
+// would drift and the filter would cut the held block in the wrong place — differently in
+// different chunkings.
+const turkishBranch = "Before. [branch: x]\n[on success] İstanbul.\n[on failure] İzmir.\n[/branch] TAIL";
+for (const visible of everyChunking(turkishBranch)) {
+  assert.equal(visible, "Before.  TAIL", "a length-changing lowercase cannot move the closer the hold is cut at");
 }
 const unclosedBranch = "Before. [branch: swing]\n[on success]\nYou hit.";
 for (const visible of everyChunking(unclosedBranch)) {

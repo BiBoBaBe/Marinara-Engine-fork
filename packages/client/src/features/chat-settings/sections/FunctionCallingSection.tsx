@@ -1,10 +1,15 @@
 import { Check, FilePlus2, Plus, Trash2, Wrench } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
+import { DraftNumberInput } from "../../../components/ui/DraftNumberInput";
 import { ChatSettingsSection } from "../ChatSettingsSection";
 import { PickerDropdown } from "../PickerDropdown";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { supportsNativeToolCalls } from "@marinara-engine/shared";
+import {
+  MAX_GAME_DICE_POOL_AGE_TURNS,
+  MAX_GAME_DICE_POOL_WINDOW,
+  supportsNativeToolCalls,
+} from "@marinara-engine/shared";
 
 export interface FunctionToolOption {
   id: string;
@@ -177,32 +182,31 @@ export function FunctionCallingSection({
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
                       {localizeUi("chat.settings.tools.dicePoolWindow")}
-                      <input
-                        type="number"
-                        aria-label={localizeUi("chat.settings.tools.dicePoolWindow")}
+                      {/* The repo's canonical numeric control, not a raw number input: it holds
+                          the draft while the field is being edited, so an empty field on the way
+                          to a two-digit value cannot commit, and the async echo of the previous
+                          commit cannot wipe the edit in progress (#5636). Bounds come from the
+                          shared constants the server clamps with, so the two cannot drift. */}
+                      <DraftNumberInput
+                        ariaLabel={localizeUi("chat.settings.tools.dicePoolWindow")}
                         min={1}
-                        max={6}
+                        max={MAX_GAME_DICE_POOL_WINDOW}
+                        integer
                         value={gameDicePoolWindow}
-                        onChange={(event) => {
-                          const value = Number.parseInt(event.target.value, 10);
-                          onGameDicePoolWindowChange(Number.isFinite(value) ? Math.max(1, Math.min(6, value)) : 1);
-                        }}
+                        onCommit={onGameDicePoolWindowChange}
                         className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                       />
                       <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolWindowHelp")}</span>
                     </label>
                     <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
                       {localizeUi("chat.settings.tools.dicePoolAging")}
-                      <input
-                        type="number"
-                        aria-label={localizeUi("chat.settings.tools.dicePoolAging")}
+                      <DraftNumberInput
+                        ariaLabel={localizeUi("chat.settings.tools.dicePoolAging")}
                         min={0}
-                        max={20}
+                        max={MAX_GAME_DICE_POOL_AGE_TURNS}
+                        integer
                         value={gameDicePoolAgeTurns}
-                        onChange={(event) => {
-                          const value = Number.parseInt(event.target.value, 10);
-                          onGameDicePoolAgeTurnsChange(Number.isFinite(value) ? Math.max(0, Math.min(20, value)) : 3);
-                        }}
+                        onCommit={onGameDicePoolAgeTurnsChange}
                         className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                       />
                       <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolAgingHelp")}</span>

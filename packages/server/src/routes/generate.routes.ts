@@ -563,6 +563,7 @@ import {
   buildGameSkillModifierView,
   createGameTurnChanceSession,
   isOneRequestDiceEnabled,
+  mergeGameDiceTurnNotices,
   resolveGameTurnBranches,
   resolveGameTurnPlaceholders,
   runGameTurnChancePass,
@@ -8677,7 +8678,6 @@ export async function generateRoutes(app: FastifyInstance) {
           } else if (savedMsg?.id) {
             const extraUpdate: Record<string, unknown> = {
               ...(chatMode === "game" ? { gameOutcomeNarrationFailed } : {}),
-              ...(chatMode === "game" && gameDiceTurnNotice ? { gameDiceTurn: gameDiceTurnNotice } : {}),
               ...(gameToolPlan && gameToolConnection
                 ? {
                     gameToolPlanning: {
@@ -8765,6 +8765,18 @@ export async function generateRoutes(app: FastifyInstance) {
               extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
               // Message-extra updates are shallow: clear a legacy card on every new swipe.
               extraUpdate.diceRollResult = null;
+              // A continuation writes into the same swipe through the same shallow merge,
+              // so writing only this segment's notice would replace the first segment's
+              // placeholder audit and notice lines instead of extending them — the inline
+              // breakdown on numbers the player already read would disappear, and so would
+              // the log lines for what could not be rolled. Folded rather than overwritten,
+              // exactly like the dice history above. A turn with nothing to record still
+              // writes nothing, so a clean transcript stores what it always stored.
+              const mergedDiceTurn = mergeGameDiceTurnNotices(
+                input.continueMessageId ? previousExtra.gameDiceTurn : null,
+                gameDiceTurnNotice,
+              );
+              if (mergedDiceTurn || input.continueMessageId) extraUpdate.gameDiceTurn = mergedDiceTurn;
             } else if (chatMode === "roleplay" && !input.impersonate) {
               // Roleplay results stay behind their command disclosure.
               extraUpdate.diceRollResult = null;

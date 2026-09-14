@@ -429,10 +429,12 @@ assert.doesNotMatch(afterVerbs.content, /weather/i);
 // ── The route, on both sides of the switch ──────────────────────────────────
 const calls: ChatMessage[][] = [];
 const draft = "The axe bites deep for [[roll: 2d6+3]] damage, and the wound burns for [[roll: 1d4]] rounds.";
+/** What the next scripted turn writes. A continuation needs a SECOND segment of its own. */
+let scriptedDraft = draft;
 async function* scriptedChat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage> {
   calls.push(structuredClone(messages));
   assert.equal(options.tools, undefined, "subscription transports never receive native tool schemas");
-  yield draft;
+  yield scriptedDraft;
   return { promptTokens: 10, completionTokens: 5, totalTokens: 15, finishReason: "stop" };
 }
 const originalClaude = ClaudeSubscriptionProvider.prototype.chat;
@@ -492,6 +494,38 @@ try {
     "a placeholder roll emits no tool_result frame: a full-screen dice card would bury the narration",
   );
   assert.ok(on.body.includes('"type":"content_replace"'), "the corrected text has to reach the streamed view");
+
+  // ── A continuation extends the record rather than replacing it ────────────
+  // A continuation writes into the SAME message and the SAME swipe, and a message-extra
+  // update is a shallow merge. A record written only when the new segment produced one of
+  // its own would drop the first segment's placeholders, and with them the inline
+  // breakdown on numbers the player already read and every log line saying what could not
+  // be rolled. The sibling dice history retains the earlier segment for the same reason.
+  scriptedDraft = "You stagger for [[roll: 1d4]] more rounds.";
+  calls.length = 0;
+  const continued = await app.inject({
+    method: "POST",
+    url: "/api/generate/",
+    payload: { chatId: chat.id, continueMessageId: saved.id },
+  });
+  assert.equal(continued.statusCode, 200, continued.body);
+  assert.ok(!continued.body.includes('"type":"error"'), continued.body);
+  assert.equal(calls.length, 1, "a continuation that rolls is still one provider request");
+  const extended = (await chats.listMessages(chat.id)).at(-1)!;
+  assert.equal(extended.id, saved.id, "the continuation wrote into the same message");
+  assert.doesNotMatch(extended.content, /\[\[roll:/i, extended.content);
+  const continuedExtra = JSON.parse(extended.extra) as {
+    diceRollResults?: unknown[];
+    gameDiceTurn?: { forms?: string[]; placeholders?: Array<{ raw: string }> };
+  };
+  assert.deepEqual(
+    continuedExtra.gameDiceTurn?.placeholders?.map((record) => record.raw),
+    ["2d6+3", "1d4", "1d4"],
+    "the first segment's placeholder records survive the second segment's write",
+  );
+  assert.deepEqual(continuedExtra.gameDiceTurn?.forms, ["placeholder"]);
+  assert.equal(continuedExtra.diceRollResults?.length, 3, "and the dice history keeps all three rolls");
+  scriptedDraft = draft;
 
   // Switch off: every resolver leaves the spelling completely alone, so nothing about an
   // already-saved transcript can change under a player who never turned this on.

@@ -179,6 +179,28 @@ assert.doesNotMatch(swept.content, /Up\.|Down\./, "neither half survives a sweep
 assert.match(swept.content, /\[skill_check: skill="Stealth" dc="10"\]/, "the ask inside the block survives");
 assert.doesNotMatch(swept.content, /\[branch:|\[on\s|\[\/branch\]/i, swept.content);
 
+// A lowercase that changes LENGTH must not move the closer. `İ` (U+0130) lowercases to
+// two code units, so a closer offset taken from a lowercased copy and applied back to the
+// original content drifts one character per `İ`: the block would end past its own
+// `[/branch]`, eat that many characters of the narration after it, and leave a `[/`
+// fragment inside the last half for no stripper to match.
+const turkishBlock = [
+  "[branch: x]",
+  "[on success] İstanbul yolu açık.",
+  "[on failure] İzmir yolu kapalı.",
+  "[/branch] TAIL-PROSE-MUST-SURVIVE",
+].join("\n");
+const turkishScanned = scanGameBranchBlocks(turkishBlock);
+assert.equal(turkishScanned.length, 1);
+assert.equal(turkishScanned[0]!.refusal, null, "a Turkish block is as readable as its ASCII twin");
+assert.ok(turkishScanned[0]!.raw.endsWith("[/branch]"), `the block ended past its closer: ${turkishScanned[0]!.raw}`);
+assert.equal(turkishScanned[0]!.halves[1]!.text, "İzmir yolu kapalı.", "and no half keeps a closer fragment");
+assert.equal(
+  dropGameBranchBlocks(turkishBlock).content,
+  " TAIL-PROSE-MUST-SURVIVE",
+  "every character after the closer survives the sweep",
+);
+
 // ══ 2. The arm: the die selects, and a refusal keeps neither half ════════════
 
 interface LaneSession {
@@ -298,6 +320,40 @@ for (const ambiguous of [
   assert.doesNotMatch(rewrite.content, /result="/, "an ambiguous label is never guessed at");
   assert.equal(lane.sheetReads(), 0, "and it costs no sheet read either");
 }
+
+// A check tag that sits inside one block cannot be matched by ANOTHER block. If it could,
+// the container would be refused for carrying it and re-emit the tag raw, the matching
+// block's resolved record would be dropped by the splice's overlap guard, and the saved
+// turn would keep a SPARSE engine-rollable tag beside a half a real roll already chose —
+// for the shipped resolver to roll a second time and record an outcome that contradicts
+// the prose the player reads.
+const crossBlock = [
+  "[branch: a]",
+  "[on success] A1",
+  "[on failure] A2",
+  '[skill_check: skill="Stealth" dc="15" branch="b"]',
+  "[/branch]",
+  "[branch: b]",
+  "[on success] B1",
+  "[on failure] B2",
+  "[/branch] tail",
+].join("\n");
+const crossLane = laneSession([]);
+const crossRewrite = await resolveGameTurnBranches(crossBlock, crossLane.session);
+for (const half of ["A1", "A2", "B1", "B2"]) {
+  assert.ok(
+    !crossRewrite.content.includes(half),
+    `${half} was kept by a block the engine refused: ${crossRewrite.content}`,
+  );
+}
+assert.doesNotMatch(crossRewrite.content, /result="/, "neither block rolls a tag that lives inside a block");
+assert.equal(
+  (crossRewrite.content.match(/\[skill_check:/g) ?? []).length,
+  1,
+  `the ask survives exactly once, so the shipped resolver rolls it once: ${crossRewrite.content}`,
+);
+assert.match(crossRewrite.content, /branch="b"/, "and it is left for that resolver exactly as written");
+assert.equal(crossLane.sheetReads(), 0, "a turn that matched nothing reads no sheet");
 
 // A check the model already filled in cannot select a half: its numbers are exactly what
 // the blind form exists to keep out of the decision.

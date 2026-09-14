@@ -173,9 +173,14 @@ export function scanSkillCheckTagSpans(content: string): SkillCheckTagSpan[] {
  * decided.
  */
 function boundBranchBlock(content: string, bodyStart: number): { end: number; closed: boolean } {
-  const lower = content.toLowerCase();
-  const closer = lower.indexOf(BRANCH_BLOCK_CLOSER, bodyStart);
-  if (closer !== -1) return { end: closer + BRANCH_BLOCK_CLOSER.length, closed: true };
+  // Matched case-insensitively ON THE ORIGINAL STRING rather than on a lowercased copy:
+  // `toLowerCase()` is not length-preserving (`İ` U+0130 lowercases to two code units),
+  // so an offset taken from the copy and applied here would drift by one per such
+  // character and the block would end past its own closer, eating the prose after it.
+  const closerPattern = createBranchCloserPattern();
+  closerPattern.lastIndex = bodyStart;
+  const closer = closerPattern.exec(content);
+  if (closer) return { end: closer.index + closer[0].length, closed: true };
   const half = createBranchHalfPattern();
   half.lastIndex = bodyStart;
   const marker = half.exec(content);

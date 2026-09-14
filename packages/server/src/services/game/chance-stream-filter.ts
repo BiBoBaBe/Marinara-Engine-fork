@@ -34,13 +34,18 @@
 // through the rewrite frame instead.
 // ──────────────────────────────────────────────
 
-import { PLACEHOLDER_BODY_MAX, ROLL_PLACEHOLDER_OPENER } from "@marinara-engine/shared";
+import {
+  BRANCH_BLOCK_OPENER,
+  createBranchCloserPattern,
+  PLACEHOLDER_BODY_MAX,
+  ROLL_PLACEHOLDER_OPENER,
+} from "@marinara-engine/shared";
 
 /** `[[roll:` — the shared spelling, so the filter and the scanner can never disagree. */
 const ROLL_OPENER = ROLL_PLACEHOLDER_OPENER;
 const ROLL_CLOSER = "]]";
-const BRANCH_OPENER = "[branch:";
-const BRANCH_CLOSER = "[/branch]";
+/** `[branch:` — the same shared spelling, for the same reason. The closer is a pattern. */
+const BRANCH_OPENER = BRANCH_BLOCK_OPENER;
 
 /** Every head this filter claims. A single-bracket `[roll:` is Roleplay's own command. */
 const CLAIMED_OPENERS = [ROLL_OPENER, BRANCH_OPENER] as const;
@@ -141,27 +146,42 @@ export function createGameChanceStreamFilter(): GameChanceStreamFilter {
           continue;
         }
         if (lineBreak !== -1 || carry.length > ROLL_HOLD_MAX || final) {
-          // Released verbatim. The pass still replaces this span in the saved content,
-          // so the streamed view is the only place it is ever seen.
-          visible += carry;
-          carry = "";
+          // Released verbatim, but only the failed candidate's OWN bounded prefix — the
+          // same offset the scanner bounds a refused span with. Releasing the whole carry
+          // and returning would hand back everything that happened to arrive in the same
+          // chunk after it, so a well-formed placeholder behind a malformed one would
+          // stream raw and then mutate, and the filter's output would depend on how the
+          // provider chunked its tokens. The remainder stays in the carry and is
+          // re-scanned. The pass still replaces this span in the saved content, so the
+          // streamed view is the only place it is ever seen.
+          const cut = Math.max(1, lineBreak !== -1 ? lineBreak : Math.min(carry.length, ROLL_HOLD_MAX));
+          visible += carry.slice(0, cut);
+          carry = carry.slice(cut);
           mode = "idle";
-          return visible;
+          continue;
         }
         return visible;
       }
 
-      const closer = carry.toLowerCase().indexOf(BRANCH_CLOSER, BRANCH_OPENER.length);
-      if (closer !== -1) {
-        carry = carry.slice(closer + BRANCH_CLOSER.length);
+      // Same rule as the block scanner's closer, and for the same reason it is a
+      // case-insensitive match on the carry itself rather than an index taken from a
+      // lowercased copy: `toLowerCase()` is not length-preserving, so such an index would
+      // drift and the filter would cut the held block in the wrong place.
+      const closerPattern = createBranchCloserPattern();
+      closerPattern.lastIndex = BRANCH_OPENER.length;
+      const closer = closerPattern.exec(carry);
+      if (closer) {
+        carry = carry.slice(closer.index + closer[0].length);
         mode = "idle";
         continue;
       }
       if (carry.length > BRANCH_HOLD_MAX || final) {
-        visible += carry;
-        carry = "";
+        // Bounded release, for the same reason as the roll arm above.
+        const cut = Math.max(1, Math.min(carry.length, BRANCH_HOLD_MAX));
+        visible += carry.slice(0, cut);
+        carry = carry.slice(cut);
         mode = "idle";
-        return visible;
+        continue;
       }
       return visible;
     }

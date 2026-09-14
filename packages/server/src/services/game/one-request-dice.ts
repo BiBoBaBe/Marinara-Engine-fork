@@ -218,10 +218,17 @@ interface GameBranchEdit {
  *
  * Matching is by label, folded, and it has to be exactly one on each side: a label two
  * blocks claim, or two check tags claim, decides nothing, and guessing which pairing the
- * model meant would decide a real outcome on a coin flip the player never sees. A check
- * tag INSIDE a block is never the match — the block is refused for carrying it, and the
- * tag is re-emitted for the shipped resolver to roll — so the two spans can never
- * overlap when the splice runs.
+ * model meant would decide a real outcome on a coin flip the player never sees.
+ *
+ * A check tag inside ANY block is excluded from the match map, not merely from the block
+ * that contains it. Excluding it only from its own container left block B free to match a
+ * tag sitting inside block A: A was refused for carrying it and re-emitted the tag raw,
+ * while B's resolved-tag edit for the same span was dropped by the splice's overlap
+ * guard, so the saved turn kept B's chosen half beside a SPARSE tag that the shipped
+ * resolver then rolled a second time — a recorded outcome that can contradict the prose
+ * the player reads. With the exclusion, B is simply refused as unmatched, the tag is
+ * rolled exactly once by the shipped resolver, and the two spans can never overlap when
+ * the splice runs.
  */
 export function planGameTurnBranches(content: string, blocks: GameBranchBlock[]): GameBranchPlan[] {
   const claimedByBlocks = new Map<string, number>();
@@ -231,17 +238,19 @@ export function planGameTurnBranches(content: string, blocks: GameBranchBlock[])
 
   /** A label mapped to `null` was claimed twice, which is the same as not being claimed. */
   const checksByLabel = new Map<string, SkillCheckTagSpan | null>();
+  const insideAnyBlock = (span: SkillCheckTagSpan) =>
+    blocks.some((block) => span.start >= block.start && span.end <= block.end);
   for (const span of scanSkillCheckTagSpans(content)) {
+    if (insideAnyBlock(span)) continue;
     const label = readSkillCheckBranchLabel(span.body);
     if (!label) continue;
     checksByLabel.set(label, checksByLabel.has(label) ? null : span);
   }
 
   return blocks.map((block) => {
-    const inside = (span: SkillCheckTagSpan) => span.start >= block.start && span.end <= block.end;
     const claimed = block.label ? checksByLabel.get(block.label) : undefined;
     const ambiguous = (claimedByBlocks.get(block.label) ?? 0) > 1 || claimed === null;
-    const span = claimed && !inside(claimed) ? claimed : undefined;
+    const span = claimed ?? undefined;
 
     let check: GameBranchPlan["check"] = null;
     let matchRefusal: GameBranchArmRefusal | null = null;
@@ -344,9 +353,10 @@ export async function resolveGameTurnBranches(
   let next = "";
   let cursor = 0;
   for (const edit of edits) {
-    // Overlapping spans cannot happen — a claimed check tag inside a block refuses that
-    // block instead of matching it — but a splice that silently duplicated prose would be
-    // invisible in the saved turn, so the guard is a skip rather than a trust.
+    // Overlapping spans cannot happen: a check tag sitting inside ANY block is excluded
+    // from the match map, so no block's resolved-tag edit can ever land inside another
+    // block's span. The guard is still a skip rather than a trust, because a splice that
+    // silently duplicated prose would be invisible in the saved turn.
     if (edit.start < cursor) continue;
     next += content.slice(cursor, edit.start) + edit.replacement;
     cursor = edit.end;
@@ -657,6 +667,100 @@ export function summarizeGameDiceTurn(
     ...(pool && pool.consumed.length > 0 ? { poolSlots: [...pool.consumed] } : {}),
     ...(pool && pool.overflow > 0 ? { poolOverflow: pool.overflow } : {}),
     ...(pool && pool.mismatches.length > 0 ? { poolMismatches: [...pool.mismatches] } : {}),
+  };
+  return Object.keys(notice).length > 0 ? notice : null;
+}
+
+/**
+ * Fold the notice a continuation's new segment produced into the one its earlier segment
+ * already saved.
+ *
+ * A continuation appends to the SAME message and the SAME swipe, and a message-extra
+ * update is a shallow merge, so writing the new segment's notice on its own replaces the
+ * record wholesale: the first segment's `placeholders[]` disappear, and with them the
+ * inline breakdown on numbers the player already read, along with every log line saying
+ * what the engine could not roll. The sibling `diceRollResults` retains the earlier
+ * segment explicitly for exactly this reason, and this is the same retention.
+ *
+ * Counts sum, lists concatenate in segment order, `forms` keeps first-seen order, and a
+ * fold that has nothing in it is `null` rather than an empty object, so a chat that never
+ * rolled anything stores exactly what it stored before.
+ *
+ * `previous` is typed `unknown` because it comes back off a stored message extra, which is
+ * parsed JSON and not a validated shape. Every field is read through a guard, so a
+ * transcript carrying something else in that key degrades to "no earlier segment" rather
+ * than writing a malformed record back over a good one.
+ */
+export function mergeGameDiceTurnNotices(
+  previous: unknown,
+  next: GameDiceTurnNotice | null | undefined,
+): GameDiceTurnNotice | null {
+  const earlier = readStoredDiceTurnNotice(previous);
+  if (!earlier) return next ?? null;
+  if (!next) return earlier;
+
+  const forms: Array<"branch" | "placeholder"> = [];
+  for (const form of [...(earlier.forms ?? []), ...(next.forms ?? [])]) {
+    if (!forms.includes(form)) forms.push(form);
+  }
+  const placeholders = [...(earlier.placeholders ?? []), ...(next.placeholders ?? [])];
+  const poolSlots = [...(earlier.poolSlots ?? []), ...(next.poolSlots ?? [])];
+  const poolMismatches = [...(earlier.poolMismatches ?? []), ...(next.poolMismatches ?? [])];
+  const unreadablePlaceholders = (earlier.unreadablePlaceholders ?? 0) + (next.unreadablePlaceholders ?? 0);
+  const branchFailures = (earlier.branchFailures ?? 0) + (next.branchFailures ?? 0);
+  const poolOverflow = (earlier.poolOverflow ?? 0) + (next.poolOverflow ?? 0);
+
+  const merged: GameDiceTurnNotice = {
+    ...(forms.length > 0 ? { forms } : {}),
+    ...(placeholders.length > 0 ? { placeholders } : {}),
+    ...(unreadablePlaceholders > 0 ? { unreadablePlaceholders } : {}),
+    ...(branchFailures > 0 ? { branchFailures } : {}),
+    ...(earlier.passFailed || next.passFailed ? { passFailed: true } : {}),
+    ...(poolSlots.length > 0 ? { poolSlots } : {}),
+    ...(poolOverflow > 0 ? { poolOverflow } : {}),
+    ...(poolMismatches.length > 0 ? { poolMismatches } : {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+/**
+ * Read a stored `gameDiceTurn` back into the shape the fold above expects. Lists keep
+ * their elements as written — they were produced by this module and are only being handed
+ * back to the same store — but a field of the wrong KIND is dropped, so nothing the fold
+ * sums or concatenates can be a non-number or a non-array.
+ */
+function readStoredDiceTurnNotice(value: unknown): GameDiceTurnNotice | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const stored = value as Record<string, unknown>;
+  const list = <Key extends "placeholders" | "poolSlots" | "poolMismatches">(
+    key: Key,
+  ): GameDiceTurnNotice[Key] | undefined =>
+    Array.isArray(stored[key]) && stored[key].length > 0 ? (stored[key] as GameDiceTurnNotice[Key]) : undefined;
+  const count = (key: "unreadablePlaceholders" | "branchFailures" | "poolOverflow"): number | undefined => {
+    const raw = stored[key];
+    return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+  };
+
+  const rawForms = Array.isArray(stored.forms) ? stored.forms : [];
+  const forms = rawForms.filter(
+    (form): form is "branch" | "placeholder" => form === "branch" || form === "placeholder",
+  );
+  const placeholders = list("placeholders");
+  const poolSlots = list("poolSlots");
+  const poolMismatches = list("poolMismatches");
+  const unreadablePlaceholders = count("unreadablePlaceholders");
+  const branchFailures = count("branchFailures");
+  const poolOverflow = count("poolOverflow");
+
+  const notice: GameDiceTurnNotice = {
+    ...(forms.length > 0 ? { forms } : {}),
+    ...(placeholders ? { placeholders } : {}),
+    ...(unreadablePlaceholders !== undefined ? { unreadablePlaceholders } : {}),
+    ...(branchFailures !== undefined ? { branchFailures } : {}),
+    ...(stored.passFailed === true ? { passFailed: true } : {}),
+    ...(poolSlots ? { poolSlots } : {}),
+    ...(poolOverflow !== undefined ? { poolOverflow } : {}),
+    ...(poolMismatches ? { poolMismatches } : {}),
   };
   return Object.keys(notice).length > 0 ? notice : null;
 }

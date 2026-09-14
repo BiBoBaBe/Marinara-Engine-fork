@@ -2080,7 +2080,6 @@ export function GameNarration({
   // roll, and marking the wrong word would be worse than marking nothing.
   const describeGameDiceRoll = useCallback(
     (record: GameDicePlaceholderRecord): string => {
-      const options = { interpolation: { escapeValue: false } } as const;
       const breakdown = formatGameDiceRolls(record);
       const modifier = formatGameDiceModifier(record);
       if (!modifier) {
@@ -2088,7 +2087,6 @@ export function GameNarration({
           notation: record.raw,
           breakdown,
           total: record.total,
-          ...options,
         });
       }
       const source = localizeUi(
@@ -2104,7 +2102,6 @@ export function GameNarration({
         source,
         breakdown,
         total: record.total,
-        ...options,
       });
     },
     [localizeUi],
