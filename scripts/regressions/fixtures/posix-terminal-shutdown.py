@@ -12,14 +12,14 @@ import tempfile
 import time
 
 
-root, node, loader, mode = sys.argv[1:]
+root, node, loader, mode, node_env = sys.argv[1:]
 with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
     data = Path(temp)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     env = dict(os.environ, HOST="127.0.0.1", PORT=str(port), DATA_DIR=temp,
-               FILE_STORAGE_DIR=str(data / "storage"), NODE_ENV="production",
+               FILE_STORAGE_DIR=str(data / "storage"), NODE_ENV=node_env,
                MARINARA_ENV_FILE=str(data / ".env"), MARINARA_LITE="true",
                LOG_LEVEL="info", LOG_DISABLE_REQUEST_LOGGING="false",
                AUTO_CREATE_DEFAULT_CONNECTION="false", AUTO_OPEN_BROWSER="false")
@@ -32,6 +32,7 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
     server_pid = None
     status = None
     busy_socket = None
+    finishing_socket = None
 
     def pump():
         global output
@@ -48,17 +49,25 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
         while time.monotonic() < deadline:
             pump()
             for line in output.decode(errors="replace").splitlines():
-                if '"msg":"Marinara Engine server listening' in line:
-                    server_pid = json.loads(line)["pid"]
+                heartbeat = data / "diagnostics/session-heartbeat.json"
+                if "Marinara Engine server listening" in line and heartbeat.exists():
+                    server_pid = json.loads(heartbeat.read_text())["pid"]
                     break
             if server_pid:
                 break
         assert server_pid, output.decode(errors="replace")
+        if node_env == "development":
+            assert b"\x1b[" in output, "Development must exercise the real colored pino-pretty worker"
         assert (data / "storage/.writer-lease").exists()
         if mode == "busy-hangup":
             busy_socket = socket.create_connection(("127.0.0.1", port))
             busy_socket.sendall(b"POST /api/chats HTTP/1.1\r\nHost: localhost\r\n"
                                 b"Content-Type: application/json\r\nContent-Length: 10000\r\n\r\n{")
+            # Finish another real request after hangup while this first one holds
+            # close open. Otherwise a quiet shutdown may beat the pretty worker error.
+            finishing_socket = socket.create_connection(("127.0.0.1", port))
+            finishing_socket.sendall(b"POST /api/chats HTTP/1.1\r\nHost: localhost\r\n"
+                                      b"Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{")
         # Confirm an API save while its 750 ms disk debounce is still pending.
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         value = "confirmed immediately before " + mode
@@ -81,11 +90,15 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
             if waited:
                 status = result
                 break
+            if finishing_socket is not None and time.monotonic() - started > 0.1:
+                finishing_socket.sendall(b"}")
+                finishing_socket.close()
+                finishing_socket = None
             pump()
         beat_file = data / "diagnostics/session-heartbeat.json"
         beat = json.loads(beat_file.read_text()) if beat_file.exists() else {}
         saved = shard.exists() and any(row["value"] == value for row in json.loads(shard.read_text()))
-        result = {"mode": mode, "elapsed": round(time.monotonic() - started, 2),
+        result = {"mode": mode, "nodeEnv": node_env, "elapsed": round(time.monotonic() - started, 2),
                   "exitCode": os.waitstatus_to_exitcode(status) if status is not None else None,
                   "leaseReleased": not (data / "storage/.writer-lease").exists(),
                   "saved": saved, "exitKind": beat.get("exitKind")}
@@ -105,6 +118,8 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
             assert b"Received SIGHUP; shutting down" in output
             assert b"Shutdown complete" in output
     finally:
+        if finishing_socket:
+            finishing_socket.close()
         if busy_socket:
             busy_socket.close()
         if master is not None:

@@ -486,6 +486,7 @@ export function GameSetupWizard({
   const { t: localizeUi } = useUiTranslation();
   const prefersReducedMotion = useReducedMotion();
   const [step, setStep] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
   const { data: installedPackages, isLoading: experiencesLoading } = useInstalledCapabilityPackages(true);
   const experiences = useMemo(() => selectGameExperiencePackages(installedPackages), [installedPackages]);
   const [experienceId, setExperienceId] = useState<string | null>(null);
@@ -1418,6 +1419,7 @@ export function GameSetupWizard({
         onCancelSetup={onCancel}
         onSetupError={onSetupError}
         onBack={() => setExperienceId(null)}
+        restoreFocusRef={panelRef}
       />
     );
   }
@@ -1432,6 +1434,8 @@ export function GameSetupWizard({
         <AnimatePresence mode="wait">
           <motion.div
             key={currentStep.key}
+            ref={panelRef}
+            tabIndex={-1}
             data-component="GameSetupWizard"
             role="dialog"
             aria-modal="true"

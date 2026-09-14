@@ -300,14 +300,14 @@ try {
     ...futureInstalled,
     manifest: { ...futureInstalled.manifest, unknownFutureField: { preserve: ["exact", 42] } },
   };
+  const futureRecord = installedPackage("future-record", ["agent"]);
+  const unsupportedTopLevelRecord = { ...futureRecord, unknownFutureField: { preserve: ["exact", 43] } };
   writeFileSync(
     registryPath,
-    JSON.stringify({ schemaVersion: 1, packages: [validInstalled, unsupportedInstalledRecord] }),
-  );
-  assert.deepEqual(
-    (await capabilityPackageManager.installed()).map((item) => item.id),
-    [validInstalled.id],
-    "One unsupported record must not prevent supported packages loading",
+    JSON.stringify({
+      schemaVersion: 1,
+      packages: [validInstalled, unsupportedInstalledRecord, unsupportedTopLevelRecord],
+    }),
   );
   await capabilityPackageManager.markRuntimeReadiness(validInstalled.id, "ready");
   const preservedRegistry = JSON.parse(readFileSync(registryPath, "utf8"));
@@ -320,24 +320,33 @@ try {
     unsupportedInstalledRecord,
     "A real readiness write must preserve the unsupported sibling, including unknown nested fields",
   );
+  assert.deepEqual(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === futureRecord.id),
+    unsupportedTopLevelRecord,
+    "A real readiness write must preserve an otherwise supported record with unknown top-level fields",
+  );
+  assert.deepEqual(
+    (await capabilityPackageManager.installed()).map((item) => item.id),
+    [validInstalled.id],
+    "Unsupported records must not prevent supported packages loading",
+  );
   const registryGuardCatalog = capabilityPackageManager.catalog;
-  const olderManifest = capabilityPackageManifestSchema.parse({ ...futureInstalled.manifest, version: "0.9.0" });
   capabilityPackageManager.catalog = async () => ({
     schemaVersion: 1,
     generatedAt: "2026-09-14T00:00:00.000Z",
-    packages: [
-      {
-        manifest: olderManifest,
-        artifact: { url: "https://invalid.example/never-download.zip", sha256: "0".repeat(64), bytes: 1 },
-      },
-    ],
+    packages: [futureInstalled, futureRecord].map((item) => ({
+      manifest: capabilityPackageManifestSchema.parse({ ...item.manifest, version: "0.9.0" }),
+      artifact: { url: "https://invalid.example/never-download.zip", sha256: "0".repeat(64), bytes: 1 },
+    })),
   });
   try {
-    await assert.rejects(
-      () => capabilityPackageManager.install(futureInstalled.id, "0.9.0", "0".repeat(64)),
-      /refusing to downgrade/,
-      "Unsupported manifests must not hide the installed version from the pre-download downgrade guard",
-    );
+    for (const item of [futureInstalled, futureRecord]) {
+      await assert.rejects(
+        () => capabilityPackageManager.install(item.id, "0.9.0", "0".repeat(64)),
+        /refusing to downgrade/,
+        "Unsupported records must not hide the installed version from the pre-download downgrade guard",
+      );
+    }
     assert.deepEqual(JSON.parse(readFileSync(registryPath, "utf8")), preservedRegistry);
   } finally {
     capabilityPackageManager.catalog = registryGuardCatalog;

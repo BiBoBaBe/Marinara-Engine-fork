@@ -2295,6 +2295,8 @@ test("mobile Conversation editing exposes the final line before text changes", a
     const editor = messageRow.locator("[data-chat-message-editor]");
     const messageScroll = page.locator('[data-chat-mode="conversation"] [data-chat-scroll]');
     await expect(editor).toBeVisible();
+    // Initial focus follows the scheduled textarea resize; scroll only after both have completed.
+    await expect(editor).toBeFocused();
     await expect
       .poll(() => messageScroll.evaluate((element) => Number.parseFloat(getComputedStyle(element).paddingBottom)))
       .toBeGreaterThanOrEqual(128);

@@ -16,7 +16,8 @@ const pendingTranslations = new Map<string, Promise<void>>();
 
 export function getChatTranslationConfig(chatId: string, metadata: unknown): TranslationConfig {
   const chatMeta = parseChatMetadata(metadata);
-  const legacyTargetLanguage = chatMeta.translationTargetLang?.trim() || "en";
+  const legacyTargetLanguage =
+    (typeof chatMeta.translationTargetLang === "string" ? chatMeta.translationTargetLang.trim() : "") || "en";
   const legacySystemPrompt = typeof chatMeta.translationPrompt === "string" ? chatMeta.translationPrompt : undefined;
   const inputSystemPrompt =
     chatMeta.translationInputPrompt === undefined
@@ -34,8 +35,12 @@ export function getChatTranslationConfig(chatId: string, metadata: unknown): Tra
     chatId,
     provider: chatMeta.translationProvider ?? "google",
     // Cleared fields retain the legacy/default language.
-    inputTargetLanguage: chatMeta.translationInputTargetLang?.trim() || legacyTargetLanguage,
-    outputTargetLanguage: chatMeta.translationOutputTargetLang?.trim() || legacyTargetLanguage,
+    inputTargetLanguage:
+      (typeof chatMeta.translationInputTargetLang === "string" ? chatMeta.translationInputTargetLang.trim() : "") ||
+      legacyTargetLanguage,
+    outputTargetLanguage:
+      (typeof chatMeta.translationOutputTargetLang === "string" ? chatMeta.translationOutputTargetLang.trim() : "") ||
+      legacyTargetLanguage,
     connectionId: chatMeta.translationConnectionId,
     inputSystemPrompt,
     outputSystemPrompt,

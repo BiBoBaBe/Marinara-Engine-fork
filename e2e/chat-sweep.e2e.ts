@@ -503,12 +503,13 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
             root.render(React.createElement(QueryClientProvider, { client }, React.createElement(GenerationView)));
           };
           (window as any).translationFixture = {
-            reset(pendingSettings: boolean) {
+            reset(pendingSettings: boolean, languageMetadata?: Record<string, unknown>) {
               root?.unmount();
               root = undefined;
+              const configuredOrigin = { ...origin, metadata: { ...metadata, ...languageMetadata } };
               const initialChat = pendingSettings
                 ? { ...origin, metadata: { ...metadata, autoTranslate: false } }
-                : origin;
+                : configuredOrigin;
               useChatStore.getState().setActiveChatId(null);
               useChatStore.getState().setActiveChat(initialChat);
               useTranslationStore.getState().clearAll();
@@ -568,16 +569,43 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
         },
         { chat, metadata },
       );
-      const scenarios = ["visible", "evicted", "another-chat", "pending-settings"] as const;
+      const languageMetadata: Record<string, Record<string, unknown>> = {
+        "malformed-legacy": {
+          translationTargetLang: 42,
+          translationInputTargetLang: null,
+          translationOutputTargetLang: false,
+        },
+        "malformed-input": {
+          translationTargetLang: " pl ",
+          translationInputTargetLang: {},
+          translationOutputTargetLang: "",
+        },
+        "malformed-output": {
+          translationTargetLang: " pl ",
+          translationInputTargetLang: " en ",
+          translationOutputTargetLang: 17,
+        },
+      };
+      const scenarios = [
+        "visible",
+        "evicted",
+        "another-chat",
+        "pending-settings",
+        "malformed-legacy",
+        "malformed-input",
+        "malformed-output",
+      ] as const;
       for (const scenario of scenarios) {
         const navigated = scenario === "evicted" || scenario === "another-chat";
         pendingGeneration = undefined;
-        await page.evaluate(
-          (pending) => (window as any).translationFixture.reset(pending),
-          scenario === "pending-settings",
-        );
+        await page.evaluate(({ pending, language }) => (window as any).translationFixture.reset(pending, language), {
+          pending: scenario === "pending-settings",
+          language: languageMetadata[scenario],
+        });
         await page.getByRole("button", { name: "Generate translation fixture", exact: true }).click();
         if (scenario === "pending-settings") {
+          // Observe a bounded quiet interval while the metadata save is still held.
+          await page.waitForTimeout(1_000);
           expect(pendingGeneration).toBeUndefined();
           await page.evaluate(() => (window as any).translationFixture.finishSettingsSave());
         }
@@ -605,7 +633,7 @@ for (const mode of ["conversation", "roleplay", "game"] as const) {
         expect(translations.at(-1)).toMatchObject({
           text: source,
           provider: "ai",
-          targetLanguage: "pl",
+          targetLanguage: scenario === "malformed-legacy" ? "en" : "pl",
           connectionId: "origin-connection",
           systemPrompt: metadata.translationOutputPrompt,
         });

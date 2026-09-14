@@ -308,7 +308,7 @@ async function readRegistry() {
   return {
     ...raw,
     packages: raw.packages.flatMap((entry) => {
-      const parsed = installedCapabilityPackageSchema.safeParse(entry);
+      const parsed = installedCapabilityPackageSchema.strict().safeParse(entry);
       if (parsed.success) return [parsed.data];
       logger.warn("[capability] Skipping an unsupported installed package record: %s", parsed.error.message);
       return [];
@@ -330,7 +330,7 @@ async function writeRegistry(packages: InstalledCapabilityPackage[]) {
   const ids = new Set(packages.map((item) => item.id));
   const unsupported = (await readRawRegistry()).packages.filter(
     (entry) =>
-      !installedCapabilityPackageSchema.safeParse(entry).success &&
+      !installedCapabilityPackageSchema.strict().safeParse(entry).success &&
       !(entry && typeof entry === "object" && "id" in entry && typeof entry.id === "string" && ids.has(entry.id)),
   );
   const temporary = `${REGISTRY}.tmp-${process.pid}-${Date.now()}`;

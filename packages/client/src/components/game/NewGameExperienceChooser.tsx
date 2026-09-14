@@ -74,7 +74,10 @@ export function NewGameExperienceChooser({
                     role="switch"
                     aria-checked={isActive}
                     disabled={launching}
-                    onClick={() => onSelect(isActive ? null : exp.id)}
+                    onClick={() => {
+                      setOpen(true);
+                      onSelect(isActive ? null : exp.id);
+                    }}
                     className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-1 py-1 text-left transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40 disabled:cursor-wait disabled:opacity-50 disabled:hover:bg-transparent"
                   >
                     <div className="min-w-0">

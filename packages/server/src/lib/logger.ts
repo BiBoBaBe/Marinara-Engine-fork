@@ -17,7 +17,7 @@ import { isatty } from "node:tty";
 import { getLogLevel, getNodeEnv } from "../config/runtime-config.js";
 
 type TerminalLogStream = EventEmitter & {
-  fd: number;
+  fd?: number;
   write: (chunk: string) => unknown;
   end: () => unknown;
   flushSync: () => unknown;
@@ -31,6 +31,15 @@ function isBrokenTerminalError(error: unknown) {
   const code = (error as NodeJS.ErrnoException)?.code;
   return code === "EIO" || code === "EPIPE";
 }
+function isTerminalUnavailable() {
+  try {
+    // macOS can still report isatty(1) after hangup. Probe without printing.
+    writeSync(1, "");
+    return false;
+  } catch (error) {
+    return isBrokenTerminalError(error);
+  }
+}
 function silenceTerminalStream(stream: TerminalLogStream) {
   // Match Pino's broken-pipe policy: the terminal is gone, so stop writing to it.
   stream.write = noop;
@@ -43,25 +52,22 @@ function silenceTerminalStream(stream: TerminalLogStream) {
 // EIO arrives, and SonicBoom's exit-time flush otherwise retries the dead fd forever.
 if (stdoutWasTerminal) {
   process.once("exit", () => {
-    try {
-      // macOS can still report isatty(1) after hangup. An empty write detects
-      // the dead terminal without printing anything or buffering another log.
-      writeSync(1, "");
-    } catch (error) {
-      if (isBrokenTerminalError(error)) for (const stream of terminalStreams) silenceTerminalStream(stream);
-    }
+    if (isTerminalUnavailable()) for (const stream of terminalStreams) silenceTerminalStream(stream);
   });
 }
 
-export function protectTerminalLogger(log: object): void {
+// prettyStdout is only for our pino-pretty transport with its default stdout destination.
+export function protectTerminalLogger(log: object, prettyStdout = false): void {
   if (!stdoutWasTerminal) return;
   const stream = Reflect.get(log, pino.symbols.streamSym) as TerminalLogStream | undefined;
-  // Only the direct stdout destination is ours; do not swallow file/transport errors.
-  if (stream?.fd !== 1 || terminalStreams.has(stream)) return;
+  // File and custom transports are not ours; their errors must remain visible.
+  if (!stream || (stream.fd !== 1 && !prettyStdout) || terminalStreams.has(stream)) return;
   terminalStreams.add(stream);
   stream.once("close", () => terminalStreams.delete(stream));
   stream.on("error", (error: NodeJS.ErrnoException) => {
-    if (isBrokenTerminalError(error)) {
+    // ThreadStream can lose the errno or report only "the worker has exited".
+    // For our pretty transport, verify the actual stdout failure before silencing it.
+    if (prettyStdout ? isTerminalUnavailable() : isBrokenTerminalError(error)) {
       silenceTerminalStream(stream);
       return;
     }
@@ -73,7 +79,7 @@ export const logger = pino({
   level: getLogLevel(),
   transport: getNodeEnv() !== "production" ? { target: "pino-pretty", options: { colorize: true } } : undefined,
 });
-protectTerminalLogger(logger);
+protectTerminalLogger(logger, getNodeEnv() !== "production");
 
 export function logDebugOverride(overrideEnabled: boolean, message: string, ...args: any[]) {
   if (overrideEnabled && !logger.isLevelEnabled("debug")) {

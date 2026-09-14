@@ -100,7 +100,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     bodyLimit: MAX_UPLOAD_BYTES, // General-route default; transfer routes opt into streamed or unbounded imports.
     ...(https && { https }),
   });
-  protectTerminalLogger(app.log);
+  protectTerminalLogger(app.log, getNodeEnv() !== "production");
 
   // Reject attacker-controlled DNS names before CORS or loopback trust can
   // treat a rebound browser request as same-origin local traffic.

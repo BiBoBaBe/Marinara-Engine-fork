@@ -1,4 +1,5 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { X } from "lucide-react";
@@ -28,14 +29,18 @@ export function LegacyExperienceSetupDialog({
   onCancelSetup,
   onSetupError,
   onBack,
+  restoreFocusRef,
 }: {
   activeChatId: string;
   experience: InstalledCapabilityPackage;
   onCancelSetup: () => void;
   onSetupError: (error: unknown) => boolean;
   onBack: () => void;
+  restoreFocusRef: RefObject<HTMLElement | null>;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocusScope(true, panelRef, undefined, restoreFocusRef);
   const queryClient = useQueryClient();
   const createGame = useCreateGame();
   const gameSetup = useGameSetup();
@@ -126,6 +131,8 @@ export function LegacyExperienceSetupDialog({
         {/* NEUTRAL_PANEL_SHELL remaps the theme tokens to the chrome palette inside the panel, the same
             way the built-in wizard does. Without it the package's setup comes out tinted. */}
         <motion.div
+          ref={panelRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-labelledby="game-experience-setup-title"

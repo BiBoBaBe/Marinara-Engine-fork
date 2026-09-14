@@ -183,7 +183,13 @@ for (const isNewGame of [true, false]) {
       await wizard.getByRole("switch", { name: "Legacy fixture", exact: true }).click();
       const legacy = page.getByRole("dialog", { name: "Legacy fixture", exact: true });
       await expect(legacy).toBeVisible();
+      await expect(legacy.getByRole("button", { name: "Close setup", exact: true })).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+      await expect(legacy.getByRole("button", { name: "Back", exact: true })).toBeFocused();
+      await page.keyboard.press("Tab");
+      await expect(legacy.getByRole("button", { name: "Close setup", exact: true })).toBeFocused();
       await legacy.getByRole("button", { name: "Back", exact: true }).click();
+      await expect(wizard).toBeFocused();
       await wizard.getByRole("button", { name: "Show", exact: true }).click();
       await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
@@ -227,8 +233,12 @@ for (const isNewGame of [true, false]) {
           }),
         ),
       });
-    if (isNewGame) await expect(wizard.getByRole("spinbutton", { name: "World seed" })).toHaveValue("7");
-    else
+    if (isNewGame) {
+      await expect(wizard.getByRole("spinbutton", { name: "World seed" })).toHaveValue("7");
+      await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
+      await expect(wizard.getByRole("switch", { name: "Setup fixture", exact: true })).toBeVisible();
+      await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
+    } else
       await expect(
         wizard.getByText("The Experience and seed were skipped. They can only be selected for a new game."),
       ).toBeVisible();
