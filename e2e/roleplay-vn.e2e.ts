@@ -181,6 +181,7 @@ for (const translationOnly of [false, true]) {
       await request.patch(`/api/chats/${data.chat.id}/metadata`, { data: { translationDisplayOnly: translationOnly } });
       await open(page, data.chat.id);
       const paragraph = page.getByRole("region", { name: "Current paragraph" });
+      await expect(paragraph).toContainText("A small light flickers across the desk.");
       for (const translation of ["Uno.\n\nDos.\n\nTres.", "Merged translation."]) {
         await page.evaluate(
           async ({ id, source, translation }) => {
