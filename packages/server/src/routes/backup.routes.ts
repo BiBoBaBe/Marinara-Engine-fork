@@ -6,7 +6,21 @@ import { Transform } from "node:stream";
 import { extname, join, relative } from "path";
 import { createReadStream, createWriteStream, existsSync, readdirSync, statSync } from "fs";
 import type { Dirent, WriteStream } from "fs";
-import { chmod, cp, mkdir, copyFile, readFile, readdir, writeFile, stat, mkdtemp, rm, open, rename } from "fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  copyFile,
+  readFile,
+  readdir,
+  writeFile,
+  stat,
+  statfs,
+  mkdtemp,
+  rm,
+  open,
+  rename,
+} from "fs/promises";
 import type { FileHandle } from "fs/promises";
 import { tmpdir } from "os";
 import { pipeline } from "stream/promises";
@@ -14,7 +28,7 @@ import { StringDecoder } from "string_decoder";
 import { randomBytes, randomUUID } from "crypto";
 import { createInflateRaw, inflateRawSync } from "zlib";
 import AdmZip from "adm-zip";
-import { FILE_BACKED_TABLES } from "../db/file-backed-store.js";
+import { FILE_BACKED_TABLES, STORAGE_WRITER_LEASE_FILENAME } from "../db/file-backed-store.js";
 import { migrateLegacyNoodleAccountRow } from "../db/noodle-platform-migration.js";
 import { migrateLegacyNoodlePostAccessRow } from "../db/noodle-access-migration.js";
 import { getFileTableConfig, isFileTable, type AnyFileTable } from "../db/file-schema.js";
@@ -61,6 +75,7 @@ import {
   AUTOMATIC_BACKUP_FILENAME,
   automaticBackupArchiveFilename,
   automaticBackupExists,
+  automaticBackupFreeSpaceError,
   normalizeAutomaticBackupRetentionCount,
   parseAutomaticBackupRetentionCount,
   pruneAutomaticBackupFiles,
@@ -2958,10 +2973,10 @@ async function readProfileImportRequest(req: FastifyRequest): Promise<ProfileImp
   const uploadDir = await mkdtemp(join(tmpdir(), "marinara-profile-import-"));
   const archivePath = join(uploadDir, "profile.zip");
   try {
-    // Stream uploads to disk so large profile archives do not need to fit in server memory.
+    // Full backups can exceed the profile export limit; stream them to disk before validating their contents.
     let receivedFile = false;
     for await (const part of req.parts({
-      limits: { fields: 0, parts: 1, files: 1, fileSize: PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES },
+      limits: { fields: 0, parts: 1, files: 1, fileSize: Number.MAX_SAFE_INTEGER },
     })) {
       if (part.type !== "file") throw new ProfileImportRequestError("No profile archive uploaded.");
       if (receivedFile) throw new ProfileImportRequestError("Only one profile archive is allowed.");
@@ -2989,6 +3004,11 @@ async function readProfileImportRequest(req: FastifyRequest): Promise<ProfileImp
     if (err instanceof ProfileImportRequestError) throw err;
     throw new ProfileImportRequestError(getBackupErrorMessage(err, "Profile archive could not be read."));
   }
+}
+
+/** Test seam for proving which files under a data directory a full backup collects. */
+export async function collectBackupDirectorySourcesForRegression(sourceDir: string, entryRoot: string) {
+  return (await collectDirectoryZipSources(sourceDir, entryRoot)).map((source) => source.entryName);
 }
 
 /** Production-reader seam for proving that a full backup remains loadable by profile import. */
@@ -3063,6 +3083,8 @@ async function collectDirectoryZipSources(
     for (const entry of entries) {
       const fullPath = join(current, entry.name);
       if (entry.isDirectory()) {
+        // The writer lease is per-process runtime state; a restored copy blocks startup on another host (#6083).
+        if (current === sourceDir && entry.name === STORAGE_WRITER_LEASE_FILENAME) continue;
         stack.push(fullPath);
         continue;
       }
@@ -3102,6 +3124,7 @@ async function writeFullBackupArchive(
   outputPath: string,
   backupName: string,
   workingDir: string,
+  beforeWrite?: (archiveBytes: number) => Promise<void>,
 ) {
   const dataDir = getDataDir();
   const omittedEntries = new Set<string>();
@@ -3148,6 +3171,23 @@ async function writeFullBackupArchive(
     entryName: `${backupName}/RESTORE.txt`,
     buildData: () => Buffer.from(buildBackupRestoreNotes([...omittedEntries]), "utf8"),
   });
+  if (beforeWrite) {
+    // ponytail: reserve ZIP64 records and every possible omission line; use a shared writer
+    // estimator if the ZIP layout or deferred entries beyond RESTORE.txt change.
+    let archiveBytes =
+      ZIP64_EOCD_MIN_SIZE +
+      ZIP64_EOCD_LOCATOR_SIZE +
+      ZIP_EOCD_MIN_SIZE +
+      Buffer.byteLength(buildBackupRestoreNotes([""]), "utf8");
+    for (const source of sources) {
+      const payloadBytes =
+        "filePath" in source ? source.size : "data" in source ? source.data.length : source.buildData().length;
+      const headerBytes = 30 + 20 + 46 + 28 + 24 + 2 * Buffer.byteLength(source.entryName, "utf8");
+      const omissionLineBytes = 3 + Buffer.byteLength(JSON.stringify(source.entryName), "utf8");
+      archiveBytes += payloadBytes + headerBytes + omissionLineBytes;
+    }
+    await beforeWrite(archiveBytes);
+  }
   await writeStoredZipArchive(outputPath, sources, {
     skipFailedFileEntries: true,
     entryLimitBytes: Number.MAX_SAFE_INTEGER,
@@ -3174,7 +3214,24 @@ async function writeAutomaticBackup(app: FastifyInstance, retentionCount: number
     } else {
       await rm(legacyPreviousPath, { force: true });
     }
-    const { omittedEntries } = await writeFullBackupArchive(app, pendingPath, "marinara-automatic-backup", workingDir);
+    const { omittedEntries } = await writeFullBackupArchive(
+      app,
+      pendingPath,
+      "marinara-automatic-backup",
+      workingDir,
+      async (archiveBytes) => {
+        // A run that cannot fit would fail with ENOSPC and be retried in full every hour; refuse it up front (#6087).
+        const freeBytes = await statfs(backupsRoot)
+          .then((fsStat) => Number(fsStat.bavail) * Number(fsStat.bsize))
+          .catch((error) => {
+            const logError = error instanceof Error ? error : new Error(String(error));
+            logger.warn(logError, "[backup] Could not read free disk space; writing the automatic backup unchecked");
+            return null;
+          });
+        const error = freeBytes === null ? null : automaticBackupFreeSpaceError(freeBytes, archiveBytes);
+        if (error) throw new Error(error);
+      },
+    );
     const hadPreviousBackup = existsSync(finalPath);
     try {
       if (hadPreviousBackup) {
@@ -4254,7 +4311,7 @@ export async function backupRoutes(app: FastifyInstance) {
   app.post(
     "/import-profile",
     {
-      bodyLimit: PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES,
+      bodyLimit: Number.MAX_SAFE_INTEGER,
       config: { rateLimit: BACKUP_RATE_LIMIT },
       preParsing: profileImportJsonBodyLimit,
     },

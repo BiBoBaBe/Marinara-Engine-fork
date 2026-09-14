@@ -179,6 +179,9 @@ const MARKER_LABELS: Record<MarkerType, string> = {
   persona: "Persona",
   chat_history: "Chat History",
   chat_summary: "Chat Summary",
+  current_scene_summary: "Current Scene Summary",
+  recalled_scenes: "Recalled Scenes",
+  recalled_messages: "Recalled Messages",
   id_macro_cards: "ID Macro Cards",
   world_info_before: "Lorebook Marker (Before)",
   world_info_after: "Lorebook Marker (After)",
@@ -1218,7 +1221,9 @@ function PromptsTab({
         help={localizeUi("ui.presets.promptstab.usedAsThePromptPresetSConversationPromptIn")}
       >
         <MacroTextarea
+          showTokenCount
           value={conversationPrompt}
+          tokenCountAlign="start"
           onChange={onConversationPromptChange}
           title={localizeUi("ui.presets.promptstab.editConversationModePrompt")}
           placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInConversation")}
@@ -1243,7 +1248,9 @@ function PromptsTab({
         help={localizeUi("ui.presets.promptstab.usedAsThePromptPresetSGamePromptIn")}
       >
         <MacroTextarea
+          showTokenCount
           value={gamePrompt}
+          tokenCountAlign="start"
           onChange={onGamePromptChange}
           title={localizeUi("ui.presets.promptstab.editGameModePrompt")}
           placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInGame")}
@@ -1318,8 +1325,13 @@ function SectionsTab({
       return false;
     }
   });
-  const markerLabel = (type: MarkerType) =>
-    type === "id_macro_cards" ? localizeUi("ui.presets.sectionstab.idMacroCards") : MARKER_LABELS[type];
+  const markerLabel = (type: MarkerType) => {
+    if (type === "id_macro_cards") return localizeUi("ui.presets.sectionstab.idMacroCards");
+    if (type === "current_scene_summary") return localizeUi("ui.presets.sectionstab.currentSceneSummary");
+    if (type === "recalled_scenes") return localizeUi("ui.presets.sectionstab.recalledScenes");
+    if (type === "recalled_messages") return localizeUi("ui.presets.sectionstab.recalledMessages");
+    return MARKER_LABELS[type];
+  };
 
   useEffect(() => {
     try {
@@ -1763,6 +1775,70 @@ function SectionsTab({
             const role = (section.role ?? "system") as string;
             const group = section.groupId ? groupMap.get(section.groupId) : null;
             const RoleIcon = ROLE_ICONS[role] ?? Settings2;
+            const markerConfig = isMarker ? readMarkerConfig(section.markerConfig) : null;
+            const hasContentTextarea = !isMarker || markerConfig?.type === "agent_data";
+            const positionControls = (
+              <div
+                className={cn(
+                  "flex flex-wrap items-center gap-3 text-xs",
+                  compact && "max-sm:gap-x-1.5 max-sm:gap-y-1 max-sm:text-[0.6875rem]",
+                )}
+              >
+                <label className={cn("text-[var(--muted-foreground)]", compact && "max-sm:text-[0.625rem]")}>
+                  {localizeUi("ui.presets.sectionstab.position")}
+                </label>
+                <select
+                  value={section.injectionPosition ?? "ordered"}
+                  onChange={(e) =>
+                    onUpdateSection.mutate({
+                      presetId,
+                      sectionId: section.id,
+                      injectionPosition: e.target.value,
+                    })
+                  }
+                  data-preset-section-position
+                  className={cn(
+                    "mari-editor-field px-2 py-1 text-xs",
+                    compact &&
+                      "max-sm:h-7 max-sm:min-w-0 max-sm:max-w-[12rem] max-sm:px-1.5 max-sm:py-1 max-sm:text-[0.6875rem]",
+                  )}
+                >
+                  <option value="ordered">{localizeUi("ui.presets.sectionstab.orderedInSequence")}</option>
+                  <option value="depth">{localizeUi("ui.presets.sectionstab.depthFromEndOfChat")}</option>
+                </select>
+                {section.injectionPosition === "depth" && (
+                  <>
+                    <label className={cn("text-[var(--muted-foreground)]", compact && "max-sm:text-[0.625rem]")}>
+                      {localizeUi("ui.presets.sectionstab.depth")}
+                    </label>
+                    <DraftNumberInput
+                      value={section.injectionDepth ?? 0}
+                      min={0}
+                      selectOnFocus
+                      onCommit={(nextValue) =>
+                        onUpdateSection.mutate({
+                          presetId,
+                          sectionId: section.id,
+                          injectionDepth: nextValue,
+                        })
+                      }
+                      className={cn(
+                        "mari-editor-field w-16 px-2 py-1 text-xs",
+                        compact && "max-sm:h-7 max-sm:w-12 max-sm:px-1.5 max-sm:text-[0.6875rem]",
+                      )}
+                    />
+                    <span
+                      className={cn(
+                        "text-[var(--muted-foreground)]",
+                        compact && "max-sm:basis-full max-sm:text-[0.5625rem]",
+                      )}
+                    >
+                      {localizeUi("ui.presets.sectionstab.zeroMeansAfterLastMessage")}
+                    </span>
+                  </>
+                )}
+              </div>
+            );
             // Show drop indicator line above this card when dropIdx matches
             const showDropBefore =
               dropIdx === idx && draggingIdx !== null && draggingIdx !== idx && draggingIdx !== idx - 1;
@@ -1991,6 +2067,7 @@ function SectionsTab({
                       {!isMarker && (
                         <SectionContentTextarea
                           value={section.content}
+                          tokenCountFooter={positionControls}
                           sectionName={section.name}
                           onCommit={(content) =>
                             onUpdateSection.mutate({
@@ -2004,12 +2081,9 @@ function SectionsTab({
 
                       {/* Marker config */}
                       {isMarker &&
-                        section.markerConfig &&
+                        markerConfig &&
                         (() => {
-                          const mc =
-                            typeof section.markerConfig === "string"
-                              ? JSON.parse(section.markerConfig)
-                              : section.markerConfig;
+                          const mc = markerConfig;
                           const isAgentMarker = mc.type === "agent_data";
                           return isAgentMarker ? (
                             <div className="space-y-2">
@@ -2030,6 +2104,7 @@ function SectionsTab({
                               </div>
                               <SectionContentTextarea
                                 value={section.content || `{{agent::${mc.agentType ?? "agent"}}}`}
+                                tokenCountFooter={positionControls}
                                 sectionName={section.name}
                                 onCommit={(content) =>
                                   onUpdateSection.mutate({
@@ -2052,11 +2127,19 @@ function SectionsTab({
                               <p className="mt-1 text-[var(--muted-foreground)]">
                                 {mc.type === "id_macro_cards"
                                   ? localizeUi("ui.presets.sectionstab.idMacroCardsDescription")
-                                  : mc.type === "chat_summary"
-                                    ? localizeUi(
-                                        "ui.presets.sectionstab.rendersTheCompiledChatSummaryForThisChatIncluding",
-                                      )
-                                    : localizeUi("ui.presets.sectionstab.contentIsAutoGeneratedAtAssemblyTimeFromYour")}
+                                  : mc.type === "current_scene_summary"
+                                    ? localizeUi("ui.presets.sectionstab.currentSceneSummaryDescription")
+                                    : mc.type === "recalled_scenes"
+                                      ? localizeUi("ui.presets.sectionstab.recalledScenesDescription")
+                                      : mc.type === "recalled_messages"
+                                        ? localizeUi("ui.presets.sectionstab.recalledMessagesDescription")
+                                        : mc.type === "chat_summary"
+                                          ? localizeUi(
+                                              "ui.presets.sectionstab.rendersTheCompiledChatSummaryForThisChatIncluding",
+                                            )
+                                          : localizeUi(
+                                              "ui.presets.sectionstab.contentIsAutoGeneratedAtAssemblyTimeFromYour",
+                                            )}
                               </p>
                               {["lorebook", "world_info_before", "world_info_after"].includes(mc.type) && (
                                 <p className="mt-1 text-[var(--warning)]">
@@ -2068,68 +2151,7 @@ function SectionsTab({
                         })()}
 
                       {/* Position & Depth */}
-                      <div
-                        className={cn(
-                          "flex flex-wrap items-center gap-3 text-xs",
-                          compact && "max-sm:gap-x-1.5 max-sm:gap-y-1 max-sm:text-[0.6875rem]",
-                        )}
-                      >
-                        <label className={cn("text-[var(--muted-foreground)]", compact && "max-sm:text-[0.625rem]")}>
-                          {localizeUi("ui.presets.sectionstab.position")}
-                        </label>
-                        <select
-                          value={section.injectionPosition ?? "ordered"}
-                          onChange={(e) =>
-                            onUpdateSection.mutate({
-                              presetId,
-                              sectionId: section.id,
-                              injectionPosition: e.target.value,
-                            })
-                          }
-                          data-preset-section-position
-                          className={cn(
-                            "mari-editor-field px-2 py-1 text-xs",
-                            compact &&
-                              "max-sm:h-7 max-sm:min-w-0 max-sm:max-w-[12rem] max-sm:px-1.5 max-sm:py-1 max-sm:text-[0.6875rem]",
-                          )}
-                        >
-                          <option value="ordered">{localizeUi("ui.presets.sectionstab.orderedInSequence")}</option>
-                          <option value="depth">{localizeUi("ui.presets.sectionstab.depthFromEndOfChat")}</option>
-                        </select>
-                        {section.injectionPosition === "depth" && (
-                          <>
-                            <label
-                              className={cn("text-[var(--muted-foreground)]", compact && "max-sm:text-[0.625rem]")}
-                            >
-                              {localizeUi("ui.presets.sectionstab.depth")}
-                            </label>
-                            <DraftNumberInput
-                              value={section.injectionDepth ?? 0}
-                              min={0}
-                              selectOnFocus
-                              onCommit={(nextValue) =>
-                                onUpdateSection.mutate({
-                                  presetId,
-                                  sectionId: section.id,
-                                  injectionDepth: nextValue,
-                                })
-                              }
-                              className={cn(
-                                "mari-editor-field w-16 px-2 py-1 text-xs",
-                                compact && "max-sm:h-7 max-sm:w-12 max-sm:px-1.5 max-sm:text-[0.6875rem]",
-                              )}
-                            />
-                            <span
-                              className={cn(
-                                "text-[var(--muted-foreground)]",
-                                compact && "max-sm:basis-full max-sm:text-[0.5625rem]",
-                              )}
-                            >
-                              {localizeUi("ui.presets.sectionstab.zeroMeansAfterLastMessage")}
-                            </span>
-                          </>
-                        )}
-                      </div>
+                      {!hasContentTextarea && positionControls}
 
                       {/* Group assignment */}
                       <div
@@ -3167,10 +3189,12 @@ function VariableQuestionInput({ value, onCommit }: { value: string; onCommit: (
 function SectionContentTextarea({
   value,
   sectionName,
+  tokenCountFooter,
   onCommit,
 }: {
   value: string;
   sectionName?: string;
+  tokenCountFooter?: ReactNode;
   onCommit: (v: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
@@ -3222,7 +3246,10 @@ function SectionContentTextarea({
 
   return (
     <MacroTextarea
+      showTokenCount
       value={local}
+      tokenCountFooter={tokenCountFooter}
+      tokenCountAlign="start"
       onChange={handleChange}
       onBlur={handleBlur}
       onFocus={handleFocus}

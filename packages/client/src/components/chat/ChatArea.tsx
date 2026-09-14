@@ -87,6 +87,7 @@ import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import {
   buildTTSVoiceRequests,
+  filterTTSText,
   findTTSCharacterIdBySpeakerName,
   withTTSVoiceRequestCacheKeys,
 } from "../../lib/tts-dialogue";
@@ -135,6 +136,7 @@ import { HomeCreditsModal } from "./HomeCreditsModal";
 import { HomeBrowserHub } from "./HomeBrowserHub";
 import { NewChatConnectionGate } from "./NewChatConnectionGate";
 import { ChatCommonOverlays, preloadChatSettingsDrawer, type ChatSettingsInitialSection } from "./ChatCommonOverlays";
+import { ADVANCED_MEMORY_SETTINGS_EVENT } from "../../hooks/use-advanced-memory";
 import { CreatorNotesCssInjector, type CardCssMode, type PersonaCssRow } from "./CreatorNotesCssInjector";
 import type { ChatModeFilter } from "../../lib/card-css";
 import {
@@ -632,6 +634,16 @@ export const ChatArea = memo(function ChatArea() {
     };
     window.addEventListener(CHAT_RESOURCE_AGENT_SETUP_EVENT, openAgentSetup);
     return () => window.removeEventListener(CHAT_RESOURCE_AGENT_SETUP_EVENT, openAgentSetup);
+  }, [handleOpenSettingsPanel]);
+
+  useEffect(() => {
+    const openMemorySettings = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (chatId !== useChatStore.getState().activeChatId) return;
+      handleOpenSettingsPanel(undefined, { initialSection: "memory-recall" });
+    };
+    window.addEventListener(ADVANCED_MEMORY_SETTINGS_EVENT, openMemorySettings);
+    return () => window.removeEventListener(ADVANCED_MEMORY_SETTINGS_EVENT, openMemorySettings);
   }, [handleOpenSettingsPanel]);
 
   useEffect(() => {
@@ -1528,9 +1540,7 @@ export const ChatArea = memo(function ChatArea() {
   ]);
 
   // On chat switch, clear in-memory translations and seed from persisted extras.
-  // Also re-seed when new pages are fetched (pagination) so older persisted
-  // translations become visible.
-  const msgPageCount = msgData?.pages.length ?? 0;
+  // Also re-seed when message extras arrive after a chat switch or pagination.
   const prevChatIdRef = useRef(chat?.id);
   useEffect(() => {
     if (!messages) return;
@@ -1546,8 +1556,7 @@ export const ChatArea = memo(function ChatArea() {
         extra?: string | Record<string, unknown> | null;
       }>,
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat?.id, msgPageCount]);
+  }, [chat?.id, messages]);
 
   // Sync chat background from metadata when switching chats. Set the UI store
   // to whatever the chat's metadata says — including null. The previous version
@@ -2695,7 +2704,7 @@ export const ChatArea = memo(function ChatArea() {
       if (mode === "roleplay" && cfg.roleplaySpeakerExtractorEnabled) {
         try {
           const extracted = await extractRoleplayTTSSpeakers({
-            message: lastMsg.content,
+            message: filterTTSText(lastMsg.content, cfg),
             group: getChatDisplayName(chat) || characterNames.join(", "),
             user: personaInfo?.name || "User",
             characters: characterNames,

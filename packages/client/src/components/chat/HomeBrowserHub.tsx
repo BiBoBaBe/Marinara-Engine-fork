@@ -712,7 +712,7 @@ function HomeWidgetShortcut({
   description: string;
 }) {
   const className =
-    "mari-home-widget-shortcut flex min-h-10 w-full items-center gap-2.5 rounded-xl px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--home-module-accent)_10%,var(--accent))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--home-module-accent)]";
+    "mari-home-widget-shortcut flex min-h-0 w-full items-center gap-2.5 rounded-xl px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--home-module-accent)_10%,var(--accent))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--home-module-accent)]";
   const content = (
     <>
       <img src={icon} alt="" className="mari-home-widget-shortcut__icon h-7 w-7 shrink-0 object-contain" />
@@ -877,8 +877,11 @@ function FloatingProfessorMari({
   const [phase, setPhase] = useState<"arriving" | "idle" | "map" | "shrug">(
     professorMariNavigatorRuntime.hasAppeared ? "idle" : "arriving",
   );
-  const [mode, setMode] = useState<"prompt" | "input" | "success" | "failure">("prompt");
+  const [mode, setMode] = useState<"input" | "success" | "failure">("input");
   const [query, setQuery] = useState("");
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches,
+  );
   const inputRef = useRef<HTMLInputElement | null>(null);
   const appearanceTimerRef = useRef<number | null>(null);
   const arrivalCompleteTimerRef = useRef<number | null>(null);
@@ -927,7 +930,7 @@ function FloatingProfessorMari({
   const returnToIdle = useCallback(() => {
     clearTimers();
     pendingNavigationTargetRef.current = null;
-    setMode("prompt");
+    setMode("input");
     setPhase("idle");
     setQuery("");
   }, [clearTimers]);
@@ -943,7 +946,7 @@ function FloatingProfessorMari({
       setDragLayout(null);
       setDragging(false);
       setMinimized(false);
-      setMode("prompt");
+      setMode("input");
       setPhase("idle");
       setQuery("");
       setVisible(pageActive);
@@ -958,6 +961,14 @@ function FloatingProfessorMari({
       focusFrameRef.current = null;
       inputRef.current?.focus();
     });
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 639px)");
+    const syncMobile = () => setMobile(mediaQuery.matches);
+    syncMobile();
+    mediaQuery.addEventListener("change", syncMobile);
+    return () => mediaQuery.removeEventListener("change", syncMobile);
   }, []);
 
   useEffect(() => {
@@ -1332,13 +1343,6 @@ function FloatingProfessorMari({
     setMinimized(true);
     setVisible(false);
   };
-  const openInput = () => {
-    clearTimers();
-    pendingNavigationTargetRef.current = null;
-    setMode("input");
-    setPhase("idle");
-    queueInputFocus();
-  };
   const returnToSearch = () => {
     clearTimers();
     pendingNavigationTargetRef.current = null;
@@ -1493,15 +1497,7 @@ function FloatingProfessorMari({
                 ? t("home.assistant.notFound")
                 : t("home.assistant.prompt")}
         </p>
-        {!dragging && mode === "prompt" ? (
-          <button
-            type="button"
-            onClick={openInput}
-            className="mari-chrome-control mari-chrome-control--compact mari-chrome-control--selected mari-accent-animated mt-2 h-8 px-3 text-[0.6875rem] font-extrabold"
-          >
-            {t("home.assistant.navigate")}
-          </button>
-        ) : !dragging && mode === "input" ? (
+        {!dragging && mode === "input" ? (
           <form onSubmit={submitNavigation} className="relative mt-2">
             <input
               ref={inputRef}
@@ -1510,7 +1506,8 @@ function FloatingProfessorMari({
               onKeyDown={(event) => {
                 if (event.key === "Escape") returnToIdle();
               }}
-              placeholder={t("home.assistant.searchPlaceholder")}
+              aria-label={t("home.assistant.searchPlaceholder")}
+              placeholder={t(mobile ? "home.assistant.searchPlaceholderMobile" : "home.assistant.searchPlaceholder")}
               className="mari-chrome-field h-9 w-full rounded-lg pl-3 pr-9 text-xs"
             />
             <button
@@ -2990,7 +2987,7 @@ export function HomeBrowserHub({
                         accent={HOME_MODULE_ACCENTS.cyan}
                         className="h-full"
                       >
-                        <div className="mari-home-widget-shortcut-list grid content-center gap-1">
+                        <div className="mari-home-widget-shortcut-list grid h-full grid-rows-3 gap-1">
                           {[
                             {
                               icon: "/home/tab-icons/documentation.png",
@@ -3030,7 +3027,7 @@ export function HomeBrowserHub({
                         accent={HOME_MODULE_ACCENTS.accent}
                         className="h-full"
                       >
-                        <div className="mari-home-widget-shortcut-list grid content-center gap-1">
+                        <div className="mari-home-widget-shortcut-list grid h-full grid-rows-3 gap-1">
                           <HomeWidgetShortcut
                             href="https://discord.com/invite/KdAkTg94ME"
                             onClick={() => trackHomeAction("discord_clicked")}

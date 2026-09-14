@@ -1486,7 +1486,7 @@ assert.match(
 );
 assert.match(
   useGenerateSource,
-  /if \(isGameGeneration\) \{[\s\S]*?await refreshMessagesAuthoritatively\(qc, params\.chatId, persistedForRefresh\);[\s\S]*?setStreaming\(false\);/u,
+  /if \(isGameGeneration(?: \|\| \(receivedContent && persistedForRefresh\.length === 0\))?\) \{\s*await refreshMessagesAuthoritatively\(qc, params\.chatId, persistedForRefresh\);[\s\S]*?setStreaming\(false\);/u,
   "Game generation should publish the authoritative scene before releasing its presentation stream",
 );
 const updateMessageHookSource =

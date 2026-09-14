@@ -4,6 +4,61 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Routine Advanced Memory preparation no longer opens Chat Settings after every Roleplay or guided reply; settings still open when confirmation or a blocking error needs attention (#6177).
+
+- Stopping a Roleplay reply also stops its remaining text-reveal animation and releases the generation control promptly; an older reply cannot overwrite a newer generation's text (#6173).
+- Roleplay notes now explicitly carry decisions into future turns and clarify that updated notes replace their previous contents (#6175).
+
+- Markdown blockquotes now use the selected Chroma accent, and blockquotes plus `---`/`***` dividers keep balanced spacing above and below without removing extra paragraph breaks (#6170).
+- Mixed HTML messages preserve literal code, and empty Markdown quote lines no longer absorb the following text (#6170).
+
+- Image API connections now accept custom JSON parameters, including provider-supported LoRA fields. Parameters persist with saved, copied, and exported connections and apply to generation requests using that connection's own defaults (#6167).
+- Image-generation debug logs redact credentials and embedded image data while preserving prompts and request settings for troubleshooting (#6167).
+
+- Lorebook entries declined by the current-location reserve can still activate independently through keywords, sticky state, or recursion within the ordinary lore budget; declined constants cannot bypass the reserve (#6143).
+- Chat-local lorebook toggles made during reply preparation now survive generation. Runtime countdown and timing updates preserve newer edits, legacy switches, and deletion or detach cleanup (#6144).
+
+- Separate Game tool planning preserves narrator prefills and prompt formatting, keeps its instruction in the conversation on every provider, skips Continue, and no longer advertises duplicate local tool calls or reports the planner's finish reason as narration (#6148, #6149, #6150, #6155, #6156).
+- Game dice outcome rewrites include native rolls alongside text-command rolls. They can be disabled in Chat Settings to save the extra generation cost, and no rewrite runs when nothing was rolled (#6147, #6157).
+- Game replies consisting only of a refused package command explain the invalid argument instead of claiming the model returned nothing (#6151).
+
+- Numeric settings keep text selection intact when a saved value arrives just before editing, preventing old digits from being prepended to the new value.
+- Regression checks now drain development-watcher diagnostics before checking them and capture live dice screenshots without freezing animations.
+- Roleplay setup now waits for preset changes to save before advancing and closes obsolete preset-variable prompts instead of leaving an empty dialog.
+- Advanced Memory Recall now explains automatic context compression and summary limits, supports optional or disabled moving-context excerpts, and shares its setup with the Roleplay wizard. Existing chats get a preparation reminder; preparing/resuming responds immediately, with matching drawer controls and an improved Professor Mari running animation (#6159).
+- Advanced Memory gives reasoning models a separate, bounded response allowance for short summaries and rejects incomplete output instead of saving it as finished memory. Its archive shows numbered scene summaries with story timeframes carried into recalled context, full source-message inspection, search, and confirmed deletion to restart preparation while preserving the original chat and settings (#6159).
+- Ongoing scene detection now runs after generation, sharing an existing tracker request when available. Without trackers, its configurable interval defaults to five messages and sends only that recent message window with the scene instructions. Swipes invalidate outdated scene decisions, memory reset also protects pending prompt previews and preparation, and rapid numeric settings edits are saved in order (#6159).
+
+- Character Tracker now keeps the members of a multi-character card apart. A scenario card that describes several people used to collapse into one tracked entry named after the card; each person now keeps their own name, state, and portrait across turns. Cards that mark their cast with `[CHARACTER: Name]` headers or repeated `Name:` fields are recognized up front. A stale entry carrying the card's title is cleared when a member replaces it, while manually added characters keep their identities (#6104).
+
+- The native-dice browser regression has a longer total test budget for its multi-stage WebKit scenario, while individual action and assertion timeouts remain unchanged (#6141).
+
+- Chat Help now updates its layout when the window crosses the mobile breakpoint, onboarding tooltips respect the available height on short desktop windows, and Conversation schedule labels and ungrouped persona headings follow the selected interface language (#6140).
+
+- Added a remembered prompt preset choice when creating a Roleplay scene, configurable speech filters for tagged text, bracketed text, and code blocks, and an opt-in setting to run Game tasks one at a time within a chat (#6108, #6112, #6107).
+- Lorebook searches now include matching entries without usable embeddings, omit unrelated semantic results, and search entry names, content, and keys (#6124, #6125, #6134).
+- Re-enabling an exhausted chat-local lore entry restarts its authored activation limit. Detaching or deleting lore clears its saved entry state, chat toggles respect book scope, and duplicating an entry preserves its shared enabled state (#6120, #6131, #6132, #6133).
+- The Game tool picker now explains and follows the “Let the GM search lore” setting (#6121).
+- World generation accepts large lore-entry selections, respects entries disabled for the chat, and refuses context windows that leave too little answer space before making a paid call (#6122, #6126, #6129).
+- Fixed Roleplay dice commands on Claude and Grok subscription connections. Game dice corrections retain justified movement and package commands, report unsupported notation, discard invented roll results, and show a retry notice if outcome narration fails (#6117, #6118, #6123, #6127, #6128).
+- Peek Prompt now shows the Game tool planner’s model and token usage separately from narration (#6130).
+
+- Windows Ctrl+C now lets the server finish saving before the launcher exits; restart and shutdown regressions use portable loader URLs and include a native Windows console check (#6119, #6135).
+
+- Fixed Roleplay Visual Novel mode starting newly generated multi-paragraph replies on the final paragraph instead of the first, while preserving paragraph navigation after edits and selecting existing swipes.
+
+- Added an opt-in Roleplay interrupt command: characters can cut off the latest dialogue or action, with Restore and full original context on rerolls (#6109).
+- Kept Roleplay command details readable in light themes when the chat uses a custom message text color.
+
+- Added opt-in Advanced Memory Recall (Alpha) for Roleplay: automatic scene summaries, bounded continuity, relevant historical excerpts, and character-aware context management, with resumable setup and preset placement controls (#6102).
+
+- Professor Mari's Home navigation field is ready to type into without an extra button click, with a shorter “Looking for…?” placeholder on mobile (#6099).
+
+- Automatic backups now check that the disk holding `backups/` has room for the next archive, including metadata and restore notes, before writing it. A run that would not fit is skipped with a clear message in Settings instead of filling the disk and retrying the full write every hour (#6087).
+- Deleting a character card now removes it from every Roleplay and Conversation chat it belonged to, as it already did for Game parties, and the Characters count in Chat Settings counts only cards that still exist (#6084).
+
+- Download Backup and automatic backups no longer include the storage writer lease, so a data folder restored by hand from the archive starts without the "Another Marinara Engine process may be using" error (#6083).
+
 - Updated ZIP handling to adm-zip 0.6.1 to block extraction through destination symlinks and removed the temporary dependency-audit exception (#6075).
 
 - Conversation prompts no longer lose character or persona details when ordinary prose between macros mentions identity fields such as description or personality (#6066).
@@ -69,6 +124,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Chat search accepts a message number such as `#67` and jumps to that message, including older history (#6090).
+
 - Added an inline "Apply persona to earlier messages…" action in Chat Settings that applies the currently selected persona to messages sent without a persona, messages sent as a specific persona, or all user messages in the chat (#6043).
 - Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052). Parameter edits wait for inherited values to load so a slow response cannot discard an override.
 - Added Z.AI text connections with GLM 5.3 model metadata, supported reasoning levels, and useful explanations when reasoning exhausts the output budget (#5963, #5968).
@@ -132,6 +189,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Changed
 
+- Token estimates better account for Korean, Chinese, and Japanese text, and related prompt and context editors consistently show estimated token counts instead of character counts or no counter.
+
 - Community UI translations download on demand from `docs-i18n`, with explicit refresh and offline English fallback. Existing non-English users reselect their language once after upgrading; English stays bundled and canonical (#5827).
 
 - Updated image processing (including the Termux WASM fallback), Tailwind class merging, Android build tooling, and pinned CI/release actions while retaining compatible runtime and compiler major versions (#5847).
@@ -142,6 +201,29 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- SwarmUI video downloads reject foreign output URLs before sending the server's authentication cookie (#6158).
+
+- Storyboard planning retries explicitly local connections behind proxies once without reasoning, and reports empty final answers or exhausted output limits when planning still fails (#6165).
+
+- World generation reserves context for its reply schema, preserves selected lore after macro expansion or refuses it clearly, and no longer counts unnamed outlets as injected (#6145, #6146, #6152).
+
+- Clean server shutdowns no longer report a launcher failure, and Restart Server works from the Windows local-build launcher (#6153, #6154).
+
+- TTS reuses the audio element primed by a user's tap across delayed generation and later voice clips. Mobile Roleplay volume controls stay within the screen edges (#6166).
+
+- Recalled memories, summary preparation, and context trimming respect CJK token estimates without splitting Unicode characters or discarding a usable excerpt. Short lorebook previews stop scanning once their token budget is filled (#6161).
+- Preset editors tolerate malformed saved marker settings, and prompt token counters use the selected UI language and clear stale counts while loading (#6161).
+- Saved translations appear when returning to a chat before a delayed translation finishes saving, without unhiding dismissed translations.
+- Mobile character reordering keeps Chat Settings still during the drag; swiping outside the handle continues to scroll normally (#6098).
+- Roleplay message actions keep their tapped state when opening menus on iPhone, suppress native tap flashes, and use direct tray buttons for recipient controls (#6092, #6094).
+- Community and Field Notes shortcuts fit within their widget padding, including Firefox desktop layouts (#6093).
+- Illustrator activity shows skipped image decisions and their reasons, and distinguishes an image request from an unusable decision (#6096).
+
+- Full-backup ZIP imports again accept archives larger than 2 GiB through the existing streaming restore path (#6091).
+- Image generation now honors the configured timeout while waiting for provider response headers and image data, avoiding an early five-minute failure on slow local or hosted image backends (#6074).
+- The generation parameter guide distinguishes editor defaults from effective request values and explains where preset, connection, and chat settings apply (#6073).
+
+- OpenRouter image generation now requests image-only output by default, fixing unsupported-modality errors for MAI and Grok Imagine while retaining text output for compatible Gemini, GPT-5 image, and automatic-routing models (#6079).
 - Android can remember app or browser launch, sign the browser in automatically, and reuse an authenticated running server before starting Termux again (#6071).
 - Local connections with no model name now use the loaded model for agent reruns, manual Illustrator, captioning, and auxiliary text tools (#6038).
 - Character greetings resolve selected preset variables without replacing their stored macros or character/persona names (#5869).

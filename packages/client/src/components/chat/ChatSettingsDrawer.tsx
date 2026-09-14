@@ -91,7 +91,7 @@ import { SceneInstructionsSection } from "../../features/chat-settings/sections/
 import { TranslationSection } from "../../features/chat-settings/sections/TranslationSection";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { AvatarCrop } from "@marinara-engine/shared";
-import { isRoleplayCommandEnabled, resolveScopedRegexMode } from "@marinara-engine/shared";
+import { estimateTextTokens, isRoleplayCommandEnabled, resolveScopedRegexMode } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { showAlertDialog, showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -120,6 +120,9 @@ import { SettingsSwitch } from "../panels/settings/SettingControls";
 import { ChoiceSelectionModal } from "../presets/ChoiceSelectionModal";
 import { SecretPlotPanel } from "../agents/SecretPlotPanel";
 import { SummariesEditorModal } from "./SummariesEditorModal";
+import { AdvancedMemorySettings } from "./AdvancedMemorySettings";
+import { AdvancedMemoryInspector } from "./AdvancedMemoryInspector";
+import { useAdvancedMemoryStatus } from "../../hooks/use-advanced-memory";
 import { AgentSuiteModal } from "./AgentSuiteModal";
 import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
 import { RoleplayMessagePreview } from "./ChatMessage";
@@ -335,7 +338,7 @@ interface ChatSettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   anchor?: ChatToolbarFloatingPanelAnchor;
-  initialSection?: "autonomous" | null;
+  initialSection?: "autonomous" | "memory-recall" | null;
   spriteArrangeMode?: boolean;
   onToggleSpriteArrange?: () => void;
   onResetSpritePlacements?: () => void;
@@ -1211,6 +1214,15 @@ export function ChatSettingsDrawer({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [initialSection, isConversation, open]);
+  useEffect(() => {
+    if (!open || initialSection !== "memory-recall" || !isRoleplayMode) return;
+    const frame = window.requestAnimationFrame(() => {
+      panelRef.current
+        ?.querySelector('[data-chat-settings-section="roleplay-memory-recall"]')
+        ?.scrollIntoView({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialSection, isRoleplayMode, open]);
   const hasGeneratedConversationSchedules =
     !!metadata.characterSchedules &&
     typeof metadata.characterSchedules === "object" &&
@@ -1735,7 +1747,7 @@ export function ChatSettingsDrawer({
         },
       ];
     });
-    const tokensByType = new Map<string, number>(inputs.map((i) => [i.type, Math.ceil(i.promptTemplate.length / 4)]));
+    const tokensByType = new Map<string, number>(inputs.map((i) => [i.type, estimateTextTokens(i.promptTemplate)]));
     return {
       cost: estimateAgentLoadCost(inputs, chat.connectionId ?? null),
       tokensByType,
@@ -2383,6 +2395,8 @@ export function ChatSettingsDrawer({
     [chatCharIds, characters],
   );
 
+  const chatCharacterCount = allCharacters == null ? chatCharIds.length : chatCharacters.length;
+
   const activePersona = useMemo(
     () => (chat.personaId ? (personas.find((persona) => persona.id === chat.personaId) ?? null) : null),
     [chat.personaId, personas],
@@ -2908,6 +2922,7 @@ export function ChatSettingsDrawer({
   };
 
   const { startTouchDrag: startCharacterReorderTouchDrag } = useTouchFolderDrag({
+    autoScrollEdgePx: 0,
     onActivate: (characterId) => {
       const idx = chatCharIds.indexOf(characterId);
       if (idx < 0) return;
@@ -3470,7 +3485,10 @@ export function ChatSettingsDrawer({
   const [showConnectionPicker, setShowConnectionPicker] = useState(false);
   const [showSummariesModal, setShowSummariesModal] = useState(false);
   const [showAgentSuiteModal, setShowAgentSuiteModal] = useState(false);
-  const [showMemoriesModal, setShowMemoriesModal] = useState(false);
+  const [memoryView, setMemoryView] = useState<"advanced" | "standard" | null>(null);
+  const advancedMemoryStatus = useAdvancedMemoryStatus(chat.id, open && isRoleplayMode);
+  const advancedMemoryEnabled = isRoleplayMode && advancedMemoryStatus.data?.settings.enabled === true;
+  useEffect(() => setMemoryView(null), [advancedMemoryEnabled, chat.id]);
   const [inlineResourceEditor, setInlineResourceEditor] = useState<{
     kind: "character" | "persona" | "lorebook";
     id: string;
@@ -4325,10 +4343,35 @@ export function ChatSettingsDrawer({
           )}
           labelClassName="text-[0.6875rem] font-medium"
         />
-        <AgentSettingsActionButton type="button" onClick={() => setShowMemoriesModal(true)} className="w-full">
+        {isRoleplayMode && (
+          <AdvancedMemorySettings
+            chatId={chat.id}
+            metadataSettings={metadata.advancedMemory}
+            individual={metadata.groupChatMode === "individual"}
+            characters={chatCharIds.map((id) => ({ id, name: charNameMap.get(id) ?? id }))}
+            connections={textConnectionsList}
+            hasHistory={!!chat.lastMessageAt}
+          />
+        )}
+        <button
+          type="button"
+          onClick={() =>
+            setMemoryView((current) =>
+              advancedMemoryEnabled ? (current === "advanced" ? null : "advanced") : "standard",
+            )
+          }
+          className="mari-chrome-control flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-50"
+          aria-expanded={advancedMemoryEnabled ? memoryView === "advanced" : undefined}
+        >
           <Brain size="0.75rem" />
           {localizeUi("ui.chat.chatsettingsdrawer.accessMemoriesForThisChat")}
-        </AgentSettingsActionButton>
+        </button>
+        {advancedMemoryEnabled && memoryView === "advanced" && (
+          <AdvancedMemoryInspector
+            chatId={chat.id}
+            characters={chatCharIds.map((id) => ({ id, name: charNameMap.get(id) ?? id }))}
+          />
+        )}
       </div>
     );
   };
@@ -5041,7 +5084,7 @@ export function ChatSettingsDrawer({
               style={{ order: CHAT_SETTINGS_ORDER.persona }}
               label={localizeUi("ui.chat.chatsettingsdrawer.party")}
               icon={<Users size="0.875rem" />}
-              count={chatCharacters.length + (chat.personaId ? 1 : 0)}
+              count={chatCharacterCount + (chat.personaId ? 1 : 0)}
               help={localizeUi("ui.chat.chatsettingsdrawer.yourInGamePartyPickAPersonaToPlay")}
             >
               <div className="space-y-1.5">
@@ -5196,7 +5239,7 @@ export function ChatSettingsDrawer({
                 <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.partyCharacters")}
                 </label>
-                {chatCharIds.length === 0 ? (
+                {chatCharacterCount === 0 ? (
                   <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.chat.chatsettingsdrawer.noCharactersInPartyYet")}
                   </p>
@@ -5635,11 +5678,11 @@ export function ChatSettingsDrawer({
               style={{ order: CHAT_SETTINGS_ORDER.characters }}
               label={localizeUi("navigation.topbar.characters")}
               icon={<Users size="0.875rem" />}
-              count={chatCharIds.length}
+              count={chatCharacterCount}
               help={localizeUi("ui.chat.chatsettingsdrawer.charactersInThisChatEachCharacterHasTheirOwn")}
             >
               {/* Active characters */}
-              {chatCharIds.length === 0 ? (
+              {chatCharacterCount === 0 ? (
                 <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.noCharactersAddedToThisChat")}
                 </p>
@@ -5681,7 +5724,7 @@ export function ChatSettingsDrawer({
                           )}
                         >
                           <div
-                            className="cursor-grab text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors active:cursor-grabbing"
+                            className="cursor-grab touch-none text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors active:cursor-grabbing"
                             title={localizeUi("ui.lorebooks.lorebookentryrow.dragToReorder")}
                             onTouchStart={(event) => {
                               event.stopPropagation();
@@ -6316,7 +6359,7 @@ export function ChatSettingsDrawer({
               label={localizeUi("ui.chat.chatsettingsdrawer.autonomousMessaging")}
               icon={<Bot size="0.875rem" />}
               help={localizeUi("ui.chat.chatsettingsdrawer.charactersCanMessageYouUnpromptedBasedOnTheirPersonality")}
-              initialOpen={initialSection === "autonomous"}
+              forceOpen={open && initialSection === "autonomous"}
             >
               <div className="space-y-2">
                 {/* Enable autonomous messages toggle */}
@@ -7232,6 +7275,17 @@ export function ChatSettingsDrawer({
                       profileImportReviewRequired?: unknown;
                     }>,
                   ).filter((connection) => isConnectionFlagTrue(connection.audioSoundEffects))}
+                />
+              )}
+              {isGame && (
+                <SettingsSwitch
+                  label={localizeUi("chat.settings.game.sequentialTasks")}
+                  description={localizeUi("chat.settings.game.sequentialTasksHelp")}
+                  checked={metadata.gameSequentialAgents === true}
+                  onChange={(gameSequentialAgents) => updateMeta.mutate({ id: chat.id, gameSequentialAgents })}
+                  labelPosition="start"
+                  className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+                  labelClassName="text-xs font-medium"
                 />
               )}
               {availableAgents.length === 0 ? (
@@ -9369,6 +9423,10 @@ export function ChatSettingsDrawer({
               onGameLorebookSearchChange={(gameLorebookSearch) =>
                 updateMeta.mutate({ id: chat.id, gameLorebookSearch })
               }
+              gameDiceOutcomeNarration={metadata.gameDiceOutcomeNarration !== false}
+              onGameDiceOutcomeNarrationChange={(gameDiceOutcomeNarration) =>
+                updateMeta.mutate({ id: chat.id, gameDiceOutcomeNarration })
+              }
               enableTools={metadata.enableTools as boolean | undefined}
               forceToolCall={metadata.forceToolCall as boolean | undefined}
               activeToolIds={activeToolIds}
@@ -9396,10 +9454,15 @@ export function ChatSettingsDrawer({
           {!isConversation && import.meta.env.VITE_MARINARA_LITE !== "true" && (
             <Section
               id={`${chatMode}-memory-recall`}
+              forceOpen={open && initialSection === "memory-recall"}
               style={{ order: CHAT_SETTINGS_ORDER.memoryRecall }}
               label={localizeUi("ui.chat.chatsettingsdrawer.memoryRecall")}
               icon={<Brain size="0.875rem" />}
-              help={localizeUi("ui.chat.chatsettingsdrawer.whenEnabledRelevantFragmentsFromThisChatAreAutomatically")}
+              help={localizeUi(
+                isRoleplayMode
+                  ? "chat.advancedMemory.recallHelp"
+                  : "ui.chat.chatsettingsdrawer.whenEnabledRelevantFragmentsFromThisChatAreAutomatically",
+              )}
             >
               {renderMemoryRecallControls(metadata.sceneStatus === "active")}
             </Section>
@@ -9480,8 +9543,8 @@ export function ChatSettingsDrawer({
       {/* Memory recall chunk viewer */}
       <MemoryRecallMemoriesModal
         chatId={chat.id}
-        open={showMemoriesModal}
-        onClose={() => setShowMemoriesModal(false)}
+        open={memoryView === "standard"}
+        onClose={() => setMemoryView(null)}
         chatFloatingPanel
       />
 
@@ -9916,7 +9979,7 @@ function formatMemoryDate(value: string): string {
 
 function estimateMemoryTokens(memories: ChatMemoryChunk[]): number {
   const text = memories.map((memory) => memory.content).join("\n\n");
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function formatMemoryChunkCount(count: number): string {

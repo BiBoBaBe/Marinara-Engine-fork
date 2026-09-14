@@ -97,6 +97,10 @@ function readCommand(type: string, body: string): RoleplayCommand | null {
     }
     case "combat":
       return { type };
+    case "interrupt": {
+      const part = field("part", 8_000);
+      return part ? { type, part } : null;
+    }
     default:
       return null;
   }
@@ -323,6 +327,7 @@ export function buildRoleplayCommandsReminder(args: {
   format: WrapFormat;
   characterNames: string[];
   characterId?: string | null;
+  interruptAvailable?: boolean;
 }): string {
   const lines: string[] = [];
   const enabled = (key: RoleplayCommandKey) => isRoleplayCommandAllowed(args.metadata, key, args.characterId);
@@ -341,7 +346,7 @@ export function buildRoleplayCommandsReminder(args: {
     );
   if (args.privateAvailable && enabled("notes"))
     lines.push(
-      '- [notes: content="brief private state and plans"] keeps private state that should guide future turns: unspoken thoughts, changed attitudes, secrets, and pending plans. Do not recap scenes or repeat chat history. To edit existing notes, send their full updated contents; this replaces your previous notes. Keep only still-relevant details in 1–3 short bullets, under 80 words total. Notes are available to you and the narrator alone. [dismiss_notes] clears them when no longer needed.',
+      '- [notes: content="brief private state and plans"] keeps private state that should guide future turns: reasoning decisions you want to pass to future turns, unspoken thoughts, changed attitudes, secrets, and pending plans. Do not recap scenes or repeat chat history. To edit existing notes, send their full updated contents to replace the previous ones. Keep only still-relevant details in 1–3 short bullets, under 80 words total. Notes are available to you and the narrator alone. [dismiss_notes] clears them when no longer needed.',
     );
   if (args.privateAvailable && enabled("memory"))
     lines.push(
@@ -353,6 +358,10 @@ export function buildRoleplayCommandsReminder(args: {
     );
   if (enabled("combat") && args.availableAgentIds.has("combat"))
     lines.push("- [combat] asks the Combat agent to start an encounter when the scene turns to combat.");
+  if (args.interruptAvailable === true && enabled("interrupt"))
+    lines.push(
+      '- [interrupt: part="at least three words quoted verbatim through the interruption point"] cuts off only the latest user or other-character message at that point. Use only when your character can plausibly intervene with the abilities and freedom they currently have. Continue from the cut; the removed continuation has not happened.',
+    );
   if (enabled("dm"))
     lines.push(
       `- [dm: character="${args.characterNames.map((name) => name.replace(/"/g, "'")).join(" | ")}" message="short text"] sends the user an in-world direct message from a listed character. Use an appropriate phone, letter or terminal; do not repeat the message in narration.`,

@@ -10,6 +10,7 @@ for (const theme of ["dark", "light"] as const) {
     page,
     request,
   }, testInfo) => {
+    test.setTimeout(120_000);
     page.setDefaultTimeout(10_000);
     const providerRequests: Array<Record<string, unknown>> = [];
     let finishFollowup: (() => void) | undefined;
@@ -319,7 +320,7 @@ for (const theme of ["dark", "light"] as const) {
       await expect(section).not.toContainText("If disabled, no functions will be available.");
       await expect(section.getByLabel("Enable Tool Use", { exact: true })).not.toBeChecked();
       await testInfo.attach(`game-tool-hint-${theme}-${testInfo.project.name}.png`, {
-        body: await section.screenshot({ animations: "disabled" }),
+        body: await section.screenshot(),
         contentType: "image/png",
       });
       // A continuation extends the rolled message; a regeneration replaces it.

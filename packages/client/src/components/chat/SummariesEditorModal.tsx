@@ -4,13 +4,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X, Plus, Trash2, CalendarClock, ChevronRight, ChevronsDownUp, ChevronsUpDown, RefreshCw } from "lucide-react";
 import { cn } from "../../lib/utils";
-import type { Chat, ChatMetadata, DaySummaryEntry, WeekSummaryEntry } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  type Chat,
+  type ChatMetadata,
+  type DaySummaryEntry,
+  type WeekSummaryEntry,
+} from "@marinara-engine/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatKeys, useBackfillConversationSummaries, useUpdateChatSummaries } from "../../hooks/use-chats";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function fmtTokens(n: number): string {

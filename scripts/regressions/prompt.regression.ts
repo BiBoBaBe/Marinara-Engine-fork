@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  extractCharacterCardCastMembers,
   ANIME_GAME_PROMPT_TEMPLATE_ID,
   ANIME_GAME_SYSTEM_PROMPT,
   ANIME_GAME_VIDEO_PROMPT_TEMPLATE_ID,
@@ -50,7 +51,6 @@ import {
   DEFAULT_CONVERSATION_PROMPT,
   getDefaultAgentPrompt,
   replaceBuiltInAgentDefinitions,
-  GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_PROMPT_TEMPLATE,
   STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE_ID,
@@ -287,7 +287,10 @@ import {
   DIRECTOR_SECRET_PLOT_LAST_MESSAGE_KEY,
   shouldRunDirectorSecretPlotMaintenance,
 } from "../../packages/server/src/services/generation/director-secret-plot-runtime.js";
-import { filterPromptMessagesForCharacterAudience } from "../../packages/server/src/services/generation/prompt-message-scope.js";
+import {
+  filterPromptHistoryByMessageIds,
+  filterPromptMessagesForCharacterAudience,
+} from "../../packages/server/src/services/generation/prompt-message-scope.js";
 import {
   mergeAdjacentMessages,
   squashLeadingSystemMessages,
@@ -658,7 +661,6 @@ import {
   buildBackgroundProviderPrompt,
   buildNpcPortraitProviderPrompt,
   buildSceneIllustrationProviderPrompt,
-  chatBackgroundTags,
   safeGeneratedAssetSlug,
 } from "../../packages/server/src/services/game/game-asset-generation.js";
 import { MAPS_LOCATION_ARTWORK } from "../../packages/server/src/services/prompt-overrides/registry/game-assets.js";
@@ -790,6 +792,12 @@ import {
   type WorkspaceCommandResult,
 } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
 import { fitMessagesForModelAccess } from "../../packages/server/src/services/generation/model-access-policy.js";
+import {
+  resolveAdvancedMemoryPrompt,
+  describeAdvancedMemoryPlacements,
+  createAdvancedMemoryPlacement,
+  type AdvancedMemoryPromptParts,
+} from "../../packages/server/src/services/prompt/advanced-memory-prompt.js";
 import {
   assemblePrompt,
   appendFallbackChatSummaryToSystemPrompt,
@@ -3320,6 +3328,18 @@ const cases: RegressionCase[] = [
       });
 
       assert.equal(result.length <= 16, true);
+
+      const budget = { expansions: 0, exceeded: false };
+      const truncated = resolveMacros(
+        "{{user}}",
+        { ...context, user: "x".repeat(32) },
+        {
+          maxMacroOutputLength: 16,
+          macroBudget: budget,
+        },
+      );
+      assert.equal(truncated, "x".repeat(16));
+      assert.equal(budget.exceeded, true, "Callers must be able to refuse silently truncated macro output");
     },
   },
   {
@@ -8969,6 +8989,244 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "advanced memory history selection retains complete wrappers and synthetic current input",
+    run() {
+      const messages = [
+        { id: "first", role: "user" as const, contextKind: "history" as const, content: "<chat_history>\nOld." },
+        { id: "middle", role: "assistant" as const, contextKind: "history" as const, content: "Kept." },
+        { id: "third", role: "user" as const, contextKind: "history" as const, content: "Later.\n</chat_history>" },
+        {
+          id: "last",
+          role: "assistant" as const,
+          contextKind: "history" as const,
+          content: "<last_message>\nLast.\n</last_message>",
+        },
+      ];
+      const sourceIds = new Set(messages.map((message) => message.id));
+      assert.equal(
+        filterPromptHistoryByMessageIds(messages, new Set(["middle"]), sourceIds)[0]?.content,
+        "<last_message>\nKept.\n</last_message>",
+      );
+      const withCurrentInput = [
+        ...messages,
+        {
+          id: "__dryrun_user__",
+          role: "user" as const,
+          contextKind: "history" as const,
+          content: "Unsaved current input.",
+        },
+      ];
+      const selected = filterPromptHistoryByMessageIds(withCurrentInput, new Set(["middle"]), sourceIds);
+      assert.deepEqual(
+        selected.map((message) => message.id),
+        ["middle", "__dryrun_user__"],
+      );
+      assert.equal(selected[0]?.content, "<chat_history>\nKept.\n</chat_history>");
+      assert.match(selected[1]?.content ?? "", /<last_message>\nUnsaved current input\./u);
+      assert.equal(messages[1]?.content, "Kept.", "filtering must preserve the reusable snapshot");
+    },
+  },
+  {
+    name: "advanced memory markers preserve scoped placement, formatting, fallback and empty groups",
+    async run() {
+      const parts: AdvancedMemoryPromptParts = {
+        chatSummary: "CONTINUITY_FACT",
+        currentSceneSummary: "OPEN_SCENE_FACT",
+        recalledScenes: "OLD_SCENE_FACT",
+        recalledMessages: "#12 Mari: EXACT_OLD_WORDS",
+      };
+      for (const format of ["xml", "markdown", "none"] as const) {
+        const headingParts = { chatSummary: "# A user heading\n<private>Literal tags & content</private>" };
+        const headingPlacement = createAdvancedMemoryPlacement("chat_summary", format);
+        for (const includeSlot of [true, false]) {
+          const headingText = resolveAdvancedMemoryPrompt(
+            [{ content: includeSlot ? headingPlacement.token : "LIVE_WORDS" }],
+            [headingPlacement],
+            headingParts,
+          )
+            .map((message) => message.content)
+            .join("\n");
+          assert.ok(headingText.includes("<private>Literal tags & content</private>"));
+          assert.ok(
+            headingText.includes(format === "markdown" ? "\\# A user heading" : "# A user heading"),
+            "authored and fallback memory slots use the existing format-specific leaf handling",
+          );
+          if (format === "markdown") assert.doesNotMatch(headingText, /^# A user heading$/mu);
+        }
+        const marker = (id: string, type: string, extra: Partial<AssemblerInput["sections"][number]> = {}) =>
+          promptSection({
+            id,
+            name: id,
+            identifier: id,
+            isMarker: "true",
+            markerConfig: JSON.stringify({ type }),
+            ...extra,
+          });
+        const sections = [
+          promptSection({ id: "main", identifier: "main", name: "Instructions", content: "STABLE_RULE" }),
+          marker("hidden_summary", "chat_summary", { groupId: "disabled" }),
+          marker("old_scene", "recalled_scenes", { groupId: "memory" }),
+          marker("history", "chat_history"),
+          marker("my_summary", "chat_summary", { role: "user" }),
+          marker("duplicate_summary", "chat_summary"),
+          marker("disabled_excerpt", "recalled_messages", { enabled: "false" }),
+        ];
+        const input: AssemblerInput = {
+          db: undefined as unknown as DB,
+          preset: {
+            id: "advanced-memory-markers",
+            name: "Memory fixture",
+            sectionOrder: JSON.stringify(sections.map((section) => section.id)),
+            groupOrder: JSON.stringify(["disabled", "memory"]),
+            wrapFormat: format,
+            parameters: JSON.stringify({}),
+            variableGroups: "[]",
+            variableValues: "{}",
+          },
+          sections,
+          groups: [
+            { id: "disabled", name: "Hidden group", enabled: "false" },
+            { id: "memory", name: "Memory group", enabled: "true" },
+          ].map((group) => ({
+            ...group,
+            presetId: "advanced-memory-markers",
+            parentGroupId: null,
+            order: 0,
+            createdAt: "",
+          })),
+          choiceBlocks: [],
+          chatChoices: {},
+          chatId: "advanced-memory-markers",
+          characterIds: [],
+          personaName: "Mari",
+          personaDescription: "",
+          chatMessages: [{ role: "user", content: "LIVE_WORDS" }],
+          chatSummary: "LEGACY_UNSCOPED_SECRET",
+          advancedMemory: parts,
+          previewOnly: true,
+        };
+        const assembled = await assemblePrompt(input);
+        const text = assembled.messages.map((message) => message.content).join("\n");
+        for (const fact of Object.values(parts)) assert.equal(text.split(fact!).length - 1, 1, fact!);
+        assert.doesNotMatch(text, /LEGACY_UNSCOPED_SECRET|duplicate_summary|hidden_summary|disabled_excerpt/u);
+        assert.match(text, /Below is a small excerpt from earlier chat history/u);
+        const summaryIndex = assembled.messages.findIndex((message) => message.content.includes("CONTINUITY_FACT"));
+        assert.ok(
+          text.indexOf("CONTINUITY_FACT") > text.indexOf("LIVE_WORDS"),
+          "explicit summary placement stays after history, including merged user sections",
+        );
+        assert.equal(assembled.messages[summaryIndex]?.role, "user");
+        assert.ok(
+          text.indexOf("EXACT_OLD_WORDS") < text.indexOf("LIVE_WORDS"),
+          "missing markers fall back before history",
+        );
+        if (format === "xml") assert.match(text, /<my_summary>/u);
+        if (format === "markdown") {
+          assert.match(text, /## my_summary/u);
+          assert.doesNotMatch(text, /<my_summary>|<recalled_messages>/u);
+        }
+        if (format === "none") assert.doesNotMatch(text, /<my_summary>|## my_summary|## Recalled/u);
+
+        const deferred = await assemblePrompt({ ...input, deferAdvancedMemory: true });
+        const preparedSnapshot = JSON.stringify(deferred.messages);
+        assert.doesNotMatch(preparedSnapshot, /CONTINUITY_FACT|EXACT_OLD_WORDS|LEGACY_UNSCOPED_SECRET/u);
+        const resolved = resolveAdvancedMemoryPrompt(deferred.messages, deferred.advancedMemoryPlacements!, parts);
+        assert.deepEqual(resolved, assembled.messages, "preview and late per-responder rendering agree");
+        const empty = resolveAdvancedMemoryPrompt(deferred.messages, deferred.advancedMemoryPlacements!, {});
+        const emptyText = empty.map((message) => message.content).join("\n");
+        assert.match(emptyText, /STABLE_RULE/u);
+        assert.match(emptyText, /LIVE_WORDS/u);
+        assert.doesNotMatch(emptyText, /Memory group|memory_group|Below is|Below are|MARINARA_ADVANCED_MEMORY/u);
+        assert.equal(
+          JSON.stringify(deferred.messages),
+          preparedSnapshot,
+          "budget probes must not mutate the prepared prompt",
+        );
+
+        const characterSections = [
+          ...input.sections.slice(0, 3),
+          promptSection({
+            id: "other_profile",
+            identifier: "other_profile",
+            name: "Other Profile",
+            groupId: "memory",
+            content: "CHARACTER_ONLY_PROFILE",
+          }),
+          ...input.sections.slice(3),
+        ];
+        const characterGrouped = await assemblePrompt({
+          ...input,
+          deferAdvancedMemory: true,
+          deferMessagePostProcessing: true,
+          sections: characterSections,
+          preset: { ...input.preset, sectionOrder: JSON.stringify(characterSections.map((section) => section.id)) },
+          groups: input.groups.map((group) => (group.id === "memory" ? { ...group, name: "Dottore" } : group)),
+        });
+        const characterScoped = scopeIndividualGroupMessagesForTarget(characterGrouped.messages, "visitor", [
+          { id: "dottore", name: "Dottore" },
+          { id: "visitor", name: "Visitor" },
+        ]);
+        const scopedText = resolveAdvancedMemoryPrompt(
+          characterScoped,
+          characterGrouped.advancedMemoryPlacements!,
+          parts,
+        )
+          .map((message) => message.content)
+          .join("\n");
+        for (const fact of Object.values(parts))
+          assert.equal(scopedText.split(fact!).length - 1, 1, "scoped-away slots still emit once");
+        assert.ok(scopedText.indexOf("OLD_SCENE_FACT") < scopedText.indexOf("LIVE_WORDS"));
+        if (format !== "none")
+          assert.doesNotMatch(
+            scopedText,
+            /CHARACTER_ONLY_PROFILE/u,
+            "memory group guards must not prevent ordinary character profile scoping",
+          );
+        const scenePlacement = describeAdvancedMemoryPlacements(
+          characterScoped,
+          characterGrouped.advancedMemoryPlacements!,
+        ).find((placement) => placement.markerType === "recalled_scenes")!;
+        assert.equal(
+          scenePlacement.fallback,
+          format !== "none",
+          "placement receipt reports a scoped-away authored group",
+        );
+
+        const deferredSquash = await assemblePrompt({
+          ...input,
+          deferAdvancedMemory: true,
+          deferMessagePostProcessing: true,
+          preset: { ...input.preset, parameters: JSON.stringify({ squashSystemMessages: true }) },
+          sections: [sections[0]!, sections[3]!],
+          chatMessages: [
+            { id: "old-narrator", role: "system", content: "OLD_NARRATOR_SECRET" },
+            { id: "current-user", role: "user", content: "LIVE_WORDS" },
+          ],
+        });
+        assert.ok(
+          deferredSquash.messages.some((message) => message.id === "old-narrator" && message.contextKind === "history"),
+          "deferred system squashing must preserve narrator source IDs",
+        );
+        const selectedNarrator = filterPromptHistoryByMessageIds(
+          deferredSquash.messages,
+          new Set(["current-user"]),
+          new Set(["old-narrator", "current-user"]),
+        );
+        assert.doesNotMatch(
+          resolveAdvancedMemoryPrompt(selectedNarrator, deferredSquash.advancedMemoryPlacements!, {})
+            .map((message) => message.content)
+            .join("\n"),
+          /OLD_NARRATOR_SECRET/u,
+        );
+
+        const disabled = await assemblePrompt({ ...input, advancedMemory: undefined });
+        const disabledText = disabled.messages.map((message) => message.content).join("\n");
+        assert.match(disabledText, /LEGACY_UNSCOPED_SECRET/u);
+        assert.doesNotMatch(disabledText, /OPEN_SCENE_FACT|OLD_SCENE_FACT|EXACT_OLD_WORDS|Below is|Below are/u);
+      }
+    },
+  },
+  {
     name: "chat summary without marker appends to the system prompt block",
     async run() {
       const result = await assemblePrompt({
@@ -9067,7 +9325,9 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
         "utf8",
       );
-      const fallbackBranchStart = generateRouteSource.indexOf('if (chatMode === "roleplay" && !resolvedPreset) {');
+      const fallbackBranchStart = generateRouteSource.indexOf(
+        'if (chatMode === "roleplay" && !resolvedPreset && !advancedMemoryEnabled) {',
+      );
       const fallbackBranchEnd = generateRouteSource.indexOf("\n        }", fallbackBranchStart);
       assert.notEqual(fallbackBranchStart, -1);
       assert.notEqual(fallbackBranchEnd, -1);
@@ -9075,6 +9335,44 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         generateRouteSource.slice(fallbackBranchStart, fallbackBranchEnd),
         /appendFallbackChatSummaryToSystemPrompt\(/u,
       );
+    },
+  },
+  {
+    name: "sequential Game agent phases do not overlap different model connections",
+    async run() {
+      for (const sequentialExecution of [false, true]) {
+        let active = 0;
+        let peak = 0;
+        const agents = [0, 1, 2].map((index) => {
+          const capture = makeCapturingProvider("Context checked.");
+          const complete = capture.provider.chatComplete;
+          capture.provider.chatComplete = async (...args) => {
+            active++;
+            peak = Math.max(peak, active);
+            try {
+              await new Promise((done) => setTimeout(done, 20));
+              return await complete(...args);
+            } finally {
+              active--;
+            }
+          };
+          return {
+            ...makeRegressionAgentConfig({
+              id: `custom:sequential-${index}`,
+              type: `sequential-${index}`,
+              isCustomAgent: true,
+              phase: "parallel",
+              promptTemplate: "Check the supplied context.",
+              settings: { resultType: "context_injection" },
+            }),
+            provider: capture.provider,
+            model: `model-${index}`,
+            maxParallelJobs: 4,
+          } as ResolvedAgent;
+        });
+        await runParallelAgents(agents, makeRegressionAgentContext({ chatMode: "game", sequentialExecution }));
+        assert.equal(peak, sequentialExecution ? 1 : 3);
+      }
     },
   },
   {
@@ -10905,6 +11203,151 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       const unrelatedLongName: Array<Record<string, unknown>> = [{ name: "Mari Calder" }];
       applyTrackerCharacterCardIdentity(unrelatedLongName, [{ id: "party-card", name: "Mari" }]);
       assert.deepEqual(unrelatedLongName, [{ name: "Mari Calder" }]);
+
+      // Multi-character cards: two distinctly named members of one card stay separate.
+      const castCard = { id: "resort-card", name: "Vacation Resort", avatarPath: "/api/avatars/file/resort.png" };
+      const castBatch: Array<Record<string, unknown>> = [
+        { characterId: "resort-card", name: "Ana", mood: "Playful", avatarPath: "/api/avatars/file/resort.png" },
+        { characterId: "resort-card", name: "Julia", mood: "Sleeping" },
+      ];
+      const castMatches = applyTrackerCharacterCardIdentity(castBatch, [castCard]);
+      assert.equal(castMatches.has("resort-card"), false);
+      assert.deepEqual(castBatch, [
+        { characterId: "resort-card:cast:ana", name: "Ana", mood: "Playful", avatarPath: null, avatarCrop: null },
+        { characterId: "resort-card:cast:julia", name: "Julia", mood: "Sleeping" },
+      ]);
+
+      // A lone member on a later turn keeps the cast identity when earlier state remembers the cast.
+      const loneMember: Array<Record<string, unknown>> = [{ characterId: "resort-card", name: "Ana", mood: "Bored" }];
+      applyTrackerCharacterCardIdentity(loneMember, [castCard], {
+        previousCharacters: [{ characterId: "resort-card:cast:julia", name: "Julia" }],
+      });
+      assert.deepEqual(loneMember, [{ characterId: "resort-card:cast:ana", name: "Ana", mood: "Bored" }]);
+
+      // A model echoing a cast id resolves to the same member, and duplicates merge.
+      const echoedCast: Array<Record<string, unknown>> = [
+        { characterId: "resort-card:cast:ana", name: "Ana", mood: "Smug" },
+        { characterId: "resort-card", name: "ana", outfit: "hoodie" },
+      ];
+      applyTrackerCharacterCardIdentity(echoedCast, [castCard]);
+      assert.deepEqual(echoedCast, [
+        { characterId: "resort-card:cast:ana", name: "ana", mood: "Smug", outfit: "hoodie" },
+      ]);
+
+      // Without cast evidence a single differently named entry still canonicalizes to the card.
+      const soloAlias: Array<Record<string, unknown>> = [{ characterId: "resort-card", name: "Ana" }];
+      const soloMatches = applyTrackerCharacterCardIdentity(soloAlias, [castCard]);
+      assert.equal(soloMatches.has("resort-card"), true);
+      assert.equal(soloAlias[0]?.name, "Vacation Resort");
+
+      // A card whose text lists its cast is multi-character from the first turn:
+      // the old merged row named after the card is dropped, and bare member names link to the card.
+      const declaredCastCard = {
+        ...castCard,
+        description:
+          "[PREMISE]\nA trip.\n\n[CHARACTER: Ana]\nFull Name: Ana\nAge: 20\n\n[CHARACTER: Julia]\nFull Name: Julia\nAge: 41",
+      };
+      assert.deepEqual(extractCharacterCardCastMembers(declaredCastCard), ["Ana", "Julia"]);
+      assert.deepEqual(
+        extractCharacterCardCastMembers({ name: "Mira", description: "[CHARACTER: Mira]\nA lone knight." }),
+        [],
+      );
+      assert.deepEqual(
+        extractCharacterCardCastMembers({
+          name: "Party",
+          description: "Name: Rook\nRole: scout\n\nName: Vale\nRole: mage",
+        }),
+        ["Rook", "Vale"],
+      );
+      assert.deepEqual(
+        extractCharacterCardCastMembers({
+          name: "Party",
+          description: '> **Full Name:** "Rook" (scout)\r\n- _Name_： **Vale** (mage)\r\nName: Rook',
+        }),
+        ["Rook", "Vale"],
+      );
+      // Long malformed fields used to trigger polynomial regex backtracking; the runner has a fixed timeout.
+      const longWhitespace = " ".repeat(100_000);
+      assert.deepEqual(
+        extractCharacterCardCastMembers({
+          name: "Party",
+          description: [
+            `Name${longWhitespace}`,
+            `Name:${longWhitespace}${"x".repeat(121)}`,
+            `Full${longWhitespace}namo: Decoy`,
+            `Name: ${"(".repeat(119)}x`,
+            `Name:${longWhitespace}Rook (scout)`,
+            "Name: Vale (mage)",
+          ].join("\n"),
+        }),
+        ["Rook", "Vale"],
+      );
+      const declaredBatch: Array<Record<string, unknown>> = [
+        {
+          characterId: "resort-card",
+          name: "Vacation Resort",
+          mood: "Excited",
+          avatarPath: "/api/avatars/file/resort.png",
+        },
+        { name: "Julia", mood: "Sleeping" },
+      ];
+      const declaredMatches = applyTrackerCharacterCardIdentity(declaredBatch, [declaredCastCard]);
+      assert.equal(declaredMatches.has("resort-card"), false);
+      assert.deepEqual(declaredBatch, [{ characterId: "resort-card:cast:julia", name: "Julia", mood: "Sleeping" }]);
+
+      // A manual row sharing a declared member's name keeps its manual identity and portrait guards.
+      const manualMember = {
+        characterId: "manual-ana",
+        name: "Ana",
+        mood: "Calm",
+        avatarPath: "/api/avatars/file/manual-ana.png",
+        avatarCrop: { zoom: 2, offsetX: 0, offsetY: 0 },
+      };
+      const manualBatch: Array<Record<string, unknown>> = [{ ...manualMember }];
+      assert.equal(applyTrackerCharacterCardIdentity(manualBatch, [declaredCastCard]).size, 0);
+      assert.deepEqual(manualBatch, [manualMember]);
+
+      // Preserve a legacy title row until this result actually provides a member to replace it.
+      const legacyTitle = {
+        characterId: "resort-card",
+        name: "Vacation Resort",
+        mood: "Excited",
+        outfit: "Summer clothes",
+        customFields: { Goal: "Reach the resort" },
+        avatarPath: "/api/avatars/file/resort.png",
+        avatarCrop: null,
+      };
+      const legacyBatch: Array<Record<string, unknown>> = [{ ...legacyTitle }];
+      const legacyMatches = applyTrackerCharacterCardIdentity(legacyBatch, [declaredCastCard], {
+        previousCharacters: [{ characterId: "resort-card:cast:julia", name: "Julia" }],
+      });
+      assert.equal(legacyMatches.has("resort-card"), true);
+      assert.deepEqual(legacyBatch, [legacyTitle]);
+
+      // The same replacement rule applies to a cast inferred from this batch or remembered from history.
+      for (const rememberedCast of [false, true]) {
+        const inferredBatch: Array<Record<string, unknown>> = [
+          { ...legacyTitle },
+          { characterId: "resort-card", name: "Ana", mood: "Calm" },
+          ...(rememberedCast ? [] : [{ characterId: "resort-card", name: "Julia", mood: "Sleeping" }]),
+        ];
+        const inferredMatches = applyTrackerCharacterCardIdentity(inferredBatch, [castCard], {
+          previousCharacters: rememberedCast ? [{ characterId: "resort-card:cast:julia", name: "Julia" }] : [],
+        });
+        assert.equal(inferredMatches.has("resort-card"), false);
+        assert.deepEqual(inferredBatch, [
+          { characterId: "resort-card:cast:ana", name: "Ana", mood: "Calm" },
+          ...(rememberedCast ? [] : [{ characterId: "resort-card:cast:julia", name: "Julia", mood: "Sleeping" }]),
+        ]);
+      }
+
+      const ordinaryAliasBatch: Array<Record<string, unknown>> = [
+        { ...legacyTitle },
+        { characterId: "resort-card", name: "Ana" },
+      ];
+      assert.equal(applyTrackerCharacterCardIdentity(ordinaryAliasBatch, [castCard]).has("resort-card"), true);
+      assert.equal(ordinaryAliasBatch.length, 1, "A lone alias does not establish a multi-character card");
+      assert.equal(ordinaryAliasBatch[0]?.name, "Vacation Resort");
 
       assert.equal(
         canonicalizeGamePartySpeakerLabels(

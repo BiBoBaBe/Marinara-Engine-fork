@@ -43,6 +43,8 @@ import { startSceneWithPromptPreferences } from "../lib/scene-generation";
 import { translate } from "../localization/i18n";
 import { waitForPendingChatMetadataSaves } from "../lib/chat-metadata-save-barrier";
 import { agentKeys } from "./use-agents";
+import { advancedMemoryKeys, ADVANCED_MEMORY_SETTINGS_EVENT } from "./use-advanced-memory";
+import type { AdvancedMemoryJob, AdvancedMemoryReceipt, AdvancedMemoryStatus } from "@marinara-engine/shared";
 import { discardPendingGameStatePatch } from "./use-game-state-patcher";
 import { spatialContextKeys } from "./use-spatial-context";
 import {
@@ -637,6 +639,7 @@ import {
   applyRecentMessageContentEditsToData,
   chatKeys,
   forgetRecentMessageContentEdit,
+  forgetUnchangedMessageContentEdit,
   preserveRecentMessageContentEdit,
   rememberRecentMessageContentEdit,
 } from "./use-chats";
@@ -1271,6 +1274,7 @@ export function useGenerate() {
         }
       };
       useChatStore.getState().setAbortController(params.chatId, abortController);
+      useChatStore.getState().setPendingVnReply(params.chatId, null);
       useChatStore.getState().clearThinkingBuffer(params.chatId);
 
       // Helper: returns true when this generation's chat is the one the user is viewing.
@@ -1476,6 +1480,23 @@ export function useGenerate() {
       let typewriterBufferUntil = 0;
       let roleplayTypewriterCharsPerSecond: number | null = null;
       const persistedMessages = new Map<string, Message>();
+      let vnReplyPublished = false;
+      const publishVnReply = (message: Message | null) => {
+        if (
+          vnReplyPublished ||
+          chatModeForGeneration !== "roleplay" ||
+          params.impersonate ||
+          params.turnGameBots ||
+          abortController.signal.aborted ||
+          useChatStore.getState().abortControllers.get(params.chatId) !== abortController ||
+          !message ||
+          assistantMessagesBeforeGeneration.fingerprints.get(message.id) === assistantMessageFingerprint(message)
+        )
+          return;
+        vnReplyPublished = true;
+        const { id, activeSwipeIndex, content } = message;
+        useChatStore.getState().setPendingVnReply(params.chatId, { id, activeSwipeIndex, content });
+      };
       let sawGroupTurn = false;
       let currentGroupTurnSavedMessage: Message | null = null;
       let heldTextRewriteMessage: Message | null = null;
@@ -1588,7 +1609,14 @@ export function useGenerate() {
         typewriterRemainder = 0;
         lastTypewriterPaintAt = 0;
         roleplayTypewriterCharsPerSecond = null;
-        if (streamingEnabled && shouldDisplayRawStream && fullBuffer) setStreamBuffer(fullBuffer, params.chatId);
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          fullBuffer &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
+          setStreamBuffer(fullBuffer, params.chatId);
+        }
         if (typewriterDone) {
           const done = typewriterDone;
           typewriterDone = null;
@@ -1629,6 +1657,13 @@ export function useGenerate() {
         if (typingActive) return;
         typingActive = true;
         const tick = (now = performance.now()) => {
+          if (
+            abortController.signal.aborted ||
+            useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+          ) {
+            flushTypewriterBuffer();
+            return;
+          }
           if (pendingText.length === 0) {
             typingActive = false;
             lastTypewriterPaintAt = 0;
@@ -1714,8 +1749,17 @@ export function useGenerate() {
         document.addEventListener("visibilitychange", recordBackgroundedStream);
         window.addEventListener("pagehide", markPageHidden);
       }
+      // Stop must also release a local drain after the network stream finishes.
+      abortController.signal.addEventListener("abort", flushTypewriterBuffer, { once: true });
 
       const waitForTypewriterDrain = async () => {
+        if (
+          abortController.signal.aborted ||
+          useChatStore.getState().abortControllers.get(params.chatId) !== abortController
+        ) {
+          flushTypewriterBuffer();
+          return;
+        }
         if (!streamingEnabled || !shouldDisplayRawStream || (pendingText.length === 0 && !typingActive)) return;
         if (canInspectPageFocus && document.visibilityState !== "visible") {
           recordBackgroundedStream();
@@ -1737,6 +1781,7 @@ export function useGenerate() {
         qc.invalidateQueries({ queryKey: chatKeys.messages(params.chatId) });
         return true;
       };
+      const shownAdvancedMemoryJobs = new Set<string>();
 
       // Safety net: guarantees the Mari work-status pill clears for this
       // chat on every termination path (done, error, abort, unexpected
@@ -1793,6 +1838,37 @@ export function useGenerate() {
           { disconnectOnResume: true },
         )) {
           switch (event.type) {
+            case "advanced_memory_status": {
+              const data = event.data as { chatId?: string; job?: AdvancedMemoryJob } | undefined;
+              if (data?.chatId !== params.chatId || !data.job) break;
+              const job = data.job;
+              qc.setQueryData<AdvancedMemoryStatus>(advancedMemoryKeys.status(params.chatId), (current) =>
+                current ? { ...current, job } : current,
+              );
+              void qc.invalidateQueries({ queryKey: advancedMemoryKeys.status(params.chatId) });
+              const jobId = job.id ?? params.chatId;
+              if (
+                job.blocking !== false &&
+                ["needs_confirmation", "error"].includes(job.status) &&
+                !shownAdvancedMemoryJobs.has(jobId)
+              ) {
+                shownAdvancedMemoryJobs.add(jobId);
+                useUIStore.getState().setChatSettingsSectionExpanded("roleplay-memory-recall", true);
+                window.dispatchEvent(
+                  new CustomEvent(ADVANCED_MEMORY_SETTINGS_EVENT, { detail: { chatId: params.chatId } }),
+                );
+              }
+              break;
+            }
+            case "advanced_memory_receipt": {
+              const data = event.data as { chatId?: string; receipt?: AdvancedMemoryReceipt } | undefined;
+              if (data?.chatId !== params.chatId || !data.receipt) break;
+              qc.setQueryData<AdvancedMemoryStatus>(advancedMemoryKeys.status(params.chatId), (current) =>
+                current ? { ...current, latestReceipt: data.receipt } : current,
+              );
+              void qc.invalidateQueries({ queryKey: advancedMemoryKeys.status(params.chatId) });
+              break;
+            }
             case "spatial_transition_committed": {
               const transitionData = event.data as
                 | {
@@ -1904,6 +1980,11 @@ export function useGenerate() {
                   detail: event.data,
                 }),
               );
+              break;
+            }
+
+            case "game_outcome_narration_failed": {
+              if (isActiveChat()) toast.warning(translate("ui.game.gamenarration.outcomeNarrationFailed"));
               break;
             }
 
@@ -2461,6 +2542,21 @@ export function useGenerate() {
               break;
             }
 
+            case "roleplay_interrupted_message": {
+              const { message, previousContent } = event.data as { message: Message; previousContent: string };
+              if (
+                message.chatId !== params.chatId ||
+                typeof message.id !== "string" ||
+                typeof previousContent !== "string"
+              )
+                break;
+              await qc.cancelQueries({ queryKey: chatKeys.messages(params.chatId), exact: true });
+              forgetUnchangedMessageContentEdit(params.chatId, message, previousContent);
+              if (persistedMessages.has(message.id)) persistedMessages.set(message.id, message);
+              upsertPersistedMessages(qc, params.chatId, [message]);
+              break;
+            }
+
             case "message_saved": {
               flushLeadingSpeakerPrefix();
               const savedMessage = event.data as Message;
@@ -2563,6 +2659,7 @@ export function useGenerate() {
                 if (pendingText.length > 0 || typingActive) await waitForTypewriterDrain();
                 const savedMessage = persistedMessages.get(message.id);
                 if (savedMessage) upsertPersistedMessages(qc, params.chatId, [savedMessage]);
+                publishVnReply(savedMessage ?? null);
                 if (useChatStore.getState().streamingChatId === params.chatId) {
                   setStreaming(false);
                 }
@@ -3042,7 +3139,11 @@ export function useGenerate() {
           await waitForTypewriterDrain();
         }
         // Final flush — ensure full content is set (only for the viewed chat)
-        if (streamingEnabled && shouldDisplayRawStream) {
+        if (
+          streamingEnabled &&
+          shouldDisplayRawStream &&
+          useChatStore.getState().abortControllers.get(params.chatId) === abortController
+        ) {
           setStreamBuffer(normalizeLineBreakSpacing(fullBuffer + pendingText), params.chatId);
         }
       } catch (error) {
@@ -3171,6 +3272,7 @@ export function useGenerate() {
         }
         // Cancel any pending animation frame to prevent leaks
         cancelAnimationFrame(rafId);
+        abortController.signal.removeEventListener("abort", flushTypewriterBuffer);
         if (canInspectPageFocus) {
           document.removeEventListener("visibilitychange", recordBackgroundedStream);
           window.removeEventListener("pagehide", markPageHidden);
@@ -3195,6 +3297,7 @@ export function useGenerate() {
           });
         }
         if (stillOwnerAtCleanupStart) {
+          if (sawDoneEvent || passiveStreamSettled) publishVnReply(latestAssistantMessage(persistedMessages.values()));
           useChatStore.getState().clearPerChatState(params.chatId);
           useChatStore.getState().setAbortController(params.chatId, null);
           useChatStore.getState().setBackgroundIllustration(params.chatId, false);
@@ -3261,12 +3364,6 @@ export function useGenerate() {
               : uiState.convoNotificationSound;
           playConfiguredNotificationPing(soundEnabled, uiState.notificationSoundsOnlyWhenUnfocused);
         }
-        // Only clean up global streaming state if this generation still
-        // "owns" it. We check AbortController identity rather than chatId
-        // because two generations can target the same chat (e.g. autonomous
-        // + user send). The latest generation replaces the AbortController,
-        // so the superseded one knows it no longer owns the state.
-        const stillOwner = stillOwnerAtCleanupStart;
         const partialContent = normalizeLineBreakSpacing(fullBuffer + pendingText).trim();
         let unpersistedPartialMessage: Message | null = null;
         if (
@@ -3332,51 +3429,31 @@ export function useGenerate() {
         const refreshMessagesInBackground = () => {
           void refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
         };
-        if (stillOwner) {
-          // Only clear global streaming/UI state if this chat is still the one
-          // being displayed, to avoid corrupting another chat's active generation.
-          if (useChatStore.getState().streamingChatId === params.chatId) {
-            if (isGameGeneration) {
-              // Game mode still needs the authoritative refresh before release
-              // because the scene/HUD pipeline depends on the final snapshot.
-              await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-              setStreaming(false);
-              clearStreamBuffer(params.chatId);
-            } else {
-              if (receivedContent && persistedForRefresh.length === 0) {
-                await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-              } else {
-                primeMessagesFromSaved();
-              }
-              // Prime the durable message before releasing the live stream so
-              // React never renders an empty frame or the wrong full response.
-              setStreaming(false);
-              clearStreamBuffer(params.chatId);
-              if (persistedForRefresh.length > 0) refreshMessagesInBackground();
-            }
-          } else {
-            if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
-              await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-            } else {
-              primeMessagesFromSaved();
-              refreshMessagesInBackground();
-            }
-            clearStreamBuffer(params.chatId);
+        if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
+          await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
+        } else {
+          primeMessagesFromSaved();
+          if (
+            persistedForRefresh.length > 0 ||
+            !stillOwnerAtCleanupStart ||
+            useChatStore.getState().streamingChatId !== params.chatId
+          ) {
+            refreshMessagesInBackground();
           }
+        }
+        // Persistence and history refresh can yield after this request released
+        // its controller. Prime the saved row, then recheck ownership before any
+        // presentation reset so a newer generation keeps its live state.
+        const cleanupController = useChatStore.getState().abortControllers.get(params.chatId);
+        if (stillOwnerAtCleanupStart && (!cleanupController || cleanupController === abortController)) {
+          if (useChatStore.getState().streamingChatId === params.chatId) setStreaming(false);
+          clearStreamBuffer(params.chatId);
           setStreamedMessageId(params.chatId, null);
           if (isActiveChat()) {
             setRegenerateMessageId(null);
             setStreamingCharacterId(null);
             setTypingCharacterName(null);
             setDelayedCharacterInfo(null);
-          }
-        } else {
-          // Not the owner but still need messages up to date
-          if (isGameGeneration || (receivedContent && persistedForRefresh.length === 0)) {
-            await refreshMessagesAuthoritatively(qc, params.chatId, persistedForRefresh);
-          } else {
-            primeMessagesFromSaved();
-            refreshMessagesInBackground();
           }
         }
         setProcessingRun(agentProcessingRunId, false, params.chatId);
@@ -4160,11 +4237,18 @@ function formatAgentBubble(agentType: string, agentName: string, data: unknown):
     }
 
     case "illustrator": {
-      const shouldGenerate = d.shouldGenerate as boolean;
-      if (!shouldGenerate) return null;
-      const style = d.style as string;
-      const reason = d.reason as string;
-      return `🎨 ${reason || "Generating scene illustration"}${style ? ` (${style})` : ""}`;
+      const reason = typeof d.reason === "string" ? d.reason.trim() : "";
+      const prompt = typeof d.prompt === "string" ? d.prompt.trim() : "";
+      const style = typeof d.style === "string" ? d.style.trim() : "";
+      const status =
+        d.generated === true && typeof d.chosen === "string" && d.chosen.trim()
+          ? translate("agents.illustrator.decision.backgroundGenerated")
+          : d.shouldGenerate === false
+            ? translate("agents.illustrator.decision.skipped")
+            : d.shouldGenerate === true && prompt
+              ? translate("agents.illustrator.decision.requested")
+              : translate("agents.illustrator.decision.invalid");
+      return `🎨 ${status}${reason ? ` — ${reason}` : ""}${style ? ` (${style})` : ""}`;
     }
 
     case "lorebook-keeper": {

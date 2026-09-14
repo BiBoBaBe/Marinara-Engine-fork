@@ -1273,7 +1273,7 @@ export function CharactersPanel() {
                             )}
                           >
                             <Hash size="0.5rem" />
-                            {formatEstimatedTokens(memberTokenEstimate)}
+                            {formatEstimatedTokens(memberTokenEstimate, localizeUi)}
                           </span>
                         )}
                         {memberTags.length > 0 && (
@@ -1607,7 +1607,7 @@ export function CharactersPanel() {
                   )}
                 >
                   <Hash size="0.5625rem" />
-                  {formatEstimatedTokens(tokenEstimate)}
+                  {formatEstimatedTokens(tokenEstimate, localizeUi)}
                 </div>
                 {charTags.length > 0 && (
                   <div data-character-row-tags className="mt-0.5 flex flex-wrap gap-0.5">

@@ -750,14 +750,18 @@ function parseThinkingTagsDraft(draft: string): { ok: true; value: ThinkingTagPa
   return { ok: true, value: normalizeThinkingTagPairs(pairs) };
 }
 
-function CustomParametersInput({
+export function CustomParametersInput({
   value,
   onChange,
   headers = false,
+  help,
+  placeholder,
 }: {
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
   headers?: boolean;
+  help?: string;
+  placeholder?: string;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const serialized = stringifyCustomParameters(value);
@@ -794,11 +798,14 @@ function CustomParametersInput({
       <span className="inline-flex items-center gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
         {label}
         <HelpTooltip
-          text={localizeUi(
-            headers
-              ? "settings.connection.customHeaders.help"
-              : "ui.ui.customparametersinput.optionalRawJsonObjectMergedIntoTheProviderRequest",
-          )}
+          text={
+            help ??
+            localizeUi(
+              headers
+                ? "settings.connection.customHeaders.help"
+                : "ui.ui.customparametersinput.optionalRawJsonObjectMergedIntoTheProviderRequest",
+            )
+          }
           size="0.625rem"
         />
       </span>
@@ -828,22 +835,24 @@ function CustomParametersInput({
         placeholder={
           focused
             ? ""
-            : localizeUi(
+            : (placeholder ??
+              localizeUi(
                 headers
                   ? "settings.connection.customHeaders.example"
                   : "ui.ui.customparametersinput.reasoningEffortHigh",
-              )
+              ))
         }
       />
       {error ? (
         <p className="mt-1 text-[0.5625rem] text-amber-500">{error}</p>
       ) : (
         <p className="mt-1 text-[0.5625rem] text-[var(--muted-foreground)]/70">
-          {localizeUi(
-            headers
-              ? "settings.connection.customHeaders.help"
-              : "ui.ui.customparametersinput.acceptsStringsNumbersBooleansNullArraysAndNestedObjects",
-          )}
+          {help ??
+            localizeUi(
+              headers
+                ? "settings.connection.customHeaders.help"
+                : "ui.ui.customparametersinput.acceptsStringsNumbersBooleansNullArraysAndNestedObjects",
+            )}
         </p>
       )}
     </div>

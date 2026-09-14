@@ -346,6 +346,8 @@ export interface AgentTaskProgress {
 
 /** Shared context passed to every agent. */
 export interface AgentContext {
+  /** Serialize model calls for Game chats sharing limited GPU memory. */
+  sequentialExecution?: boolean;
   /**
    * Prose to read instead of the recent messages.
    *
@@ -481,6 +483,13 @@ export interface AgentContext {
   agentDebug?: (event: AgentCallDebugEvent) => void;
   /** Lightweight provider progress; never includes prompts, reasoning, or response content. */
   agentProgress?: (event: AgentTaskProgress) => void;
+  /** Request-local scene check shared by tracker calls; only the first eligible call claims it. */
+  sceneCheck?: {
+    trackerAgentIds: string[];
+    prompt: string;
+    claimed: boolean;
+    result?: unknown;
+  };
   /** Abort signal — when triggered, agent execution should stop. Typed as `any` to avoid DOM/Node lib dependency. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   signal?: any;

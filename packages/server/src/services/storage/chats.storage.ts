@@ -36,12 +36,19 @@ import {
   memoryChunks,
   conversationCallSessions,
   conversationCallMessages,
+  lorebookEntries,
 } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { existsSync, rmSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
-import type { CreateChatInput, CreateMessageInput } from "@marinara-engine/shared";
+import {
+  getRoleplayCommandActivity,
+  type CreateChatInput,
+  type CreateMessageInput,
+  type RoleplayCommandActivity,
+} from "@marinara-engine/shared";
+import { prepareRoleplayInterruption } from "../generation/roleplay-interrupt.js";
 import {
   ensureTimestampAfter,
   latestTrustedTimestamp,
@@ -63,6 +70,22 @@ export const CONVERSATION_NOTES_BUDGET_CHARS = 4000;
 export type MetadataPatch = Record<string, unknown>;
 export type MetadataUpdater = (current: MetadataPatch) => MetadataPatch | Promise<MetadataPatch>;
 export type ChatDeleteGuardResult = { allowed: true } | { allowed: false; reason: string };
+
+function lorebookEntryStateRemovalPatch(metadata: MetadataPatch, entryIds: ReadonlySet<string>): MetadataPatch {
+  const patch: MetadataPatch = {};
+  for (const key of [
+    "entryStateOverrides",
+    "entryTimingStates",
+    "lorebookEntryStateOverrides",
+    "lorebookEntryTimingStates",
+  ]) {
+    const value = metadata[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    if (!Object.keys(value).some((id) => entryIds.has(id))) continue;
+    patch[key] = Object.fromEntries(Object.entries(value).filter(([id]) => !entryIds.has(id)));
+  }
+  return patch;
+}
 
 const metadataPatchQueues = new Map<string, Promise<void>>();
 const messageExtraPatchQueues = new Map<string, Promise<void>>();
@@ -611,6 +634,25 @@ export class InvalidMessageCursorError extends Error {
   }
 }
 
+type Interruption = NonNullable<RoleplayCommandActivity["interruption"]>;
+
+export class RoleplayInterruptionConflictError extends Error {}
+
+/** Receipts are imported message data; never trust an unchecked target or snapshot. */
+export function readRoleplayInterruption(value: unknown): Interruption | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Interruption;
+  return typeof item.targetMessageId === "string" &&
+    Number.isSafeInteger(item.targetSwipeIndex) &&
+    item.targetSwipeIndex >= 0 &&
+    (item.targetSwipeId === undefined || typeof item.targetSwipeId === "string") &&
+    typeof item.originalContent === "string" &&
+    typeof item.interruptedContent === "string" &&
+    item.originalContent !== item.interruptedContent
+    ? item
+    : null;
+}
+
 async function invalidateMemoryChunksFrom(db: DB, chatId: string, createdAt: string) {
   await db
     .delete(memoryChunks)
@@ -657,6 +699,135 @@ async function countSwipesByMessageId(db: DB, ids: string[]): Promise<Map<string
 export function createChatsStorage(db: DB) {
   let chatLastMessageAtBackfilled = false;
   let chatLastMessageAtBackfillPromise: Promise<void> | null = null;
+
+  type MessageRow = typeof messages.$inferSelect;
+  const readMessage = async (id: string) => (await db.select().from(messages).where(eq(messages.id, id)))[0] ?? null;
+  const readSwipes = (id: string) =>
+    db.select().from(messageSwipes).where(eq(messageSwipes.messageId, id)).orderBy(messageSwipes.index);
+  const receipts = (extra: unknown) =>
+    getRoleplayCommandActivity(parseExtraRecord(extra)).flatMap((activity) => {
+      const receipt = readRoleplayInterruption(activity.interruption);
+      return activity.command.type === "interrupt" && receipt && !activity.deleted && !activity.error ? [receipt] : [];
+    });
+
+  // Use the existing multi-key queue before the transaction, never nest queue-taking APIs.
+  // All swipe targets are locked because selecting another swipe can change the predecessor.
+  async function withInterruptionQueue<T>(
+    ids: string[],
+    operation: (locked: Set<string>) => Promise<T>,
+    targets: string[] = [],
+  ): Promise<T> {
+    const keys = new Set([...ids, ...targets]);
+    // Keep bulk deletion bounded to two scoped reads per pass, including chats with no commands.
+    const readTargetIds = async () => {
+      const [owners, swipes] = await Promise.all([
+        db.select({ extra: messages.extra }).from(messages).where(inArray(messages.id, ids)),
+        db.select({ extra: messageSwipes.extra }).from(messageSwipes).where(inArray(messageSwipes.messageId, ids)),
+      ]);
+      return [...owners, ...swipes].flatMap((row) => receipts(row.extra).map((receipt) => receipt.targetMessageId));
+    };
+    for (const targetId of await readTargetIds()) keys.add(targetId);
+    let retry = false;
+    const result = await withPatchQueues(messageExtraPatchQueues, [...keys], async () => {
+      for (const targetId of await readTargetIds()) {
+        if (!keys.has(targetId)) {
+          keys.add(targetId);
+          retry = true;
+        }
+      }
+      return retry ? undefined : db.transaction(() => operation(keys));
+    });
+    // A queued commit may have added a receipt after the first read. Reacquire all keys together.
+    return retry ? withInterruptionQueue(ids, operation, [...keys]) : (result as T);
+  }
+
+  async function precedingActualMessage(owner: MessageRow) {
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, owner.chatId))
+      .orderBy(messages.createdAt, messages.id);
+    const index = rows.findIndex((row) => row.id === owner.id);
+    return (
+      rows
+        .slice(0, index)
+        .reverse()
+        .find((row) => {
+          const extra = parseExtraRecord(row.extra);
+          return (
+            (row.role === "user" || row.role === "assistant") &&
+            extra.commandOnly !== true &&
+            extra.roleplayPrivateOnly !== true
+          );
+        }) ?? null
+    );
+  }
+
+  async function writeOwnerExtra(owner: MessageRow, swipeIndex: number, extra: Record<string, unknown>) {
+    const swipe = (await readSwipes(owner.id)).find((row) => row.index === swipeIndex);
+    if (!swipe) throw new RoleplayInterruptionConflictError("The response swipe no longer exists.");
+    await db
+      .update(messageSwipes)
+      .set({ extra: JSON.stringify({ ...parseExtraRecord(swipe.extra), ...extra }) })
+      .where(eq(messageSwipes.id, swipe.id));
+    if (owner.activeSwipeIndex === swipeIndex)
+      await db
+        .update(messages)
+        .set({ extra: JSON.stringify({ ...parseExtraRecord(owner.extra), ...extra }) })
+        .where(eq(messages.id, owner.id));
+  }
+
+  async function changeInterruptionTarget(
+    owner: MessageRow,
+    receipt: Interruption,
+    restore: boolean,
+    locked: Set<string>,
+    signal?: AbortSignal,
+  ) {
+    if (!locked.has(receipt.targetMessageId))
+      throw new RoleplayInterruptionConflictError("The interrupted message changed. Try again.");
+    const target = await readMessage(receipt.targetMessageId);
+    if (!target || target.chatId !== owner.chatId || target.id === owner.id)
+      throw new RoleplayInterruptionConflictError("The interrupted message no longer exists in this chat.");
+    const swipe = (await readSwipes(target.id)).find((row) =>
+      receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+    );
+    if (!swipe) throw new RoleplayInterruptionConflictError("The interrupted swipe no longer exists.");
+    const active = target.activeSwipeIndex === swipe.index;
+    if (!restore && (!active || (await precedingActualMessage(owner))?.id !== target.id))
+      throw new RoleplayInterruptionConflictError("The preceding message or its selected swipe changed.");
+    const current = active ? target.content : swipe.content;
+    const expected = restore ? receipt.interruptedContent : receipt.originalContent;
+    const content = restore ? receipt.originalContent : receipt.interruptedContent;
+    if (current === content) return null;
+    if (current !== expected || swipe.content !== expected)
+      throw new RoleplayInterruptionConflictError("The interrupted message was edited; its changes were preserved.");
+    if (signal?.aborted)
+      throw new RoleplayInterruptionConflictError("Interruption was not applied because generation was cancelled.");
+    await db.update(messageSwipes).set({ content }).where(eq(messageSwipes.id, swipe.id));
+    if (active) await db.update(messages).set({ content }).where(eq(messages.id, target.id));
+    await invalidateMemoryChunksFrom(db, target.chatId, target.createdAt);
+    return active ? readMessage(target.id) : null;
+  }
+
+  async function reconcileEffects(owner: MessageRow | null, restore: boolean, locked: Set<string>) {
+    const changed: MessageRow[] = [];
+    if (!owner) return changed;
+    for (const receipt of receipts(owner.extra)) {
+      if (receipt.restored) continue;
+      try {
+        const target = await changeInterruptionTarget(owner, receipt, restore, locked);
+        if (target) changed.push(target);
+      } catch (error) {
+        if (!(error instanceof RoleplayInterruptionConflictError)) throw error;
+        logger.debug(
+          { messageId: owner.id, targetMessageId: receipt.targetMessageId },
+          "[interrupt] Preserved a changed interruption target",
+        );
+      }
+    }
+    return changed;
+  }
 
   async function hasGameDeletePayload(chatId: string): Promise<boolean> {
     const existingMessage = await db
@@ -1369,6 +1540,21 @@ export function createChatsStorage(db: DB) {
         const raw = typeof patchOrUpdater === "function" ? await patchOrUpdater({ ...current }) : patchOrUpdater;
         const patch = stripOrdinalMirrorKey(raw);
         const merged = mergeMetadataPatch(current, patch);
+        // Explicitly detaching a pinned book resets its chat-local entry state.
+        // Temporary exclusions retain it so disabling/re-enabling a book is reversible.
+        if (Array.isArray(patch.activeLorebookIds) && Array.isArray(current.activeLorebookIds)) {
+          const attachedBookIds = patch.activeLorebookIds;
+          const removedBookIds = current.activeLorebookIds.filter((bookId) => !attachedBookIds.includes(bookId));
+          if (removedBookIds.length > 0) {
+            const entries = await db
+              .select({ id: lorebookEntries.id })
+              .from(lorebookEntries)
+              .where(inArray(lorebookEntries.lorebookId, removedBookIds));
+            const cleanup = lorebookEntryStateRemovalPatch(merged, new Set(entries.map((entry) => entry.id)));
+            Object.assign(patch, cleanup);
+            Object.assign(merged, cleanup);
+          }
+        }
         // #5406: allocate inline rather than through allocateWriteOrdinal — the queue is
         // already held here, and folding the counter into the same row update makes the stamp
         // and the counter bump one atomic write, so a crash can never leave a mirror entry
@@ -1470,21 +1656,44 @@ export function createChatsStorage(db: DB) {
       );
     },
 
-    async removeLorebookFromChatMetadata(lorebookId: string) {
-      const allChats = await this.list();
-      for (const chat of allChats) {
-        const metadata = parseMetadata(chat.metadata);
-        if (!Array.isArray(metadata.activeLorebookIds)) continue;
+    async pruneLorebookChatMetadata(remove: () => Promise<string[]>, lorebookId?: string) {
+      // Match the existing queue-before-transaction order. Deletion and metadata cleanup roll back together.
+      for (;;) {
+        const lockedIds = new Set((await db.select({ id: chats.id }).from(chats)).map((chat) => chat.id));
+        const complete = await withPatchQueues(metadataPatchQueues, [...lockedIds], () =>
+          db.transaction(async () => {
+            const allChats = await db.select().from(chats);
+            // A chat created while waiting may also reference this book; reacquire all queues before deleting.
+            if (allChats.some((chat) => !lockedIds.has(chat.id))) return false;
+            const removedEntryIds = new Set(await remove());
+            for (const chat of allChats) {
+              const metadata = parseMetadata(chat.metadata);
+              const hasBook =
+                lorebookId &&
+                ["activeLorebookIds", "excludedLorebookIds"].some(
+                  (key) => Array.isArray(metadata[key]) && metadata[key].includes(lorebookId),
+                );
+              if (!hasBook && Object.keys(lorebookEntryStateRemovalPatch(metadata, removedEntryIds)).length === 0)
+                continue;
 
-        const nextActiveLorebookIds = metadata.activeLorebookIds.filter((id) => id !== lorebookId);
-        if (nextActiveLorebookIds.length === metadata.activeLorebookIds.length) continue;
-
-        await this.patchMetadata(chat.id, (current) => {
-          const currentLorebookIds = Array.isArray(current.activeLorebookIds) ? current.activeLorebookIds : [];
-          return {
-            activeLorebookIds: currentLorebookIds.filter((id) => id !== lorebookId),
-          };
-        });
+              await this.patchMetadata(
+                chat.id,
+                (current) => {
+                  const patch = lorebookEntryStateRemovalPatch(current, removedEntryIds);
+                  if (lorebookId) {
+                    for (const key of ["activeLorebookIds", "excludedLorebookIds"]) {
+                      if (Array.isArray(current[key])) patch[key] = current[key].filter((id) => id !== lorebookId);
+                    }
+                  }
+                  return patch;
+                },
+                { metadataQueueHeld: true },
+              );
+            }
+            return true;
+          }),
+        );
+        if (complete) return;
       }
     },
 
@@ -1799,6 +2008,209 @@ export function createChatsStorage(db: DB) {
         .set({ lastMessageAt: lastTimestamp, updatedAt: lastTimestamp })
         .where(eq(chats.id, chatId));
       return createdIds;
+    },
+
+    /** Save the response receipt and its reversible predecessor edit as one durable write. */
+    async commitRoleplayInterruption(args: {
+      messageId: string;
+      swipeIndex: number;
+      extraUpdate: Record<string, unknown>;
+      target: { id: string; activeSwipeIndex: number; content: string } | null;
+      signal?: AbortSignal;
+    }) {
+      return withInterruptionQueue(
+        [args.messageId],
+        async (locked) => {
+          const owner = await readMessage(args.messageId);
+          if (!owner || owner.activeSwipeIndex !== args.swipeIndex)
+            throw new RoleplayInterruptionConflictError("The response changed before its interruption could be saved.");
+          const chat = await db.select().from(chats).where(eq(chats.id, owner.chatId)).limit(1);
+          const activity = getRoleplayCommandActivity(args.extraUpdate).map((item) => ({ ...item }));
+          let interruptedMessage: MessageRow | null = null;
+          let attempted = false;
+          for (const item of activity) {
+            if (item.command.type !== "interrupt" || item.error || item.deleted || item.interruption) continue;
+            try {
+              if (args.signal?.aborted)
+                throw new RoleplayInterruptionConflictError(
+                  "Interruption was not applied because generation was cancelled.",
+                );
+              if (attempted)
+                throw new RoleplayInterruptionConflictError("Only one interruption is allowed per response.");
+              attempted = true;
+              if (chat[0]?.mode !== "roleplay" || owner.role !== "assistant")
+                throw new RoleplayInterruptionConflictError(
+                  "Interruptions are only available for Roleplay character responses.",
+                );
+              const target = await precedingActualMessage(owner);
+              if (
+                !args.target ||
+                !target ||
+                target.id !== args.target.id ||
+                target.activeSwipeIndex !== args.target.activeSwipeIndex ||
+                target.content !== args.target.content
+              )
+                throw new RoleplayInterruptionConflictError(
+                  "The preceding message changed before the interruption was saved.",
+                );
+              const targetExtra = parseExtraRecord(target.extra);
+              if (
+                targetExtra.hiddenFromAI === true ||
+                (Array.isArray(targetExtra.hiddenFromAICharacterIds) &&
+                  (owner.characterId
+                    ? targetExtra.hiddenFromAICharacterIds.includes(owner.characterId)
+                    : targetExtra.hiddenFromAICharacterIds.length > 0))
+              )
+                throw new RoleplayInterruptionConflictError("The preceding message is hidden from this character.");
+              const prepared = prepareRoleplayInterruption(target.content, item.command.part);
+              if (!prepared.ok) throw new RoleplayInterruptionConflictError(prepared.error);
+              const swipe = (await readSwipes(target.id)).find((row) => row.index === target.activeSwipeIndex);
+              if (!swipe || swipe.content !== target.content)
+                throw new RoleplayInterruptionConflictError("The preceding message's swipe changed.");
+              const receipt: Interruption = {
+                targetMessageId: target.id,
+                targetSwipeIndex: target.activeSwipeIndex,
+                targetSwipeId: swipe.id,
+                originalContent: target.content,
+                interruptedContent: prepared.content,
+              };
+              interruptedMessage = await changeInterruptionTarget(owner, receipt, false, locked, args.signal);
+              item.interruption = receipt;
+            } catch (error) {
+              if (!(error instanceof RoleplayInterruptionConflictError)) throw error;
+              item.error = error.message;
+            }
+          }
+          await writeOwnerExtra(owner, args.swipeIndex, { ...args.extraUpdate, roleplayCommandActivity: activity });
+          return { message: await readMessage(owner.id), interruptedMessage };
+        },
+        args.target ? [args.target.id] : [],
+      );
+    },
+
+    async restoreRoleplayInterruption(
+      messageId: string,
+      options: { swipeIndex?: number; activityIndex?: number; permanent?: boolean } = {},
+    ) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const owner = await readMessage(messageId);
+        if (!owner) return { message: null, restoredMessages: [] };
+        if (options.swipeIndex !== undefined && options.swipeIndex !== owner.activeSwipeIndex)
+          throw new RoleplayInterruptionConflictError("The selected response swipe changed.");
+        const activity = getRoleplayCommandActivity(parseExtraRecord(owner.extra)).map((item) => ({ ...item }));
+        const restoredMessages: MessageRow[] = [];
+        for (let index = 0; index < activity.length; index++) {
+          if (options.activityIndex !== undefined && options.activityIndex !== index) continue;
+          const item = activity[index]!;
+          const receipt = readRoleplayInterruption(item.interruption);
+          if (item.command.type !== "interrupt" || !receipt || item.error || item.deleted || receipt.restored) continue;
+          const restored = await changeInterruptionTarget(owner, receipt, true, locked);
+          if (restored) restoredMessages.push(restored);
+          if (options.permanent) {
+            const swipe = (await readSwipes(receipt.targetMessageId)).find((row) =>
+              receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+            );
+            item.interruption = {
+              ...receipt,
+              targetSwipeIndex: swipe?.index ?? receipt.targetSwipeIndex,
+              restored: true,
+            };
+          }
+        }
+        if (options.permanent) {
+          const selected = options.activityIndex === undefined ? null : activity[options.activityIndex];
+          if (!selected || selected.command.type !== "interrupt" || !readRoleplayInterruption(selected.interruption))
+            throw new RoleplayInterruptionConflictError("The interruption record no longer exists.");
+          await writeOwnerExtra(owner, owner.activeSwipeIndex, { roleplayCommandActivity: activity });
+        }
+        return { message: await readMessage(messageId), restoredMessages };
+      });
+    },
+
+    /** Reapply only the still-selected receipt after a cancelled or failed reroll. */
+    async reconcileRoleplayInterruption(messageId: string) {
+      return withInterruptionQueue([messageId], async (locked) => {
+        const changed = await reconcileEffects(await readMessage(messageId), false, locked);
+        return { message: await readMessage(messageId), interruptedMessage: changed.at(-1) ?? null };
+      });
+    },
+
+    /** Normalize stable swipe IDs before a copy assigns new IDs or resolves exported macros. */
+    async prepareRoleplayInterruptionExtraForCopy(
+      extra: Record<string, unknown>,
+      resolveContent?: (content: string, target: MessageRow) => string,
+    ) {
+      const activity = getRoleplayCommandActivity(extra);
+      if (!activity.some((item) => readRoleplayInterruption(item.interruption))) return extra;
+      return {
+        ...extra,
+        roleplayCommandActivity: await Promise.all(
+          activity.map(async (item) => {
+            const receipt = readRoleplayInterruption(item.interruption);
+            if (!receipt) return item;
+            const target = await readMessage(receipt.targetMessageId);
+            const swipe = target
+              ? (await readSwipes(target.id)).find((row) =>
+                  receipt.targetSwipeId ? row.id === receipt.targetSwipeId : row.index === receipt.targetSwipeIndex,
+                )
+              : null;
+            if (!target || !swipe)
+              return {
+                ...item,
+                error: "The original interrupted swipe no longer exists.",
+                interruption: { ...receipt, restored: true },
+              };
+            return {
+              ...item,
+              interruption: {
+                ...receipt,
+                targetSwipeIndex: swipe.index,
+                originalContent: resolveContent
+                  ? resolveContent(receipt.originalContent, target)
+                  : receipt.originalContent,
+                interruptedContent: resolveContent
+                  ? resolveContent(receipt.interruptedContent, target)
+                  : receipt.interruptedContent,
+              },
+            };
+          }),
+        ),
+      };
+    },
+
+    /** Branch/JSONL copies retain receipts while replacing chat-local message/swipe identities. */
+    async remapRoleplayInterruptionTargets(chatId: string, messageIdMap: ReadonlyMap<string, string>) {
+      const rows = await this.listMessages(chatId);
+      for (const owner of rows) {
+        for (const swipe of await readSwipes(owner.id)) {
+          const extra = {
+            ...parseExtraRecord(swipe.extra),
+            ...(swipe.index === owner.activeSwipeIndex ? parseExtraRecord(owner.extra) : {}),
+          };
+          const activity = getRoleplayCommandActivity(extra).map((item) => ({ ...item }));
+          let changed = false;
+          for (const item of activity) {
+            const receipt = readRoleplayInterruption(item.interruption);
+            if (!receipt) continue;
+            changed = true;
+            const targetId = messageIdMap.get(receipt.targetMessageId);
+            const targetSwipe = targetId
+              ? (await readSwipes(targetId)).find((row) => row.index === receipt.targetSwipeIndex)
+              : null;
+            item.interruption = {
+              ...receipt,
+              targetMessageId: targetId ?? receipt.targetMessageId,
+              targetSwipeId: targetSwipe?.id,
+            };
+            if (!targetId || !targetSwipe) {
+              item.interruption.restored = true;
+              item.error = "The original interrupted message was not included in this copy.";
+            }
+          }
+          if (changed)
+            await this.updateMessageExtraForSwipe(owner.id, swipe.index, { roleplayCommandActivity: activity });
+        }
+      }
     },
 
     async updateMessageContent(id: string, content: string) {
@@ -2283,8 +2695,9 @@ export function createChatsStorage(db: DB) {
       // mutation (#5599): an in-flight edit either completes before the
       // delete or starts after it and sees a consistent world, instead of
       // having its writes silently vanish mid-flight into a 404.
-      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+      return withInterruptionQueue([id], async (locked) => {
         const existing = await this.getMessage(id);
+        await reconcileEffects(existing, true, locked);
         if (existing) await deleteGameStateForMessages([id], [existing.chatId]);
         await db.delete(messages).where(eq(messages.id, id));
         if (existing) {
@@ -2303,18 +2716,23 @@ export function createChatsStorage(db: DB) {
         // Per-chunk queue acquisition (#5599): each message's delete is
         // ordered against its in-flight edits; cross-chunk atomicity was
         // never promised by this bulk path.
-        await withPatchQueues(messageExtraPatchQueues, chunk, async () => {
+        await withInterruptionQueue(chunk, async (locked) => {
           const condition = chatId
             ? and(inArray(messages.id, chunk), eq(messages.chatId, chatId))
             : inArray(messages.id, chunk);
           const existingRows = await db
-            .select({ id: messages.id, chatId: messages.chatId, createdAt: messages.createdAt })
+            .select({ id: messages.id, chatId: messages.chatId, createdAt: messages.createdAt, extra: messages.extra })
             .from(messages)
             .where(condition);
           for (const row of existingRows) {
             const current = earliestByChat.get(row.chatId);
             if (!current || row.createdAt < current) earliestByChat.set(row.chatId, row.createdAt);
           }
+          // Undo newest effects first when a whole interrupted exchange is removed.
+          for (const row of existingRows
+            .filter((row) => receipts(row.extra).some((receipt) => !receipt.restored))
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
+            await reconcileEffects(await readMessage(row.id), true, locked);
           await deleteGameStateForMessages(
             existingRows.map((row) => row.id),
             existingRows.map((row) => row.chatId),
@@ -2344,7 +2762,8 @@ export function createChatsStorage(db: DB) {
     },
 
     async addSwipe(messageId: string, content: string, silent?: boolean) {
-      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+      return withInterruptionQueue([messageId], async (locked) => {
+        if (!silent) await reconcileEffects(await readMessage(messageId), true, locked);
         const existing = await this.getSwipes(messageId);
         const nextIndex = existing.length;
         const msg = await this.getMessage(messageId);
@@ -2390,10 +2809,11 @@ export function createChatsStorage(db: DB) {
     },
 
     async setActiveSwipe(messageId: string, index: number) {
-      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+      return withInterruptionQueue([messageId], async (locked) => {
         const swipes = await this.getSwipes(messageId);
         const target = swipes.find((s: any) => s.index === index);
         if (!target) return null;
+        await reconcileEffects(await readMessage(messageId), true, locked);
 
         // Before switching, save current message content and extra onto the outgoing swipe.
         const msg = await this.getMessage(messageId);
@@ -2421,12 +2841,13 @@ export function createChatsStorage(db: DB) {
         if (msg) {
           await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
         }
+        await reconcileEffects(await readMessage(messageId), false, locked);
         return this.getMessage(messageId);
       });
     },
 
     async removeSwipe(messageId: string, index: number) {
-      return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
+      return withInterruptionQueue([messageId], async (locked) => {
         const msg = await this.getMessage(messageId);
         if (!msg) return null;
 
@@ -2438,6 +2859,7 @@ export function createChatsStorage(db: DB) {
         const currentExtra = parseExtraRecord(msg.extra);
 
         const activeSwipeRemoved = msg.activeSwipeIndex === index;
+        if (activeSwipeRemoved) await reconcileEffects(msg, true, locked);
         let nextActiveSwipeIndex = msg.activeSwipeIndex;
         let nextContent = msg.content;
         let nextExtra = currentExtra;
@@ -2558,6 +2980,7 @@ export function createChatsStorage(db: DB) {
           .where(eq(messages.id, messageId));
         if (activeSwipeRemoved) {
           await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+          await reconcileEffects(await readMessage(messageId), false, locked);
         }
 
         return this.getMessage(messageId);

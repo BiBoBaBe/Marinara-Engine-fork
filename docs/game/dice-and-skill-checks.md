@@ -71,7 +71,9 @@ There are two hard limits. You can roll at most 100 dice at once, and each die c
 
 A skill check tests whether you succeed at something risky, such as sneaking, spotting a clue, or convincing an NPC. You do not start a skill check yourself. The Game Master calls for one inside its narration. The app then turns it into an animated d20 roll with a result banner.
 
-A text-requested check begins with the attempt. The engine resolves the dice, then makes one additional model request with the actual results so the Game Master can finish the outcome in the same turn. This also corrects a draft that guessed an outcome before the roll existed. The extra request sends the prompt again and uses more input and output tokens. If it fails, the turn keeps the resolved results without saving a guessed or partial outcome.
+A text-requested check begins with the attempt. The engine resolves the dice, then makes one additional model request with the actual results so the Game Master can finish the outcome in the same turn. This also corrects a draft that guessed an outcome before the roll existed. The extra request sends the prompt again and uses more input and output tokens. If it fails, the turn keeps the resolved results in its log without saving a guessed or partial outcome. A notice remains on the turn with a **Regenerate turn** button, including after reloading the chat.
+
+Turn off **Narrate dice outcomes immediately** in **Chat Settings → Function Calling** to keep the real results for the next turn without this extra request. This setting is on by default. Requests that produce no actual rolls never trigger the extra narration request.
 
 On a connection that supports the dice tool, the Game Master can instead obtain a real roll during generation. The dice card appears as soon as the tool returns; the completed check records that result without rolling again. Every resolved skill check receives its own banner, following any queued dice cards.
 
@@ -100,6 +102,8 @@ The banner shows one of four results: **CRITICAL SUCCESS**, **SUCCESS**, **FAILU
 The Game Master can specify another notation, such as `[skill_check: skill="Endurance" dc="12" dice="3d6+2"]`. These checks use the notation's flat modifier instead of d20 character-sheet modifiers and succeed when the total reaches the DC. Natural-1 and natural-20 rules apply only to the standard d20 check above.
 
 Success pools must state both the per-die threshold and the number of successes needed: `[skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]` rolls six d10s, counts each die showing at least 6 once, and succeeds with at least four successes. The engine does not guess a missing threshold or implement exploding dice, botches, or other special pool rules. A pool without a valid threshold stays unresolved, with any model-invented numbers removed.
+
+Unsupported requests such as `4d6kh3`, `3d6!`, or `4dF` are not rolled. The engine logs the unsupported notation and removes invented numbers from check records. These outcomes remain open; the engine does not silently substitute a different dice system.
 
 ### Advantage and disadvantage
 

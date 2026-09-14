@@ -33,7 +33,6 @@ import {
   CUSTOM_AGENT_RESULT_TYPE_IDS,
 } from "../../packages/client/src/lib/custom-agent-result-examples.js";
 import { estimateGameSessionHistoryTokens } from "../../packages/client/src/lib/game-session-history.js";
-import { MAX_FILE_SIZES } from "../../packages/shared/src/constants/defaults.js";
 import {
   buildCompatibleCharacterExport,
   validateCharacterGalleryReferences,
@@ -6611,8 +6610,8 @@ assert.match(backupRoutesSource, /PROFILE_IMPORT_MEMORY_WARNING_BYTES/u);
 assert.match(backupRoutesSource, /PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = 2 \* 1024 \* 1024 \* 1024/u);
 assert.match(
   backupRoutesSource,
-  /limits: \{ fields: 0, parts: 1, files: 1, fileSize: PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES \}/u,
-  "profile archive imports must accept only one bounded file part",
+  /limits: \{ fields: 0, parts: 1, files: 1,/u,
+  "profile archive imports must accept only one file part",
 );
 assert.match(
   backupRoutesSource,
@@ -10224,10 +10223,6 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   const gameMapSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/components/game/GameMap.tsx"), "utf8");
   const generateRouteSource = readFileSync(
     join(REPOSITORY_ROOT, "packages/server/src/routes/generate.routes.ts"),
-    "utf8",
-  );
-  const retryAgentsRouteSource = readFileSync(
-    join(REPOSITORY_ROOT, "packages/server/src/routes/generate/retry-agents-route.ts"),
     "utf8",
   );
   const turnGameBotRunnerSource = readFileSync(

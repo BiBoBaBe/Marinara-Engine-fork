@@ -2288,10 +2288,11 @@ function GameSurfaceComponent({
   useRenderTimer("game-surface"); // [#3104 diagnostic]
   const backgroundIllustration = useChatStore((state) => state.backgroundIllustrationChatIds.has(activeChatId));
   const agentsProcessing = useAgentStore((state) => state.processingChatIds.includes(activeChatId));
+  const gameSequentialAgents = chatMeta.gameSequentialAgents === true;
   const gameInputGenerationBlocked = isGenerationSendBlocked({
     streamActive: isStreaming,
     agentsProcessing,
-    backgroundIllustration,
+    backgroundIllustration: backgroundIllustration && !gameSequentialAgents,
   });
   // Sync game metadata → store
   useSyncGameState(activeChatId, chatMeta);
@@ -3865,6 +3866,13 @@ function GameSurfaceComponent({
   const previewTurnStoryboardPrompts = usePreviewGameTurnStoryboardPrompts();
   const storyboardGenerating = generateTurnStoryboard.isPending || previewTurnStoryboardPrompts.isPending;
   const latestTurnStoryboardRendering = isGameTurnStoryboardRendering(latestTurnStoryboard);
+  const sequentialGameMediaPending =
+    gameSequentialAgents &&
+    (storyboardGenerating ||
+      latestTurnStoryboardRendering ||
+      manualBackgroundGenerating ||
+      sceneVideoGenerating ||
+      (!!pendingAssetGeneration && !assetGenerationFailed));
 
   const latestAssistantDirectAddressMode = useMemo(() => {
     if (!latestAssistantMsg) return null;
@@ -5130,6 +5138,7 @@ function GameSurfaceComponent({
       if (useSidecar) {
         sceneAnalysis.mutate(
           {
+            ownerChatId: activeChatId,
             narration: tags.cleanContent,
             context: analysisContext,
           },
@@ -6332,6 +6341,16 @@ function GameSurfaceComponent({
       return;
     }
     if (isStreaming || storyboardGenerating || latestTurnStoryboardRendering || manualStoryboardReviewActive) return;
+    if (
+      gameSequentialAgents &&
+      (scenePreparing ||
+        sceneAnalysis.isPending ||
+        agentsProcessing ||
+        manualBackgroundGenerating ||
+        sceneVideoGenerating ||
+        (!!pendingAssetGeneration && !assetGenerationFailed))
+    )
+      return;
     if (turnStoryboardsLoading || turnStoryboardsFetching) return;
     if (latestAssistantStoryboardSections.length === 0) return;
     if ((turnStoryboardRows?.length ?? 0) > 0) return;
@@ -6383,6 +6402,14 @@ function GameSurfaceComponent({
     gameStoryboardAutoGenerationEnabled,
     gameStoryboardKeyframeCount,
     generateTurnStoryboard,
+    gameSequentialAgents,
+    scenePreparing,
+    sceneAnalysis.isPending,
+    agentsProcessing,
+    manualBackgroundGenerating,
+    sceneVideoGenerating,
+    pendingAssetGeneration,
+    assetGenerationFailed,
     isStreaming,
     latestAssistantMsg?.content,
     latestAssistantMsg?.id,
@@ -6711,6 +6738,7 @@ function GameSurfaceComponent({
       let selectedTrack: SceneSpotifyTrackSelection | null = null;
       if (useSidecar) {
         const result = await sceneAnalysis.mutateAsync({
+          ownerChatId: activeChatId,
           narration: tags.cleanContent,
           context: { ...sceneContext, availableSpotifyTracks },
         });
@@ -9399,7 +9427,11 @@ function GameSurfaceComponent({
   // pipeline are finished. Query refreshes may expose the durable assistant row
   // before those later stages settle, which otherwise previews the next segment.
   const narrationUpdatesBlocked =
-    gameInputGenerationBlocked || scenePreparing || sceneAnalysis.isPending || assetGenerationBlocksScene;
+    gameInputGenerationBlocked ||
+    sequentialGameMediaPending ||
+    scenePreparing ||
+    sceneAnalysis.isPending ||
+    assetGenerationBlocksScene;
   const [settledNarrationSource, setSettledNarrationSource] = useState({ chatId: activeChatId, messages });
   useEffect(() => {
     if (narrationUpdatesBlocked) return;
@@ -10365,7 +10397,7 @@ function GameSurfaceComponent({
       );
     } else {
       sceneAnalysis.mutate(
-        { narration: tags.cleanContent, context },
+        { ownerChatId: activeChatId, narration: tags.cleanContent, context },
         {
           onSuccess: (result) => {
             onSuccess(result);
@@ -12477,6 +12509,7 @@ function GameSurfaceComponent({
                           onSkipScene={skipSceneAnalysis}
                           generationFailed={generationFailed}
                           onRetryGeneration={retryGeneration}
+                          onRetryTurn={handleRetryTurn}
                           hasStoredNarrationPosition={restoredNarrationState.hasStoredPosition}
                           restoredSegmentIndex={restoredSegmentIndex}
                           onSegmentChange={handleSegmentChange}
@@ -12532,7 +12565,9 @@ function GameSurfaceComponent({
                                 hasPartyMembers={partyMembers.length > 0}
                                 pendingMoveLabel={pendingMapMove?.label ?? null}
                                 onClearPendingMove={() => setPendingMapMove(null)}
-                                disabled={gameInputGenerationBlocked || !sessionInteractive}
+                                disabled={
+                                  gameInputGenerationBlocked || sequentialGameMediaPending || !sessionInteractive
+                                }
                                 draftDisabled={!sessionInteractive}
                                 isStreaming={gameInputGenerationBlocked}
                                 inline
@@ -12572,6 +12607,7 @@ function GameSurfaceComponent({
                       onSkipScene={skipSceneAnalysis}
                       generationFailed={generationFailed}
                       onRetryGeneration={retryGeneration}
+                      onRetryTurn={handleRetryTurn}
                       hasStoredNarrationPosition={restoredNarrationState.hasStoredPosition}
                       restoredSegmentIndex={restoredSegmentIndex}
                       onSegmentChange={handleSegmentChange}
@@ -12629,7 +12665,7 @@ function GameSurfaceComponent({
                             hasPartyMembers={partyMembers.length > 0}
                             pendingMoveLabel={pendingMapMove?.label ?? null}
                             onClearPendingMove={() => setPendingMapMove(null)}
-                            disabled={gameInputGenerationBlocked || !sessionInteractive}
+                            disabled={gameInputGenerationBlocked || sequentialGameMediaPending || !sessionInteractive}
                             draftDisabled={!sessionInteractive}
                             isStreaming={gameInputGenerationBlocked}
                             inline

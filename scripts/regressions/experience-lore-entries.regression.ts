@@ -234,7 +234,7 @@ try {
   } as Parameters<typeof connections.create>[0]);
   createdConnectionId = conn.id;
 
-  // #5943: the shared location budget binds ordinary and recursive scans too.
+  // #5943: declined forced constants cannot bypass the location reserve.
   for (const recursiveScanning of [false, true]) {
     const book = await createBook("Location budget", { tokenBudget: 4000, recursiveScanning });
     const blocked = await lorebooks.createEntry({
@@ -280,6 +280,68 @@ try {
     );
   }
 
+  // #6143: a declined nonconstant may independently earn ordinary-budget space.
+  for (const activation of ["keyword", "sticky", "recursive"] as const) {
+    const book = await createBook(`Ordinary ${activation} after location decline`, {
+      tokenBudget: 4000,
+      recursiveScanning: activation === "recursive",
+    });
+    const declined = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Dragon location",
+      keys: ["dragon"],
+      content: loreContent("DRAGONLOCATION", 1600),
+      sticky: activation === "sticky" ? 2 : null,
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    if (activation === "recursive") {
+      await lorebooks.createEntry({
+        lorebookId: book.id,
+        name: "Ordinary recursive seed",
+        constant: true,
+        content: "dragon",
+        preventRecursion: false,
+      } as Parameters<typeof lorebooks.createEntry>[0]);
+    }
+    const result = await processLorebooks(
+      db,
+      activation === "keyword" ? [{ role: "user", content: "dragon" }] : [],
+      null,
+      {
+        activeLorebookIds: [book.id],
+        forcedEntryIds: [declined.id],
+        currentLocationTokenBudget: 100,
+        ...(activation === "sticky"
+          ? {
+              entryTimingStates: {
+                [declined.id]: { lastActivatedAt: 0, stickyCount: 2, cooldownRemaining: 0, delayRemaining: 0 },
+              },
+            }
+          : {}),
+      },
+    );
+    assert.equal(result.activatedEntryIds.filter((id) => id === declined.id).length, 1, activation);
+    assert.equal(
+      result.budgetSkippedEntries.some((entry) => entry.id === declined.id),
+      false,
+      activation,
+    );
+    assert.ok(
+      !result.activatedEntries
+        .find((entry) => entry.id === declined.id)!
+        .activationSources.includes("current_location"),
+    );
+    const noOrdinaryRoom = await processLorebooks(db, [{ role: "user", content: "dragon" }], null, {
+      activeLorebookIds: [book.id],
+      forcedEntryIds: [declined.id],
+      currentLocationTokenBudget: 100,
+      tokenBudget: 100,
+    });
+    assert.ok(
+      !noOrdinaryRoom.activatedEntryIds.includes(declined.id),
+      "Independent activation still pays the ordinary budget",
+    );
+  }
+
   // ── 1. Default-off: the unused path is the path that already shipped ──
   {
     const chat = await createExperienceChat("unused key");
@@ -305,6 +367,61 @@ try {
       "No selection means no lorebook key on the response at all",
     );
     assert.equal(Object.prototype.hasOwnProperty.call(empty.json(), "lorebook"), false);
+  }
+
+  // Large ID payloads pass parsing, and a per-chat disable wins over explicit selection.
+  {
+    const response = await post("missing-chat", {
+      ...BASE_BODY,
+      lorebookEntryIds: Array.from({ length: 3_000 }, (_, index) => `entry-${String(index).padStart(30, "0")}`),
+    });
+    assert.equal(response.statusCode, 404, "Thousands of IDs must reach route validation instead of a generic 413");
+    const book = await createBook("Per-chat world selection");
+    const entry = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Hidden history",
+      content: "CHATDISABLEDMARK",
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    assert.ok(entry);
+    const chat = await createExperienceChat("Per-chat world override");
+    for (const key of ["entryStateOverrides", "lorebookEntryStateOverrides"]) {
+      await chats.patchMetadata(chat.id, () => ({
+        entryStateOverrides: undefined,
+        [key]: { [entry.id]: { enabled: false } },
+      }));
+      upstreamBodies = [];
+      const result = await post(chat.id, { ...BASE_BODY, lorebookEntryIds: [entry.id] });
+      assert.equal(result.statusCode, 200, result.body);
+      assert.equal(result.json().lorebook.includedEntries, 0);
+      assert.ok(!systemPromptOf().includes("CHATDISABLEDMARK"));
+    }
+  }
+
+  // A context fit must leave useful answer space before spending a provider call.
+  {
+    const chat = await createExperienceChat("Answer headroom");
+    await connections.update(conn.id, { maxContext: 4_096 });
+    const book = await createBook("Near-cap history");
+    const entry = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "History",
+      content: "World history. ".repeat(850),
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    assert.ok(entry);
+    upstreamBodies = [];
+    const tooTight = await post(chat.id, { ...BASE_BODY, lorebookEntryIds: [entry.id] });
+    assert.equal(tooTight.statusCode, 422, tooTight.body);
+    assert.equal(tooTight.json().code, "context_limit");
+    assert.ok(tooTight.json().availableOutputTokens < tooTight.json().minimumOutputTokens);
+    assert.equal(upstreamBodies.length, 0, "Collapsed reply budgets must be refused without billing");
+    for (const connectionCap of [false, true]) {
+      if (connectionCap) await connections.update(conn.id, { maxTokensOverride: 256 });
+      upstreamBodies = [];
+      const deliberate = await post(chat.id, { ...BASE_BODY, ...(connectionCap ? {} : { maxTokens: 256 }) });
+      assert.equal(deliberate.statusCode, 200, deliberate.body);
+      assert.equal(upstreamBodies.length, 1, "An explicitly small output limit remains supported");
+    }
+    await connections.update(conn.id, { maxContext: 32_768, maxTokensOverride: null });
   }
 
   // Exact selections include complete entries, including explicitly picked outlets.
@@ -674,8 +791,9 @@ try {
       assert.equal(rejected.json().code, "context_limit");
       assert.equal(rejected.json().truncated, false);
       assert.equal(upstreamBodies.length, 0, "Oversized selections and instructions must never reach the provider");
-      if (lorebookEntryIds) assert.match(rejected.json().error, /lorebook entries/);
+      if (lorebookEntryIds) assert.match(rejected.json().error, /lore/);
     }
+    await connections.update(conn.id, { maxContext: 2_048 });
     upstreamBodies = [];
     providerContent = "invalid response ".repeat(300);
     const repair = await post(chat.id, BASE_BODY);

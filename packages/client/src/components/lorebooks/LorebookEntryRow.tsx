@@ -467,7 +467,8 @@ export function LorebookEntryRow({
         entry: {
           ...entry,
           name: localName.trim() || entry.name,
-          enabled: localEnabled,
+          // Keep pending shared edits, but do not copy this chat's override into the shared book.
+          enabled: chatEnabled ? entry.enabled : localEnabled,
           constant,
           selective,
           position: localPosition,
@@ -482,8 +483,9 @@ export function LorebookEntryRow({
     [
       lorebookId,
       entry,
-      localName,
+      chatEnabled,
       localEnabled,
+      localName,
       localStatus,
       localPosition,
       localDepth,

@@ -31,6 +31,7 @@ import type {
   ChatMemoryRecallExportPayload,
   ChatMemoryRecallImportResult,
   ChatSummaryEntry,
+  GameToolPlanningInfo,
   ConversationNote,
   ExportEnvelope,
   Message,
@@ -169,6 +170,21 @@ export function forgetRecentMessageContentEdit(chatId: string, messageId: string
   if (edit?.chatId !== chatId || (revision !== undefined && edit.revision !== revision)) return false;
   recentMessageContentEdits.delete(messageId);
   return true;
+}
+
+export function forgetUnchangedMessageContentEdit(
+  chatId: string,
+  message: Pick<Message, "id" | "activeSwipeIndex">,
+  previousContent: string,
+) {
+  const edit = recentMessageContentEdits.get(message.id);
+  if (
+    edit?.chatId === chatId &&
+    edit.content === previousContent &&
+    (edit.activeSwipeIndex === null || edit.activeSwipeIndex === message.activeSwipeIndex)
+  ) {
+    recentMessageContentEdits.delete(message.id);
+  }
 }
 
 export function preserveRecentMessageContentEdit(chatId: string, message: Message): Message {
@@ -1547,6 +1563,7 @@ export function usePeekPrompt() {
           durationMs?: number | null;
           finishReason?: string | null;
         } | null;
+        gameToolPlanning?: GameToolPlanningInfo | null;
         agentNote?: string;
       }>(`/chats/${chatId}/peek-prompt`, messageId ? { messageId } : {});
     },
@@ -1744,6 +1761,8 @@ export function useSetActiveSwipe(chatId: string | null) {
       qc.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) =>
         replaceCachedMessage(old, messageId, (msg) => ({ ...msg, ...normalizedUpdated })),
       );
+      // Switching an interruption's owner can also restore or cut its predecessor.
+      qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
       qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
     },
     onError: (_err, _vars, context) => {

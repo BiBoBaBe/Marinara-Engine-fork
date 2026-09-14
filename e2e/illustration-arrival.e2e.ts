@@ -216,3 +216,131 @@ test("a saved automatic illustration appears before the remaining agent stream c
     await request.delete(`/api/chats/${chat.id}`);
   }
 });
+
+test("a background illustration handoff cannot overwrite the next generation's stream", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    const streams: Array<{ controller: ReadableStreamDefaultController<Uint8Array> }> = [];
+    Object.assign(window, { illustrationHandoffStreams: streams });
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (new URL(url, location.origin).pathname !== "/api/generate") return nativeFetch(input, init);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streams.push({ controller });
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    };
+  });
+  const created = await request.post("/api/chats", {
+    data: { name: "Illustration owner handoff", mode: "roleplay", characterIds: [], connectionId: "synthetic" },
+  });
+  expect(created.ok()).toBeTruthy();
+  const chat = (await created.json()) as { id: string };
+  const emit = (index: number, type: string, data: unknown, close = false) =>
+    page.evaluate(
+      ({ index, event, close }) => {
+        const streams = (
+          window as unknown as {
+            illustrationHandoffStreams: Array<{ controller: ReadableStreamDefaultController<Uint8Array> }>;
+          }
+        ).illustrationHandoffStreams;
+        streams[index]!.controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+        if (close) streams[index]!.controller.close();
+      },
+      { index, event: { type, data }, close },
+    );
+  try {
+    await openChat(page, chat.id);
+    await page.evaluate(async () => {
+      const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+      useUIStore.setState({ streamingSpeed: 1, reduceAmbientEffects: false });
+    });
+    const input = page.locator("textarea.mari-chat-input-textarea");
+    const send = page.locator("button.mari-chat-send-btn");
+    const streamCount = () =>
+      page.evaluate(
+        () => (window as unknown as { illustrationHandoffStreams: unknown[] }).illustrationHandoffStreams.length,
+      );
+    await input.fill("First reply.");
+    await send.click();
+    await expect.poll(streamCount).toBe(1);
+    await page.evaluate(async (id) => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      Object.assign(window, { illustrationPreviousOwner: useChatStore.getState().abortControllers.get(id) });
+    }, chat.id);
+    const saved = await request.post(`/api/chats/${chat.id}/messages`, {
+      data: { role: "assistant", content: "The old reply is still revealing. ".repeat(40).trim() },
+    });
+    expect(saved.ok()).toBeTruthy();
+    const message = (await saved.json()) as { id: string; content: string };
+    await emit(0, "agent_start", { phase: "post_generation" });
+    await emit(0, "token", message.content);
+    await emit(0, "message_saved", message);
+    await emit(0, "illustration_queued", { messageId: message.id });
+    await emit(0, "done", "", true);
+    await expect
+      .poll(() =>
+        page.evaluate(async (id) => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          return useChatStore.getState().backgroundIllustrationChatIds.has(id);
+        }, chat.id),
+      )
+      .toBe(true);
+    await input.fill("Second reply.");
+    await send.click();
+    await expect.poll(streamCount).toBe(2);
+    await page.evaluate(async (id) => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      Object.assign(window, { illustrationCurrentOwner: useChatStore.getState().abortControllers.get(id) });
+    }, chat.id);
+
+    // Changing the existing speed setting makes any stale old RAF publication
+    // deterministic while the new provider is held without a single token.
+    await page.evaluate(async () => {
+      const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+      useUIStore.setState({ streamingSpeed: 100 });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+            const { useAgentStore } = await import("/src/stores/agent.store.ts" as string);
+            const state = useChatStore.getState();
+            const owners = window as unknown as {
+              illustrationPreviousOwner: AbortController;
+              illustrationCurrentOwner: AbortController;
+            };
+            return {
+              buffer: state.streamBuffer,
+              newOwner:
+                state.abortControllers.get(id) === owners.illustrationCurrentOwner &&
+                owners.illustrationCurrentOwner !== owners.illustrationPreviousOwner,
+              oldAborted: owners.illustrationPreviousOwner.signal.aborted,
+              oldProcessing: useAgentStore.getState().processingRunIdsByChat[id]?.length ?? 0,
+            };
+          }, chat.id),
+        { timeout: 2_000 },
+      )
+      .toEqual({ buffer: "", newOwner: true, oldAborted: false, oldProcessing: 0 });
+    const nextSaved = await request.post(`/api/chats/${chat.id}/messages`, {
+      data: { role: "assistant", content: "Only the new reply owns this stream." },
+    });
+    expect(nextSaved.ok()).toBeTruthy();
+    const nextMessage = (await nextSaved.json()) as { id: string; content: string };
+    await emit(1, "token", nextMessage.content);
+    await emit(1, "message_saved", nextMessage);
+    await emit(1, "assistant_message_ready", nextMessage);
+    await emit(1, "done", "", true);
+    await expect(page.locator(`[data-message-id="${nextMessage.id}"]`)).toContainText(nextMessage.content);
+    await expect(send.locator("svg.lucide-circle-stop")).toHaveCount(0);
+  } finally {
+    await page.close().catch(() => undefined);
+    await request.delete(`/api/chats/${chat.id}?force=true`);
+  }
+});

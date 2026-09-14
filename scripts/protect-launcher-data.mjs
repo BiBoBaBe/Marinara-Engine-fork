@@ -7,7 +7,6 @@ import { parseEnv } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const serverRoot = resolve(repositoryRoot, "packages/server");
 const defaultBackupRoot = resolve(repositoryRoot, "..", ".marinara-engine-update-backups");
 const retainedBackupCount = 2;
 
@@ -212,6 +211,7 @@ const SHARDED_TABLES = [
   "ooc_influences",
   "conversation_notes",
   "memory_chunks",
+  "advanced_memory_records",
   "chat_folders",
   "api_connection_folders",
   "custom_themes",

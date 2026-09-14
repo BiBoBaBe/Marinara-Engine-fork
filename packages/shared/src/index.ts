@@ -5,6 +5,7 @@
 // Types
 export * from "./types/tts.js";
 export * from "./types/chat.js";
+export * from "./types/advanced-memory.js";
 export * from "./types/roleplay-command.js";
 export * from "./types/spotify.js";
 export * from "./types/character.js";
@@ -125,6 +126,7 @@ export * from "./utils/ui-locales.js";
 export * from "./utils/xml-wrapper.js";
 export * from "./utils/music-score.js";
 export * from "./utils/agent-cost.js";
+export * from "./utils/token-estimator.js";
 export * from "./utils/regex-replacement.js";
 export * from "./utils/skill-check-format.js";
 export * from "./utils/skill-check-tag.js";
@@ -148,6 +150,7 @@ export * from "./utils/thinking-tags.js";
 export * from "./utils/rpg-stats.js";
 export * from "./utils/lorebook-folder-tree.js";
 export * from "./utils/text-matching.js";
+export * from "./utils/character-cast.js";
 export * from "./utils/speaker-segments.js";
 export * from "./utils/sprite-labels.js";
 export * from "./utils/managed-generation-parameters.js";

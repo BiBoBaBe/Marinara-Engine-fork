@@ -16,6 +16,7 @@ import {
   updateLorebookFolderSchema,
   LOCAL_SIDECAR_CONNECTION_ID,
   canReparentFolder,
+  estimateTextTokens,
   type CreateLorebookEntryInput,
   type LorebookEntryTimingState,
   type Lorebook,
@@ -178,7 +179,7 @@ function parseRecord(raw: unknown): Record<string, unknown> {
       return {};
     }
   }
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
@@ -228,7 +229,7 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
   const totalTokensEstimate =
     typeof value.totalTokensEstimate === "number" && Number.isFinite(value.totalTokensEstimate)
       ? value.totalTokensEstimate
-      : Math.ceil(activatedEntries.reduce((total, entry) => total + entry.content.length, 0) / 4);
+      : estimateTextTokens(activatedEntries.map((entry) => entry.content).join(""));
   const totalEntries =
     typeof value.totalEntries === "number" && Number.isFinite(value.totalEntries)
       ? value.totalEntries
@@ -503,8 +504,6 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     // into a non-first-linked character is cleared from the right card.
     const linkedCharacterId = await resolveEmbeddedCharacterId(app.db, req.params.id);
 
-    const chatsStorage = createChatsStorage(app.db);
-    await chatsStorage.removeLorebookFromChatMetadata(req.params.id);
     await storage.remove(req.params.id);
 
     if (linkedCharacterId) {

@@ -23,6 +23,8 @@ import {
   reassignMessagePersonaSchema,
   nameToXmlTag,
   normalizeChatSummaryEntries,
+  normalizeAdvancedMemorySettings,
+  type AdvancedMemoryReceipt,
   resolveMacros,
   summariesPatchSchema,
   coerceGameStateTextValue,
@@ -46,8 +48,11 @@ import type {
   ChatMemoryRecallExportPayload,
   ChatMemoryRecallImportResult,
   ChatSummaryEntry,
+  GameToolPlanningInfo,
   ExportEnvelope,
   GameNpc,
+  Lorebook,
+  LorebookEntry,
   LorebookEntryTimingState,
   PresentCharacter,
   RPGStatsConfig,
@@ -57,6 +62,8 @@ import type {
 import {
   createChatsStorage,
   InvalidMessageCursorError,
+  RoleplayInterruptionConflictError,
+  readRoleplayInterruption,
   parseMessageCursor,
   withChatMetadataPatchQueue,
 } from "../services/storage/chats.storage.js";
@@ -78,7 +85,7 @@ import { restoreBranchHudLists, trimJournalForBranch } from "../services/game/br
 import { applyAllSegmentEdits, applyMessageSegmentEdits } from "../services/game/segment-edits.js";
 import type { Journal } from "../services/game/journal.service.js";
 import { createRegexScriptsStorage } from "../services/storage/regex-scripts.storage.js";
-import { processLorebooks } from "../services/lorebook/index.js";
+import { filterRelevantLorebooks, processLorebooks } from "../services/lorebook/index.js";
 import { injectAtDepth } from "../services/lorebook/prompt-injector.js";
 import {
   resolveChatSummaryConnection,
@@ -87,6 +94,9 @@ import {
 import { generateMissingConversationSummaries } from "../services/conversation/auto-summary.service.js";
 import { clearChatActivity, recordUserReaction } from "../services/conversation/autonomous.service.js";
 import { rebuildMemoryChunks } from "../services/memory-recall.js";
+import { createAdvancedMemoryService } from "../services/advanced-memory.js";
+import { copyAdvancedMemoryRecords, remapAdvancedMemoryMetadata } from "../services/advanced-memory-transfer.js";
+import { forwardPromptPreview } from "./generate/prompt-preview.js";
 import { wrapContent } from "../services/prompt/format-engine.js";
 import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { newId } from "../utils/id-generator.js";
@@ -1115,6 +1125,28 @@ export async function chatsRoutes(app: FastifyInstance) {
         const hasStartedChat =
           existingMetadata.conversationSetupComplete === true ||
           existingMessages.some((message) => message.role === "user" || message.role === "assistant");
+        if (existing.mode === "roleplay") {
+          await storage.patchMetadata(req.params.id, (current) => {
+            const settings = normalizeAdvancedMemorySettings(current.advancedMemory);
+            const knowledgeStarts = { ...settings.knowledgeStarts };
+            // A roster change is an administrative anchor, not permission to know earlier scenes.
+            for (const id of addedIds) delete knowledgeStarts[id];
+            const afterMessageId = existingMessages.at(-1)?.id ?? null;
+            const previousEvents = Array.isArray(current.advancedMemoryRosterChanges)
+              ? current.advancedMemoryRosterChanges
+              : [];
+            return {
+              advancedMemoryRosterChanges: [
+                ...previousEvents,
+                ...addedIds.map((characterId) => ({ characterId, action: "joined", afterMessageId })),
+                ...removedIds.map((characterId) => ({ characterId, action: "left", afterMessageId })),
+              ],
+              ...(current.advancedMemory
+                ? { advancedMemory: { ...settings, knowledgeStarts, knowledgeConfirmed: false } }
+                : {}),
+            };
+          });
+        }
         if (existing.mode === "roleplay" && !hasStartedChat && addedIds.length > 0) {
           roleplayTrackerCharacterIdsToSeed = addedIds;
         }
@@ -1335,24 +1367,46 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string; entryId: string } }>("/:id/lorebook-entries/:entryId", async (req, reply) => {
     const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: "enabled must be a boolean" });
-    const entry = await createLorebooksStorage(app.db).getEntry(req.params.entryId);
+    const chat = await storage.getById(req.params.id);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const lorebooks = createLorebooksStorage(app.db);
+    const entry = (await lorebooks.getEntry(req.params.entryId)) as unknown as LorebookEntry | null;
     if (!entry) return reply.status(404).send({ error: "Lorebook entry not found" });
+    const book = await lorebooks.getById(String(entry.lorebookId));
+    const metadata = parseChatMetadata(chat.metadata);
+    const characterIds = resolveActiveCharacterIds(resolveChatCharacterIds(chat.characterIds), metadata, {
+      mode: chat.mode,
+      allowEmpty: true,
+    });
+    const identity = await resolveChatUserIdentity(createCharactersStorage(app.db), chat);
+    if (identity?.source === "character" && !characterIds.includes(identity.id)) characterIds.push(identity.id);
+    if (
+      !book ||
+      !filterRelevantLorebooks([book as unknown as Lorebook], {
+        chatId: chat.id,
+        characterIds,
+        personaId: identity?.source === "persona" ? identity.id : null,
+        activeLorebookIds: Array.isArray(metadata.activeLorebookIds) ? (metadata.activeLorebookIds as string[]) : [],
+        ...resolveLorebookScopeExclusions(chat.mode, metadata),
+      }).length
+    )
+      return reply.status(404).send({ error: "Lorebook entry not available in this chat" });
     if (parsed.data.enabled && !entry.enabled) {
       return reply.status(409).send({ error: "Enable this entry in its lorebook first" });
     }
-    // Merge one flag inside the existing serialized metadata write. In-flight
-    // ephemeral countdowns and changes to other entries must survive.
+    // Preserve a running countdown; re-enabling an exhausted entry starts its authored budget again.
     const updated = await storage.patchMetadata(req.params.id, (current) => {
-      const overrides = (current.entryStateOverrides ?? {}) as Record<
-        string,
-        { enabled?: boolean; ephemeral?: number | null }
-      >;
-      return {
-        entryStateOverrides: {
-          ...overrides,
-          [req.params.entryId]: { ...overrides[req.params.entryId], enabled: parsed.data.enabled },
-        },
+      const overrides = {
+        ...(resolveEntryStateOverrides(current.entryStateOverrides ?? current.lorebookEntryStateOverrides) ?? {}),
       };
+      const override = { ...overrides[req.params.entryId] };
+      if (parsed.data.enabled) {
+        delete override.enabled;
+        if (typeof override.ephemeral === "number" && override.ephemeral <= 0) delete override.ephemeral;
+      } else override.enabled = false;
+      if (Object.keys(override).length) overrides[req.params.entryId] = override;
+      else delete overrides[req.params.entryId];
+      return { entryStateOverrides: overrides };
     });
     if (!updated) return reply.status(404).send({ error: "Chat not found" });
     return normalizeChatForResponse(updated);
@@ -2165,6 +2219,31 @@ export async function chatsRoutes(app: FastifyInstance) {
     return updated;
   });
 
+  // Restore a command-owned cut only while both response and target still match its receipt.
+  app.post<{ Params: { chatId: string; messageId: string } }>(
+    "/:chatId/messages/:messageId/interrupt/restore",
+    async (req, reply) => {
+      const body = z
+        .object({ swipeIndex: z.number().int().nonnegative(), activityIndex: z.number().int().nonnegative() })
+        .safeParse(req.body);
+      if (!body.success) return reply.status(400).send({ error: "Valid swipeIndex and activityIndex are required." });
+      const message = await storage.getMessage(req.params.messageId);
+      if (!message || message.chatId !== req.params.chatId)
+        return reply.status(404).send({ error: "Message not found" });
+      const active = (app as unknown as { activeGenerations?: Map<string, unknown> }).activeGenerations;
+      if (active?.has(req.params.chatId))
+        return reply
+          .status(409)
+          .send({ error: "Wait for the current generation to finish before restoring this message." });
+      try {
+        return await storage.restoreRoleplayInterruption(message.id, { ...body.data, permanent: true });
+      } catch (error) {
+        if (error instanceof RoleplayInterruptionConflictError) return reply.status(409).send({ error: error.message });
+        throw error;
+      }
+    },
+  );
+
   // Update message extra (partial merge) — also syncs to the active swipe
   app.patch<{ Params: { chatId: string; messageId: string }; Querystring: { swipeIndex?: string } }>(
     "/:chatId/messages/:messageId/extra",
@@ -2650,14 +2729,20 @@ export async function chatsRoutes(app: FastifyInstance) {
     }
     const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
     const chatMode = (chat.mode as string) ?? "roleplay";
+    const advancedMemoryEnabled =
+      chatMode === "roleplay" && normalizeAdvancedMemorySettings(chatMeta.advancedMemory).enabled;
     const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
     const visibleGameStateAnchor = resolveVisibleGameStateAnchor(chatMessages);
     const supportsHiddenFromAI = chatMode === "conversation" || chatMode === "roleplay";
 
-    const readCachedPrompt = (
+    const readCachedPrompt = async (
       extra: Record<string, unknown>,
       allowHistoricalCache = false,
-    ): { messages: Array<{ role: string; content: string }>; generationInfo?: Record<string, unknown> } | null => {
+    ): Promise<{
+      messages: Array<{ role: string; content: string }>;
+      generationInfo?: Record<string, unknown>;
+      gameToolPlanning?: GameToolPlanningInfo;
+    } | null> => {
       const cachedPrompt = Array.isArray(extra.cachedPrompt)
         ? extra.cachedPrompt
             .map((entry) => {
@@ -2669,6 +2754,24 @@ export async function chatsRoutes(app: FastifyInstance) {
             .filter((entry): entry is { role: string; content: string } => entry !== null)
         : [];
       if (cachedPrompt.length === 0) return null;
+      if (advancedMemoryEnabled) {
+        const receipt = extra.advancedMemoryReceipt;
+        if (!isRecord(receipt) || !Object.prototype.hasOwnProperty.call(receipt, "sourceEndMessageId")) return null;
+        const end =
+          receipt.sourceEndMessageId === null
+            ? -1
+            : chatMessages.findIndex((message) => message.id === receipt.sourceEndMessageId);
+        if (receipt.sourceEndMessageId !== null && end < 0) return null;
+        try {
+          await createAdvancedMemoryService(app.db).validatePrepared(
+            chat.id,
+            chatMessages.slice(0, end + 1),
+            receipt as unknown as AdvancedMemoryReceipt,
+          );
+        } catch {
+          return null;
+        }
+      }
 
       // Newer prompt caches record the summary fingerprint used at generation time.
       // Older v1.6.1-era caches did not; those are still exact debug-log prompts,
@@ -2681,9 +2784,28 @@ export async function chatsRoutes(app: FastifyInstance) {
         return null;
       }
 
+      const planner = extra.gameToolPlanning;
+      const plannerUsage = isRecord(planner) && isRecord(planner.usage) ? planner.usage : null;
+      const readPlannerTokens = (key: string) => {
+        const value = plannerUsage?.[key];
+        return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+      };
       return {
         messages: cachedPrompt,
         generationInfo: isRecord(extra.generationInfo) ? extra.generationInfo : undefined,
+        gameToolPlanning:
+          isRecord(planner) && typeof planner.model === "string" && typeof planner.provider === "string"
+            ? {
+                model: planner.model,
+                provider: planner.provider,
+                usage: plannerUsage
+                  ? {
+                      promptTokens: readPlannerTokens("promptTokens"),
+                      completionTokens: readPlannerTokens("completionTokens"),
+                    }
+                  : null,
+              }
+            : undefined,
       };
     };
 
@@ -2702,21 +2824,21 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     if (promptSourceMessage?.role === "assistant") {
       const extra = parseExtra(promptSourceMessage.extra) as Record<string, unknown>;
-      let cached = readCachedPrompt(extra, Boolean(requestedMessage));
+      let cached = await readCachedPrompt(extra, Boolean(requestedMessage));
 
       // If message-level extra doesn't have it (swipe overwrite), check swipes.
       if (!cached && promptSourceMessage.id) {
         const swipes = await storage.getSwipes(promptSourceMessage.id);
         const activeSwipe = swipes.find((s: any) => s.index === promptSourceMessage.activeSwipeIndex);
         if (activeSwipe) {
-          cached = readCachedPrompt(
+          cached = await readCachedPrompt(
             parseExtra(activeSwipe.extra) as Record<string, unknown>,
             Boolean(requestedMessage),
           );
         }
         if (!cached) {
           for (const sw of swipes) {
-            cached = readCachedPrompt(parseExtra(sw.extra) as Record<string, unknown>, Boolean(requestedMessage));
+            cached = await readCachedPrompt(parseExtra(sw.extra) as Record<string, unknown>, Boolean(requestedMessage));
             if (cached) break;
           }
         }
@@ -2730,6 +2852,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           source: "cached",
           exact: true,
           generationInfo: cached.generationInfo ?? null,
+          gameToolPlanning: cached.gameToolPlanning ?? null,
           agentNote: requestedMessage
             ? "This is the exact cached text prompt sent for the selected turn."
             : "This is the cached text prompt saved after provider preparation for the active assistant swipe.",
@@ -2739,6 +2862,21 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     if (requestedMessage) {
       return reply.status(404).send({ error: "No exact saved prompt is available for this turn" });
+    }
+
+    if (advancedMemoryEnabled) {
+      const preview = await forwardPromptPreview(app, req, { chatId: chat.id });
+      if (preview.statusCode >= 400) return reply.status(preview.statusCode).send(preview.body);
+      return {
+        messages: preview.body.prompt?.messages ?? [],
+        parameters: preview.body.parameters ?? null,
+        advancedMemory: preview.body.prompt?.advancedMemory,
+        chatMode,
+        source: "assembled",
+        exact: false,
+        generationInfo: null,
+        agentNote: "This is a read-only preview using the current character knowledge and memory settings.",
+      };
     }
 
     const ownerSpatialProjection = await resolveOwnerSpatialProjection(req.params.id, {}, chatMeta);
@@ -3526,6 +3664,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   const EXPORT_REASONING_EXTRA_KEYS = new Set(["thinking", "reasoning", "reasoning_content", "reasoning_details"]);
 
   const INTERNAL_EXPORT_EXTRA_KEYS = new Set([
+    "advancedMemoryReceipt",
     "cachedPrompt",
     "chatCompletionsReasoning",
     "chatSummaryFingerprint",
@@ -3773,6 +3912,11 @@ export async function chatsRoutes(app: FastifyInstance) {
       };
     }
 
+    const exportedMessages = msgs.map((message) => ({ ...message, content: resolveExportMessageContent(message) }));
+    const advancedMemoryTransfer =
+      chat.mode === "roleplay"
+        ? await createAdvancedMemoryService(app.db).exportTransferRecords(chat.id, exportedMessages)
+        : [];
     const lines: string[] = [
       JSON.stringify({
         user_name: persona?.name ?? "User",
@@ -3786,37 +3930,44 @@ export async function chatsRoutes(app: FastifyInstance) {
             ...jsonlMetadata,
             mode: chat.mode,
             spatialContextHistory,
+            ...(advancedMemoryTransfer.length ? { advancedMemoryTransfer } : {}),
           },
         },
       }),
     ];
 
-    for (const msg of msgs) {
+    for (const msg of exportedMessages) {
       const rawMessageExtra = parseExportMetadata(msg.extra);
-      const messageExtra = sanitizeJsonlMessageExtra(rawMessageExtra);
+      const normalizeInterruptionExtra = (extra: Record<string, unknown>) =>
+        storage.prepareRoleplayInterruptionExtraForCopy(extra, (content, target) =>
+          resolveExportMessageContent({ content, characterId: target.characterId }),
+        );
+      const messageExtra = await normalizeInterruptionExtra(sanitizeJsonlMessageExtra(rawMessageExtra));
       const thinking = includeReasoning ? getExportThinking(rawMessageExtra) : null;
       const swipes = await storage.getSwipes(msg.id);
-      const activeContent = resolveExportMessageContent(msg);
+      const activeContent = msg.content;
       const exportSwipes =
         swipes.length > 0
-          ? swipes.map((swipe: { index: number; content: string; extra?: unknown; createdAt?: string }) => ({
-              index: swipe.index,
-              content:
-                swipe.index === msg.activeSwipeIndex
-                  ? activeContent
-                  : resolveExportMessageContent({
-                      content:
-                        chat.mode === "game" && (msg.role === "assistant" || msg.role === "narrator")
-                          ? applyMessageSegmentEdits(swipe.content, metadata, msg.id)
-                          : swipe.content,
-                      characterId: msg.characterId,
-                    }),
-              extra:
-                swipe.index === msg.activeSwipeIndex
-                  ? messageExtra
-                  : sanitizeJsonlMessageExtra(parseExportMetadata(swipe.extra)),
-              createdAt: swipe.createdAt,
-            }))
+          ? await Promise.all(
+              swipes.map(async (swipe: { index: number; content: string; extra?: unknown; createdAt?: string }) => ({
+                index: swipe.index,
+                content:
+                  swipe.index === msg.activeSwipeIndex
+                    ? activeContent
+                    : resolveExportMessageContent({
+                        content:
+                          chat.mode === "game" && (msg.role === "assistant" || msg.role === "narrator")
+                            ? applyMessageSegmentEdits(swipe.content, metadata, msg.id)
+                            : swipe.content,
+                        characterId: msg.characterId,
+                      }),
+                extra:
+                  swipe.index === msg.activeSwipeIndex
+                    ? messageExtra
+                    : await normalizeInterruptionExtra(sanitizeJsonlMessageExtra(parseExportMetadata(swipe.extra))),
+                createdAt: swipe.createdAt,
+              })),
+            )
           : [
               {
                 index: 0,
@@ -3832,6 +3983,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           is_system: msg.role === "system",
           role: msg.role,
           character_id: msg.characterId,
+          marinara_message_id: msg.id,
           mes: activeContent,
           ...(thinking
             ? {
@@ -3985,6 +4137,10 @@ export async function chatsRoutes(app: FastifyInstance) {
     const sourceSummaryEntries = normalizeChatSummaryEntries(sourceMeta.summaryEntries, {
       legacySummary: typeof sourceMeta.summary === "string" ? sourceMeta.summary : null,
     });
+    const advancedMemoryTransfer =
+      sourceChat.mode === "roleplay"
+        ? await createAdvancedMemoryService(app.db).exportTransferRecords(sourceChat.id)
+        : [];
     const isSceneChat = sourceMeta.sceneStatus === "active" || !!sourceMeta.sceneOriginChatId;
     if (isSceneChat) {
       return reply.status(400).send({ error: "Scene chats cannot be branched" });
@@ -4027,7 +4183,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     // Copy metadata (preset, lorebooks, agents, persona settings, etc.) from source chat
     // but keep branch labels separate from the stable thread name.
-    const settingsToKeep = { ...sourceMeta };
+    let settingsToKeep = { ...sourceMeta };
     for (const key of ["summary", "summaryEntries", "lastAutomaticSummaryMessageId", "daySummaries", "weekSummaries"]) {
       delete settingsToKeep[key];
     }
@@ -4072,7 +4228,9 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     for (const msg of msgs) {
       const swipes = await storage.getSwipes(msg.id);
-      const messageExtra = sanitizeBranchedMessageExtra(parseExportMetadata(msg.extra));
+      const messageExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
+        sanitizeBranchedMessageExtra(parseExportMetadata(msg.extra)),
+      );
       const clearSummaryHidden = droppedHiddenIds.has(msg.id) && !inheritedHiddenIds.has(msg.id);
       if (clearSummaryHidden && messageExtra.hiddenFromAI === true) {
         delete messageExtra.hiddenFromAI;
@@ -4081,17 +4239,23 @@ export async function chatsRoutes(app: FastifyInstance) {
         Number.isInteger(msg.activeSwipeIndex) && msg.activeSwipeIndex >= 0 ? msg.activeSwipeIndex : 0;
       const copiedSwipes =
         swipes.length > 0
-          ? swipes.map((swipe: { index: number; content: string; extra?: unknown; createdAt?: string | null }) => {
-              const swipeExtra = sanitizeBranchedMessageExtra(parseExportMetadata(swipe.extra));
-              if (clearSummaryHidden && swipeExtra.hiddenFromAI === true) delete swipeExtra.hiddenFromAI;
-              const extra = swipe.index === activeSwipeIndex ? { ...swipeExtra, ...messageExtra } : swipeExtra;
-              return {
-                index: swipe.index,
-                content: swipe.index === activeSwipeIndex ? msg.content : swipe.content,
-                extra,
-                createdAt: swipe.createdAt ?? null,
-              };
-            })
+          ? await Promise.all(
+              swipes.map(
+                async (swipe: { index: number; content: string; extra?: unknown; createdAt?: string | null }) => {
+                  const swipeExtra = await storage.prepareRoleplayInterruptionExtraForCopy(
+                    sanitizeBranchedMessageExtra(parseExportMetadata(swipe.extra)),
+                  );
+                  if (clearSummaryHidden && swipeExtra.hiddenFromAI === true) delete swipeExtra.hiddenFromAI;
+                  const extra = swipe.index === activeSwipeIndex ? { ...swipeExtra, ...messageExtra } : swipeExtra;
+                  return {
+                    index: swipe.index,
+                    content: swipe.index === activeSwipeIndex ? msg.content : swipe.content,
+                    extra,
+                    createdAt: swipe.createdAt ?? null,
+                  };
+                },
+              ),
+            )
           : [
               {
                 index: 0,
@@ -4122,11 +4286,33 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (upToMessageId && msg.id === upToMessageId) break;
     }
 
+    // A branch ending before the interrupting response keeps the full preceding message.
+    // Copy only; never restore or otherwise mutate the source chat while branching.
+    for (const omittedMessage of msgs.slice(sourceCutoffIndex + 1)) {
+      const omittedActivity = (
+        await storage.prepareRoleplayInterruptionExtraForCopy(parseExportMetadata(omittedMessage.extra))
+      ).roleplayCommandActivity;
+      if (Array.isArray(omittedActivity))
+        for (const item of omittedActivity) {
+          const receipt = readRoleplayInterruption(item?.interruption);
+          if (!receipt || receipt.restored || item.deleted || item.error) continue;
+          const copiedIndex = copiedSourceMessages.findIndex((message) => message.id === receipt.targetMessageId);
+          const copied = copiedMessageInputs[copiedIndex];
+          if (!copied) continue;
+          const swipe = copied.swipes?.find((candidate) => candidate.index === receipt.targetSwipeIndex);
+          if (swipe?.content === receipt.interruptedContent) {
+            swipe.content = receipt.originalContent;
+            if (copied.activeSwipeIndex === swipe.index && copied.content === receipt.interruptedContent)
+              copied.content = receipt.originalContent;
+          }
+        }
+    }
     const branchedMessageIds = await storage.createMessagesBatch(newChat.id, copiedMessageInputs);
     copiedSourceMessages.forEach((msg, index) => {
       const branchedId = branchedMessageIds[index];
       if (branchedId) sourceToBranchedMessageId.set(msg.id, branchedId);
     });
+    await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
     const forkSourceMessage = copiedSourceMessages.at(-1);
 
     if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {
@@ -4156,6 +4342,8 @@ export async function chatsRoutes(app: FastifyInstance) {
       inheritedAutomaticEntry && typeof sourceMeta.lastAutomaticSummaryMessageId === "string"
         ? sourceToBranchedMessageId.get(sourceMeta.lastAutomaticSummaryMessageId)
         : undefined;
+    const branchCharacterIds = resolveChatCharacterIds(newChat.characterIds);
+    settingsToKeep = remapAdvancedMemoryMetadata(settingsToKeep, sourceToBranchedMessageId, branchCharacterIds);
     // #5406: `settingsToKeep` is the source metadata verbatim, which carries its
     // `metadataWriteOrdinals` mirror. Inherit the source's write-ordinal counter too, or the
     // branch's first allocation would come in BELOW the stamps it just copied and invert the
@@ -4176,7 +4364,6 @@ export async function chatsRoutes(app: FastifyInstance) {
         ? { lastAutomaticSummaryMessageId: inheritedLastAutomaticSummaryMessageId }
         : {}),
     });
-
     // Fix updatedAt: createMessage sets the chat's updatedAt to each message's
     // (preserved) timestamp, so after the loop the branched chat's updatedAt is
     // the last source message's original time. Reset it to now so the branch
@@ -4192,6 +4379,22 @@ export async function chatsRoutes(app: FastifyInstance) {
     // ensures that branching a branch at an earlier point finds the correct tracker state
     // for that specific message, not just the latest snapshot in the source chat.
     try {
+      if (sourceChat.mode === "roleplay") {
+        await copyAdvancedMemoryRecords({
+          db: app.db,
+          chatId: newChat.id,
+          records: advancedMemoryTransfer,
+          // A prefix branch may have recovered an interrupted source. Its older derived
+          // memories must fail the existing digest check instead of being revalidated.
+          sourceMessages: msgs.map((message, index) => ({
+            ...message,
+            content: copiedMessageInputs[index]?.content ?? message.content,
+          })),
+          messageIds: sourceToBranchedMessageId,
+          characterIds: branchCharacterIds,
+          metadata: { ...settingsToKeep, summaryEntries: inheritedEntries },
+        });
+      }
       const spatialStore = createSpatialContextStorage();
       const spatialBootstrap = await spatialStore.getBootstrap(req.params.id);
       if (spatialBootstrap) {
