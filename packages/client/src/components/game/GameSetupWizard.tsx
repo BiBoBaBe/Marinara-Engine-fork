@@ -554,9 +554,6 @@ export function GameSetupWizard({
   const customWidgetsLocked = requiredCustomWidgets !== undefined;
   const enableCustomWidgets = requiredCustomWidgets ?? customWidgetsChoice;
   const [manualWidgetSetupEnabled, setManualWidgetSetupEnabled] = useState(false);
-  useEffect(() => {
-    if (requiredCustomWidgets === false) setManualWidgetSetupEnabled(false);
-  }, [requiredCustomWidgets]);
   const [customHudWidgets, setCustomHudWidgets] = useState(() =>
     normalizeGameHudWidgets([createDefaultGameHudWidget("progress_bar", [])]),
   );
@@ -2935,7 +2932,6 @@ export function GameSetupWizard({
                         aria-pressed={enableCustomWidgets}
                         disabled={customWidgetsLocked}
                         onClick={() => {
-                          if (customWidgetsLocked) return;
                           const nextEnabled = !enableCustomWidgets;
                           setEnableCustomWidgets(nextEnabled);
                           if (!nextEnabled) setManualWidgetSetupEnabled(false);
