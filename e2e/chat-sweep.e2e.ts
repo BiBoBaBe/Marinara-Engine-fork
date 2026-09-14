@@ -72,6 +72,7 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     const aliceRow = page.locator('[data-touch-drag-card="persona"]').filter({ hasText: "Alice Persona" });
     await expect(aliceRow).toBeVisible();
     if (info.project.name === "desktop-chromium") await aliceRow.hover();
+    await expect(page.locator('[data-touch-drag-card="persona"]').last()).toHaveCSS("opacity", "1");
     await page.screenshot({ path: info.outputPath("personas-panel.png") });
     const globalControls = await panel.getByRole("button", { name: /^(Set as active|Active|Inactive)$/u }).count();
     await page
@@ -90,7 +91,18 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     if (await aliceRow.isVisible()) await page.locator('[data-tour="panel-personas"]').click();
     const composer = page.locator("textarea[data-chat-composer]");
     await expect(composer).toBeVisible();
-    await page.getByTitle("Alice Persona", { exact: true }).click();
+    const openPersonas = async (currentName: string) => {
+      if (info.project.name === "desktop-chromium") {
+        await page.getByTitle(currentName, { exact: true }).click();
+        return page.getByRole("menu", { name: "Personas", exact: true });
+      }
+      await page.getByTitle("Quick Switcher", { exact: true }).click();
+      const picker = page.locator(".fixed[data-chat-floating-panel]");
+      await picker.getByRole("button", { name: "Personas", exact: true }).click();
+      return picker;
+    };
+    const picker = await openPersonas("Alice Persona");
+    await picker.getByRole("button", { name: /Ungrouped/u }).click();
     await page.getByRole("button", { name: /Bob Persona/u }).click();
     await expect
       .poll(async () => (await (await request.get(`/api/chats/${chat.id}`)).json()).personaId)
@@ -101,7 +113,7 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     await expect(historicalRow).toContainText("Recorded by Alice Persona.");
     await expect(historicalRow.getByText("Alice Persona", { exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath("historical-persona-identity.png") });
-    await page.getByTitle("Bob Persona", { exact: true }).click();
+    await openPersonas("Bob Persona");
     await page.getByRole("button", { name: /None.*No persona selected/u }).click();
     await expect.poll(async () => (await (await request.get(`/api/chats/${chat.id}`)).json()).personaId).toBeNull();
     await expect(messageRow).toContainText("Hello User. I am Bob Character.");
@@ -113,7 +125,11 @@ test("Personas are chosen per chat and Conversation names match that choice", as
     await expect(messageRow.getByText("Bob Character", { exact: true })).toBeVisible();
     await expect(historicalRow).toContainText("Recorded by Alice Persona.");
     await expect(historicalRow.getByText("Alice Persona", { exact: true })).toBeVisible();
-    await expect(page.getByTitle("Quick Persona Switcher", { exact: true })).toBeVisible();
+    await expect(
+      page.getByTitle(info.project.name === "desktop-chromium" ? "Quick Persona Switcher" : "Quick Switcher", {
+        exact: true,
+      }),
+    ).toBeVisible();
   } finally {
     for (const path of resources) await request.delete(path).catch(() => undefined);
   }
