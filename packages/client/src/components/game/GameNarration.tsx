@@ -2107,10 +2107,13 @@ export function GameNarration({
     [localizeUi],
   );
   const markGameDiceNumbers = useCallback(
-    (content: string, message: Pick<NarrationMessage, "extra"> | null | undefined, translated: boolean): string => {
-      // A translated segment is not the text the offsets were taken in, and its numbers
-      // may have been rewritten by the translator, so it is left alone.
-      if (translated) return content;
+    (content: string, message: Pick<NarrationMessage, "extra"> | null | undefined, leaveAlone: boolean): string => {
+      // Left alone in two cases. A translated segment is not the text the offsets were
+      // taken in, and its numbers may have been rewritten by the translator. A segment
+      // still being revealed by the typewriter is cut mid-word, so a half-revealed "43"
+      // reads as a standalone "4" and would take a record that rolled 4; the markers wait
+      // for the reveal to finish, and the plain number is still true in the meantime.
+      if (leaveAlone) return content;
       return applyGameDiceMarkers(content, readGameDicePlaceholderRecords(message), describeGameDiceRoll);
     },
     [describeGameDiceRoll],
@@ -2142,7 +2145,7 @@ export function GameNarration({
         ? slicePreservingEffects(active.content, visibleChars)
         : "",
     activeSourceMessage,
-    showActiveTranslationOnly,
+    showActiveTranslationOnly || !doneTyping,
   );
   const activeCopyKey = active ? `active:${active.id}` : null;
   const activeCopyText = active ? (active.readableContent ?? stripGmTagsKeepReadables(active.content)) : "";
