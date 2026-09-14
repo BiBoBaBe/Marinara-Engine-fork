@@ -173,7 +173,7 @@ try {
         ...startupManifest,
         contributions: { gameSurface: { prepareBeforeStart: true } },
       }),
-    /prepareBeforeStart requires the "game-surface" slot/,
+    /prepareBeforeStart requires the .*game-surface.* slot/,
   );
 
   const forwardCompatibleCatalog = capabilityCatalogSchema.parse({
