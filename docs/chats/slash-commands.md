@@ -59,7 +59,7 @@ In **Roleplay**, add a character name after the range to hide those messages onl
 /hide 2-5,9 "Powers That Be"
 ```
 
-Other characters keep their existing access. Quote names with spaces when putting the name first: the older `/hide Maukie 3-8` and `/hide "Powers That Be" 2-5,9` forms still work. If a name matches multiple characters, use the full name. Use the message's **Hide from AI** avatar chooser to review or undo character-specific hiding; `/unhide` restores global hiding only.
+Other characters keep their existing access. Quote names with spaces when putting the name first: the older `/hide Maukie 3-8` and `/hide "Powers That Be" 2-5,9` forms still work. If a name matches multiple characters, use the full name. Quote numeric character names to distinguish them from message numbers, for example `/hide 1 "123"`. In a group Roleplay chat, use the message's **Hide from AI** avatar chooser to review or undo character-specific hiding. In a one-character Roleplay chat, use the message's **Unhide from AI** action instead. `/unhide` restores global hiding only.
 
 The `/remind` command takes a time, then a message. The time uses `h` for hours, `m` for minutes, and `s` for seconds. This example reminds you in 30 minutes:
 

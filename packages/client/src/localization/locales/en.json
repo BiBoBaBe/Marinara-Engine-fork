@@ -4607,7 +4607,7 @@
   "ui.chat.slash.help.title": "Available Commands:",
   "ui.chat.slash.hiddenFromCharacter_one": "Hidden {{count}} message from {{name}}'s context",
   "ui.chat.slash.hiddenFromCharacter_other": "Hidden {{count}} messages from {{name}}'s context",
-  "ui.chat.slash.hideTargetAmbiguous": "More than one character matches “{{name}}”. Use the full character name.",
+  "ui.chat.slash.hideTargetAmbiguous": "“{{name}}” is ambiguous. Use /hide [range] \"[full character name]\".",
   "ui.chat.slash.hideTargetRoleplayOnly": "Character-targeted /hide is available in Roleplay chats.",
   "ui.chat.slash.hideTargetUnknown": "Character not found: {{name}}",
   "ui.chat.slash.hideUsage": "Usage: /hide [range] [name (optional)]. Name-first syntax is also accepted.",

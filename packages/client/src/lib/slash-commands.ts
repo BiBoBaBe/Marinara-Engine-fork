@@ -584,13 +584,24 @@ export function parseTargetedHideArguments(
   const indexExpression = (quoted?.rest ?? unquoted?.[2] ?? "").trim();
   let indices = parseMessageIndices(indexExpression);
   const rangeFirst = trimmed.match(/^(\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*)\s+(.+)$/u);
-  // Keep resolvable name-first syntax, including numeric names. Quotes can
-  // disambiguate a numeric target when the range comes first.
+  // Preserve name-first syntax, but require quotes when numeric names could
+  // also be interpreted as message indices.
   const hasLegacyTarget =
     indices && characters.some((character) => normalizeLookup(character.name).includes(normalizeLookup(targetName)));
-  if (rangeFirst && !hasLegacyTarget) {
-    targetName = stripSingleWrappingQuotePair(rangeFirst[2]!.trim());
-    indices = parseMessageIndices(rangeFirst[1]!);
+  if (rangeFirst) {
+    const quotedRangeTarget = parseLeadingQuotedSegment(rangeFirst[2]!);
+    const isQuotedRangeTarget = quotedRangeTarget?.rest === "";
+    const rangeTargetName = isQuotedRangeTarget ? quotedRangeTarget.value.trim() : rangeFirst[2]!.trim();
+    const hasRangeTarget = characters.some((character) =>
+      normalizeLookup(character.name).includes(normalizeLookup(rangeTargetName)),
+    );
+    if (hasLegacyTarget && hasRangeTarget && !isQuotedRangeTarget) {
+      return { kind: "error", reason: "ambiguous", targetName: rangeTargetName };
+    }
+    if (!hasLegacyTarget || isQuotedRangeTarget) {
+      targetName = rangeTargetName;
+      indices = parseMessageIndices(rangeFirst[1]!);
+    }
   }
   if (!targetName || !indices) return { kind: "error", reason: "usage" };
   if (mode !== "roleplay") return { kind: "error", reason: "roleplay_only" };

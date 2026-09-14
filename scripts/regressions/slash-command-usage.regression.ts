@@ -82,6 +82,8 @@ try {
   for (const args of [
     "1 Nobody",
     "1 Mau",
+    "123 1",
+    "1 123",
     "0 Lady Maria",
     "1-x Lady Maria",
     "1,,2 Lady Maria",
@@ -141,6 +143,18 @@ for (const input of ["123 1-2", '"123" 1-2', '1-2 "123"']) {
   );
 }
 assert.deepEqual(parseTargetedHideArguments("123", "roleplay", characters), { kind: "global", indices: [123] });
+for (const input of ["1 123", "123 1"]) {
+  const parsed = parseTargetedHideArguments(input, "roleplay", characters);
+  assert.equal(parsed.kind, "error", `Conflicting range/name interpretations must be rejected: ${input}`);
+  assert.equal(parsed.kind === "error" && parsed.reason, "ambiguous");
+}
+for (const input of ['1 "123"', '"123" 1', "1 ‘123’"]) {
+  assert.deepEqual(parseTargetedHideArguments(input, "roleplay", characters), {
+    kind: "targeted",
+    character: characters[3],
+    indices: [1],
+  });
+}
 assert.equal(parseTargetedHideArguments("1 Mau", "roleplay", characters).kind, "error");
 assert.deepEqual(parseTargetedHideArguments("Mau 1", "roleplay", characters), {
   kind: "error",
