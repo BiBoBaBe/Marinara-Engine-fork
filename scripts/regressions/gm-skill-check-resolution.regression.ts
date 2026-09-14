@@ -488,7 +488,7 @@ assert.match(
 const gameSurface = readFileSync(join(root, "packages/client/src/components/game/GameSurface.tsx"), "utf8");
 assert.match(
   gameSurface,
-  /isEngineRollableSkillCheckTag\(sc\)\s*(?:&&\s*!poolModeActive\s*)?\?\s*\(\s*await skillCheck\.mutateAsync\(/u,
+  /isEngineRollableSkillCheckTag\(sc\)\s*&&\s*!poolModeActive\s*\?\s*\(\s*await skillCheck\.mutateAsync\(/u,
   "the client must not ask the endpoint to roll a system the engine does not implement",
 );
 // The one-request dice pool adds a second condition to that same arm, and it has to stay

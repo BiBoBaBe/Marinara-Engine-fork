@@ -432,9 +432,11 @@ try {
   assert.equal(storedConsumed[0]!.size, "d20");
   assert.equal(storedConsumed[0]!.slot, 0);
   assert.match(savedRecord, new RegExp(`rolls="${storedConsumed[0]!.value}"`), "the record and the ledger agree");
-  assert.deepEqual(
-    storedPool.values.d20,
-    parseGameDicePool(row!.pool)!.values.d20,
+  // The spent value is still at the head of the STORED queue: a refill would have shifted
+  // it off, so its presence there is what proves the refill is deferred to the next turn.
+  assert.equal(
+    storedPool.values.d20[0],
+    storedConsumed[0]!.value,
     "the row stores the queue the turn was PROMPTED with, refill deferred to the next turn",
   );
 

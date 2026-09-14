@@ -427,6 +427,10 @@ export async function resolveSkillCheckTagsInContent(
     const context = await options.loadContext();
     const results: SkillCheckResult[] = [];
     let poolTagIndex = 0;
+    // Pool checks the allotment could not serve. Saved sparse, so they are counted with the
+    // sparse tags rather than the resolved ones: a caller reading `resolved` as "rolled"
+    // would otherwise count a check that has no number yet.
+    let overflowed = 0;
     const rolled = rewrite((entry) => {
       if (entry.poolBody != null && options.pool) {
         const spent = resolvePoolCheckTag(
@@ -444,6 +448,7 @@ export async function resolveSkillCheckTagsInContent(
         }
         // Overflow: no value exists, so nothing is written. The ask is kept, every number
         // is dropped, and the outcome is owed to the next turn — never a second request.
+        overflowed += 1;
         return serializeSparseSkillCheckTag({
           skill: entry.request.skill,
           dc: entry.request.dc,
@@ -456,7 +461,14 @@ export async function resolveSkillCheckTagsInContent(
       results.push(result);
       return serializeResolvedSkillCheckTag(result);
     });
-    return { content: rolled, results, resolved: pending.length, trusted, left, sparse: 0 };
+    return {
+      content: rolled,
+      results,
+      resolved: pending.length - overflowed,
+      trusted,
+      left: left + overflowed,
+      sparse: overflowed,
+    };
   } catch (err) {
     // The log itself must not be a second way to fail: a rejected value with a
     // throwing getter would otherwise escape this catch and take the turn down.

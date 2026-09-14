@@ -153,8 +153,10 @@ export function createGameChanceStreamFilter(): GameChanceStreamFilter {
           // stream raw and then mutate, and the filter's output would depend on how the
           // provider chunked its tokens. The remainder stays in the carry and is
           // re-scanned. The pass still replaces this span in the saved content, so the
-          // streamed view is the only place it is ever seen.
-          const cut = Math.max(1, lineBreak !== -1 ? lineBreak : Math.min(carry.length, ROLL_HOLD_MAX));
+          // streamed view is the only place it is ever seen. Bounded by BOTH the line
+          // break and the cap, the way the scanner bounds a refused span: a line break far
+          // past the cap must not widen the release to everything before it.
+          const cut = Math.max(1, Math.min(lineBreak !== -1 ? lineBreak : carry.length, ROLL_HOLD_MAX));
           visible += carry.slice(0, cut);
           carry = carry.slice(cut);
           mode = "idle";

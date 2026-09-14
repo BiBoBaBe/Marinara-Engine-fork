@@ -143,6 +143,17 @@ for (const visible of everyChunking(brokenThenValid)) {
     "the span behind a malformed one is still held, in every chunking",
   );
 }
+// The release is bounded by the cap even when a line break sits far beyond it. Taking the
+// line break outright would hand back everything before it, the valid placeholder
+// included, in the one chunking where the whole line arrives at once.
+const brokenPastCapThenValid = `Broken [[roll: ${"9".repeat(PLACEHOLDER_BODY_MAX + 40)} and [[roll: 1d4]] more\nnext`;
+for (const visible of everyChunking(brokenPastCapThenValid)) {
+  assert.equal(
+    visible,
+    `Broken [[roll: ${"9".repeat(PLACEHOLDER_BODY_MAX + 40)} and  more\nnext`,
+    "a line break past the cap does not widen the release to the placeholder before it",
+  );
+}
 
 // A nested closer run is consumed whole, the same way the scanner bounds its span, so no
 // stray `]` is left standing in the streamed sentence either.
@@ -235,6 +246,41 @@ assert.deepEqual(
 );
 // A number that is part of a longer run is not this record's number.
 assert.deepEqual(matchGameDicePlaceholders("You carry 1234 coins.", [record({ text: "12", total: 12 })]), []);
+// A number inside a larger numeric token is not the number either: a decimal, a grouped
+// thousand and a negative all contain a 12 that no record rolled.
+for (const text of [
+  "It costs 1.12 gold.",
+  "It costs 12.5 gold.",
+  "You carry 2,12 coins.",
+  "You carry 12,000 coins.",
+  "The temperature is -12 degrees.",
+  "The temperature is −12 degrees.",
+]) {
+  assert.deepEqual(matchGameDicePlaceholders(text, [record({ text: "12", total: 12 })]), [], text);
+}
+// A separator with no digit on its far side is punctuation, and the number stays standalone.
+assert.deepEqual(
+  matchGameDicePlaceholders("It hits for 12.", [record({ text: "12", total: 12 })]).map((match) => [
+    match.start,
+    match.end,
+  ]),
+  [[12, 14]],
+);
+assert.deepEqual(
+  matchGameDicePlaceholders("Hits for 12, then rests.", [record({ text: "12", total: 12 })]).map((match) => [
+    match.start,
+    match.end,
+  ]),
+  [[9, 11]],
+);
+// A negative record is matched with its sign, so the sign is not read as "inside a negative".
+assert.deepEqual(
+  matchGameDicePlaceholders("The penalty is -3 this round.", [record({ text: "-3", total: -3 })]).map((match) => [
+    match.start,
+    match.end,
+  ]),
+  [[15, 17]],
+);
 // A number inside a command tag is not the prose number, and a span opened inside one
 // would break the formatter's read of the tag.
 assert.deepEqual(

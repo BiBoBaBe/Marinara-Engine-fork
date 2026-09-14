@@ -97,7 +97,15 @@ function findStandaloneOccurrences(text: string, value: string, protectedRanges:
     const at = text.indexOf(value, cursor);
     if (at === -1) return found;
     cursor = at + 1;
-    if (isDigit(text[at - 1]) || isDigit(text[at + value.length])) continue;
+    const before = text[at - 1];
+    const after = text[at + value.length];
+    // Part of a larger numeric token, which a digit check alone misses: "1.43", "2,430"
+    // and "-43" all contain a 43 that no record rolled. A separator counts only when a
+    // digit sits on its far side, so "43." at the end of a sentence is still standalone.
+    const insideNegative = !value.startsWith("-") && (before === "-" || before === "−");
+    const afterSeparator = (before === "." || before === ",") && isDigit(text[at - 2]);
+    const beforeSeparator = (after === "." || after === ",") && isDigit(text[at + value.length + 1]);
+    if (isDigit(before) || isDigit(after) || insideNegative || afterSeparator || beforeSeparator) continue;
     if (protectedRanges.some(([start, end]) => at < end && at + value.length > start)) continue;
     found.push(at);
   }
