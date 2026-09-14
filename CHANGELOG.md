@@ -5,6 +5,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 ## [Unreleased]
 
 - Game setup keeps its normal steps when an Experience declares inline setup, with seed controls, individual lorebook entry selection, and setup-file import/export. Experiences can only be selected for new games; reopening an existing game preserves its saved Experience (#6181, #6182).
+- Unsupported installed package records no longer block supported packages on updated hosts, and remain preserved during registry writes and downgrade checks (#6181).
 - Automatic translation follows the originating chat while navigating elsewhere in the app (#6187).
 - Closing a Unix terminal flushes confirmed saves and records a clean server shutdown (#6183).
 - Inventory tracker items can retain editable descriptions and locations alongside their quantities (#6192).
