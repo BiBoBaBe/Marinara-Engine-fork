@@ -8,7 +8,13 @@ async function prepare(page: import("@playwright/test").Page, theme: "light" | "
   await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
   await seedUIState(
     page,
-    { hasCompletedOnboarding: true, sidebarOpen: false, rightPanelOpen: false, theme },
+    {
+      hasCompletedOnboarding: true,
+      chatHelpSeenModes: ["conversation", "roleplay", "game"],
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      theme,
+    },
     "if-missing",
   );
   await page.addInitScript((version) => localStorage.setItem("marinara:whats-new:seen-version", version), version);
@@ -71,7 +77,20 @@ for (const theme of ["light", "dark"] as const) {
             "/src/lib/scene-generation.ts" as string
           )) as typeof import("../packages/client/src/lib/scene-generation");
           useChatStore.getState().setActiveChatId(chatId);
-          void scene.startSceneWithPromptPreferences({ chatId, prompt: "A quiet experiment" });
+          const result = { settled: false, created: false, chatId: null as string | null };
+          Object.assign(window, { sceneCreationResult: result });
+          void scene
+            .startSceneWithPromptPreferences({
+              chatId,
+              prompt: "A quiet experiment",
+              onCreated: () => {
+                result.created = true;
+              },
+            })
+            .then((response) => {
+              result.chatId = response?.chatId ?? null;
+              result.settled = true;
+            });
         }, origin.id);
       const activeChatId = () =>
         page.evaluate(async () => {
@@ -132,6 +151,9 @@ for (const theme of ["light", "dark"] as const) {
       await choices.getByRole("button", { name: "Confirm Choices", exact: true }).click();
       await expect(choices.getByRole("button", { name: /^Saving/ })).toBeDisabled();
       await expect(choices.getByRole("button", { name: "Skip", exact: true })).toBeDisabled();
+      for (const control of await choices.locator("button, select, input").all()) {
+        await expect(control).toBeDisabled();
+      }
       await page.keyboard.press("Escape");
       await expect(choices).toBeVisible();
       await expect.poll(activeChatId).toBe(origin.id);
@@ -155,6 +177,47 @@ for (const theme of ["light", "dark"] as const) {
       const second = await (await request.get(`/api/chats/${secondId}`)).json();
       const secondMeta = typeof second.metadata === "string" ? JSON.parse(second.metadata) : second.metadata;
       expect(secondMeta.presetChoices).toBeUndefined();
+
+      for (const replacement of ["create-character", null] as const) {
+        await start();
+        const abandonedId = await create();
+        await expect(choices).toBeVisible();
+        await page.evaluate(async (replacement) => {
+          const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+          const onClose = useUIStore.getState().modal.props.onClose as () => void;
+          Object.assign(window, { abandonedSceneClose: onClose });
+          if (replacement) useUIStore.getState().openModal(replacement);
+          else useUIStore.getState().closeModal();
+        }, replacement);
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (
+                  window as unknown as {
+                    sceneCreationResult: { settled: boolean; created: boolean; chatId: string | null };
+                  }
+                ).sceneCreationResult,
+            ),
+          )
+          .toEqual({ settled: true, created: false, chatId: null });
+        // A late save callback must not close the replacement or enter the old scene.
+        await page.evaluate(() => (window as unknown as { abandonedSceneClose: () => void }).abandonedSceneClose());
+        await expect.poll(activeChatId).toBe(origin.id);
+        expect((await request.get(`/api/chats/${abandonedId}`)).ok()).toBeTruthy();
+        await expect
+          .poll(() =>
+            page.evaluate(async () => {
+              const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+              return useUIStore.getState().modal?.type ?? null;
+            }),
+          )
+          .toBe(replacement);
+        await page.evaluate(async () => {
+          const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+          useUIStore.getState().closeModal();
+        });
+      }
     } finally {
       releaseSave();
       await page.close();

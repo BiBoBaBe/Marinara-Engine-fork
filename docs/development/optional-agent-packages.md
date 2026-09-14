@@ -479,7 +479,7 @@ a package `restart-required` stops its verbs resolving until Engine restarts.
 ### Capability API 1.17: prepare an Experience before its opening turn
 
 A `game-surface` package may declare `contributions.gameSurface.prepareBeforeStart: true`
-with schema version 2 and Capability API 1.17 or newer. The Engine mounts that surface
+with schema version 2 and Capability API 1.17. The Engine mounts that surface
 while the game is ready, before enabling Start Game. Classic games and packages without
 the flag retain their existing startup flow.
 

@@ -99,16 +99,34 @@ export async function startSceneWithPromptPreferences(options: StartSceneOptions
     if (preferences.promptPresetId) {
       // Use the same persisted choices as Roleplay setup before entering the scene.
       toast.dismiss(toastId);
-      await new Promise<void>((resolve) => {
-        useUIStore.getState().openModal("preset-choices", {
+      const completed = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const settle = (completed: boolean) => {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          resolve(completed);
+        };
+        const modalProps = {
           chatId: response.chatId,
           presetId: preferences.promptPresetId,
           onClose: () => {
+            if (settled) return;
+            if (useUIStore.getState().modal?.props !== modalProps) {
+              settle(false);
+              return;
+            }
+            // Unsubscribe before our own close; Skip and Confirm both enter the scene.
+            settle(true);
             useUIStore.getState().closeModal();
-            resolve();
           },
+        };
+        const unsubscribe = useUIStore.subscribe((state) => {
+          if (state.modal?.props !== modalProps) settle(false);
         });
+        useUIStore.getState().openModal("preset-choices", modalProps);
       });
+      if (!completed) return null;
     }
 
     useChatStore.getState().setActiveChatId(response.chatId);

@@ -240,7 +240,7 @@ function ChatChoiceSelectionModal({
           </div>
         ) : null
       ) : (
-        <div className="space-y-4 p-4">
+        <fieldset disabled={updateMetadata.isPending} className="min-w-0 space-y-4 p-4">
           <p className="text-xs text-[var(--muted-foreground)]">
             {localizeUi("ui.presets.choiceselectionmodal.thisPresetHasConfigurableVariablesSelectOptionSFor")}
           </p>
@@ -455,7 +455,7 @@ function ChatChoiceSelectionModal({
               </button>
             </div>
           </div>
-        </div>
+        </fieldset>
       )}
     </Modal>
   );
