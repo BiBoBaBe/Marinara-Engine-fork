@@ -96,6 +96,21 @@ export async function startSceneWithPromptPreferences(options: StartSceneOptions
       promptPresetId: preferences.promptPresetId ?? null,
     });
 
+    if (preferences.promptPresetId) {
+      // Use the same persisted choices as Roleplay setup before entering the scene.
+      toast.dismiss(toastId);
+      await new Promise<void>((resolve) => {
+        useUIStore.getState().openModal("preset-choices", {
+          chatId: response.chatId,
+          presetId: preferences.promptPresetId,
+          onClose: () => {
+            useUIStore.getState().closeModal();
+            resolve();
+          },
+        });
+      });
+    }
+
     useChatStore.getState().setActiveChatId(response.chatId);
     if (response.background) {
       useUIStore.getState().setChatBackground(`/api/backgrounds/file/${encodeURIComponent(response.background)}`);

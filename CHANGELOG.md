@@ -4,6 +4,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Scenes now offer the selected preset’s variables before entering the new chat and wait for confirmed choices to save (#6184).
+- Trackers can update or remove individual rows while keeping untouched values and field locks; existing full-list responses remain supported (#6185).
+- Experiences can prepare their world before the opening Game narration and provide that world’s context to the first turn (#6180).
 - Scene controls use the selected Chroma colors and readable button surfaces over Roleplay text (#6186).
 
 - Routine Advanced Memory preparation no longer opens Chat Settings after every Roleplay or guided reply; settings still open when confirmation or a blocking error needs attention (#6177).

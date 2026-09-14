@@ -476,6 +476,41 @@ declarations. Package browser/server code remains trusted code and can access it
 only install packages you trust. Readiness is checked rather than servability, so an update that leaves
 a package `restart-required` stops its verbs resolving until Engine restarts.
 
+### Capability API 1.17: prepare an Experience before its opening turn
+
+A `game-surface` package may declare `contributions.gameSurface.prepareBeforeStart: true`
+with schema version 2 and Capability API 1.17 or newer. The Engine mounts that surface
+while the game is ready, before enabling Start Game. Classic games and packages without
+the flag retain their existing startup flow.
+
+The opted-in main surface receives two additional props:
+
+- `startup: boolean` stays true until the player finishes the Engine introduction with Continue.
+  Pause world simulation and player actions while it is true.
+- `setStartupReady(context: string | null): void` reports preparation state. Send `null` while
+  loading, saving, or recovering from failure. Send a string only after the actual world is
+  persisted and usable; an empty string permits startup without additional context.
+
+The host blocks Start Game, its widget preparation confirmation, and initial-turn retries
+until a ready string arrives. While blocked, the package's own loading and failure/retry
+interface remains visible. Once ready, the package is hidden behind the normal Engine
+introduction. Continue opens the ordinary surface, which may remount: keep world preparation
+idempotent and restore persisted state instead of generating it again. A returning game that
+has already completed its introduction does not repeat startup preparation.
+
+Opening context is limited to **8,000 characters**. Invalid or oversized context keeps startup
+blocked and displays an error; the host does not truncate world facts. Supply a compact account
+of the prepared starting location and its actual cast. The Engine appends this text to its
+existing first-turn `generationGuide` with source `game_start`, so the opening uses the world
+that exists. This does not register context for later turns; keep using the package's normal
+prompt contribution or turn-generation context for those.
+
+Readiness callbacks belong to the mounted chat, game, and package. Late callbacks from another
+scope are ignored. A module/runtime failure blocks startup rather than treating missing world
+context as success. On reload, the package must report readiness from its saved world. The
+server prompt-context contributor remains read-only and subject to its short deadline; do not
+use it for world generation or as a long-running startup barrier.
+
 ## Initial packages
 
 - all currently built-in agents;

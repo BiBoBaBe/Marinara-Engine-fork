@@ -17,6 +17,7 @@ import {
   isBuiltInAgentHostManaged,
   isRetiredBuiltInAgentId,
   normalizeWorldCustomFields,
+  isTrackerRowsUpdate,
   normalizeAgentPhaseValue,
   normalizeAgentPromptTemplateSelectionMap,
   normalizeImagePromptInstructions,
@@ -136,6 +137,8 @@ import { gameStateSnapshots as gameStateSnapshotsTable } from "../../db/schema/i
 import {
   buildLockedPlayerStatsArrayPatch,
   buildLockedInventoryTrackerPatch,
+  resolveTrackerGroupUpdate,
+  buildWorldCustomFieldsStreamValue,
   buildLockedPersonaTrackerPatch,
   applyTrackerCharacterCardIdentity,
   collectLatestTrackerCharacterHistory,
@@ -2961,17 +2964,17 @@ async function applyRetryResultEffects(args: {
         if (gs.weather != null) proposedWorldStatePatch.weather = gs.weather as string;
         if (gs.temperature != null) proposedWorldStatePatch.temperature = gs.temperature as string;
         if (gs.worldCustomFields !== undefined)
-          proposedWorldStatePatch.worldCustomFields = normalizeWorldCustomFields(gs.worldCustomFields);
+          proposedWorldStatePatch.worldCustomFields = isTrackerRowsUpdate(gs.worldCustomFields)
+            ? gs.worldCustomFields
+            : normalizeWorldCustomFields(gs.worldCustomFields);
         if (retryCompatibilityLocation !== null && gs.location != null) {
           logger.debug("[retry-agents] Ignoring generated Game location for spatially authoritative chat %s", chatId);
         }
         const worldStatePatch = omitAuthoritativeGameLocation(proposedWorldStatePatch, retryOwnerSpatialProjection);
         const lockSnapshot = (await loadRetryTargetGameStateSnapshot()) ?? (await loadRetryBaseGameStateSnapshot());
         assertRetryActive();
-        const lockedWorldStatePatch = applyTrackerFieldLocksToGameStatePatch(
-          worldStatePatch,
-          lockSnapshot ? parseGameStateRow(lockSnapshot as Record<string, unknown>) : null,
-        );
+        const worldLockState = lockSnapshot ? parseGameStateRow(lockSnapshot as Record<string, unknown>) : null;
+        const lockedWorldStatePatch = applyTrackerFieldLocksToGameStatePatch(worldStatePatch, worldLockState);
         if (retryCompatibilityLocation !== null) {
           lockedWorldStatePatch.location = retryCompatibilityLocation;
         }
@@ -2995,7 +2998,21 @@ async function applyRetryResultEffects(args: {
         }
 
         assertRetryActive();
-        sendSseEvent(reply, { type: "game_state_patch", data: lockedWorldStatePatch });
+        sendSseEvent(reply, {
+          type: "game_state_patch",
+          data: {
+            ...lockedWorldStatePatch,
+            ...(isTrackerRowsUpdate(gs.worldCustomFields)
+              ? {
+                  worldCustomFields: buildWorldCustomFieldsStreamValue(
+                    gs.worldCustomFields,
+                    worldLockState?.worldCustomFields,
+                    lockedWorldStatePatch.worldCustomFields,
+                  ),
+                }
+              : {}),
+          },
+        });
       } catch (err) {
         assertRetryActive();
         logger.error(err, "[retry-agents] Failed to apply world-state tracker update");
@@ -3057,11 +3074,13 @@ async function applyRetryResultEffects(args: {
     ) {
       try {
         const ctData = result.data as Record<string, unknown>;
-        if (!Array.isArray(ctData.presentCharacters) || ctData.presentCharacters.length === 0) {
+        if (
+          !isTrackerRowsUpdate(ctData.presentCharacters) &&
+          (!Array.isArray(ctData.presentCharacters) || ctData.presentCharacters.length === 0)
+        ) {
           logger.debug("[retry-agents] character-tracker emitted no presentCharacters; keeping existing snapshot");
           continue;
         }
-        let presentCharacters = ctData.presentCharacters as any[];
         const previousSnapshot = await loadRetryTargetGameStateSnapshot();
         assertRetryActive();
         let previousCharacters: any[] = [];
@@ -3076,6 +3095,13 @@ async function applyRetryResultEffects(args: {
             previousCharacters = [];
           }
         }
+        let presentCharacters =
+          resolveTrackerGroupUpdate(
+            ctData.presentCharacters,
+            previousCharacters,
+            previousSnapshot ? parseGameStateRow(previousSnapshot as Record<string, unknown>) : null,
+            "presentCharacters",
+          ) ?? previousCharacters;
         applyTrackerCharacterCardIdentity(presentCharacters, agentContext.characters, {
           previousCharacters: [
             ...previousCharacters,
@@ -3345,11 +3371,17 @@ async function applyRetryResultEffects(args: {
     ) {
       try {
         const ctData = result.data as Record<string, unknown>;
-        const hasFields = Array.isArray(ctData.fields);
-        const rawFields = hasFields ? (ctData.fields as any[]) : [];
+        const hasFields = Array.isArray(ctData.fields) || isTrackerRowsUpdate(ctData.fields);
         if (hasFields) {
           const snap = await loadRetryTargetGameStateSnapshot();
           assertRetryActive();
+          const rawFields =
+            resolveTrackerGroupUpdate(
+              ctData.fields,
+              parseSnapshotPlayerStats(snap).customTrackerFields ?? [],
+              snap ? parseGameStateRow(snap as Record<string, unknown>) : null,
+              "customTrackerFields",
+            ) ?? [];
           const customTrackerPatch = buildLockedPlayerStatsArrayPatch<any>({
             field: "customTrackerFields",
             values: rawFields,

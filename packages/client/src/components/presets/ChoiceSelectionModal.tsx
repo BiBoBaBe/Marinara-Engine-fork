@@ -231,6 +231,7 @@ function ChatChoiceSelectionModal({
       title={localizeUi("ui.presets.choiceselectionmodal.configurePresetVariables")}
       width="max-w-lg"
       chatFloatingPanel={chatFloatingPanel}
+      closeDisabled={updateMetadata.isPending}
     >
       {variables.length === 0 ? (
         isLoading ? (
@@ -438,6 +439,7 @@ function ChatChoiceSelectionModal({
             <div className="flex gap-2">
               <button
                 onClick={onClose}
+                disabled={updateMetadata.isPending}
                 className="rounded-xl px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
               >
                 {localizeUi("onboarding.actions.skip")}

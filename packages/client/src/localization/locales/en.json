@@ -640,6 +640,8 @@
   "game.characterSheet.regenerate.label": "Retry",
   "game.characterSheet.regenerate.loading": "Retrying...",
   "game.characterSheet.regenerate.ready": "{{name}}'s new sheet draft is ready. Review it, then save to apply.",
+  "game.experienceStartup.invalidContext": "The Experience must provide opening context of at most {{count}} characters. Update or retry the Experience before starting.",
+  "game.experienceStartup.preparing": "Preparing the Experience before the opening turn…",
   "game.input.clearQueuedRoll": "Clear queued roll",
   "game.input.default": "What do you do?",
   "game.input.onArrival": "What do you do when you arrive?",

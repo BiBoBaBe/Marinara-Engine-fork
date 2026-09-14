@@ -104,7 +104,7 @@ try {
   const legacyManifest = capabilityPackageManifestSchema.parse(installedPackage("legacy", ["agent"]).manifest);
   assert.equal(legacyManifest.schemaVersion, 1, "Existing manifest v1 packages must remain readable");
   assert.equal(getCapabilityApiCompatibilityIssue(legacyManifest), null);
-  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 16 });
+  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 17 });
 
   const manifestV2 = capabilityPackageManifestSchema.parse({
     ...legacyManifest,
@@ -140,20 +140,40 @@ try {
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMajorManifest) ?? "",
-    /requires capability API 2\.0; this Engine supports 1\.16/,
+    /requires capability API 2\.0; this Engine supports 1\.17/,
   );
   const currentMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 16 },
+    capabilityApi: { major: 1, minor: 17 },
   });
   assert.equal(getCapabilityApiCompatibilityIssue(currentMinorManifest), null);
   const unsupportedMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 17 },
+    capabilityApi: { major: 1, minor: 18 },
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMinorManifest) ?? "",
-    /requires capability API 1\.17; this Engine supports 1\.16/,
+    /requires capability API 1\.18; this Engine supports 1\.17/,
+  );
+  const startupManifest = {
+    ...currentMinorManifest,
+    contributions: { slots: ["game-surface"], gameSurface: { prepareBeforeStart: true } },
+  };
+  assert.equal(
+    capabilityPackageManifestSchema.parse(startupManifest).contributions?.gameSurface?.prepareBeforeStart,
+    true,
+  );
+  assert.throws(
+    () => capabilityPackageManifestSchema.parse({ ...startupManifest, capabilityApi: { major: 1, minor: 16 } }),
+    /prepareBeforeStart requires schemaVersion 2 and capabilityApi 1\.17/,
+  );
+  assert.throws(
+    () =>
+      capabilityPackageManifestSchema.parse({
+        ...startupManifest,
+        contributions: { gameSurface: { prepareBeforeStart: true } },
+      }),
+    /prepareBeforeStart requires the "game-surface" slot/,
   );
 
   const forwardCompatibleCatalog = capabilityCatalogSchema.parse({
@@ -1059,11 +1079,7 @@ try {
       browserTabAsset?.file,
       join(packagesRoot, "versions", agentSuite.id, agentSuite.version, "suite-tab.png"),
     );
-    assert.equal(
-      browserTabAsset?.data?.toString("utf8"),
-      "x",
-      "Every serve must hand back the exact bytes it hashed",
-    );
+    assert.equal(browserTabAsset?.data?.toString("utf8"), "x", "Every serve must hand back the exact bytes it hashed");
     const repeatAsset = await capabilityPackageManager.packageAsset(agentSuite.id, "suite-tab.png");
     assert.deepEqual(repeatAsset, browserTabAsset, "Repeated resolution must be deterministic");
     assert.equal(

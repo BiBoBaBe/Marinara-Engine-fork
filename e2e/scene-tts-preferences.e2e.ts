@@ -14,6 +14,157 @@ async function prepare(page: import("@playwright/test").Page, theme: "light" | "
   await page.addInitScript((version) => localStorage.setItem("marinara:whats-new:seen-version", version), version);
 }
 
+for (const theme of ["light", "dark"] as const) {
+  test(`Scene preset variables save before entering the scene (${theme})`, async ({ page, request }, testInfo) => {
+    const origin = await (
+      await request.post("/api/chats", { data: { name: "Variable scene origin", mode: "conversation" } })
+    ).json();
+    const preset = await (await request.post("/api/prompts", { data: { name: "Variable scene preset" } })).json();
+    const sceneIds: string[] = [];
+    let releaseSave = () => {};
+    try {
+      expect(
+        (
+          await request.post(`/api/prompts/${preset.id}/variables`, {
+            data: {
+              variableName: "length",
+              question: "How much detail?",
+              options: [
+                { id: "short", label: "Brief", value: "Write briefly." },
+                { id: "long", label: "Detailed", value: "Write in detail." },
+              ],
+            },
+          })
+        ).ok(),
+      ).toBeTruthy();
+      expect(
+        (
+          await request.patch(`/api/prompts/${preset.id}`, {
+            data: { defaultChoices: { length: "Write in detail." } },
+          })
+        ).ok(),
+      ).toBeTruthy();
+      await prepare(page, theme);
+      await page.route("**/api/scene/plan", (route) =>
+        route.fulfill({
+          json: {
+            plan: {
+              name: "Scene: Variable laboratory",
+              description: "A calm laboratory.",
+              scenario: "A quiet experiment.",
+              firstMessage: "The instruments hum softly.",
+              background: null,
+              characterIds: [],
+              systemPrompt: "Continue the experiment.",
+              rating: "sfw",
+              relationshipHistory: "Colleagues.",
+              participationGuide: "Explore freely.",
+            },
+          },
+        }),
+      );
+      await page.goto("/");
+      const start = () =>
+        page.evaluate(async (chatId) => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          const scene = (await import(
+            "/src/lib/scene-generation.ts" as string
+          )) as typeof import("../packages/client/src/lib/scene-generation");
+          useChatStore.getState().setActiveChatId(chatId);
+          void scene.startSceneWithPromptPreferences({ chatId, prompt: "A quiet experiment" });
+        }, origin.id);
+      const activeChatId = () =>
+        page.evaluate(async () => {
+          const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+          return useChatStore.getState().activeChatId;
+        });
+      const setup = page.getByRole("dialog", { name: "Scene Prompt Setup", exact: true });
+      const choices = page.getByRole("dialog", { name: "Configure Preset Variables", exact: true });
+      const create = async () => {
+        const response = page.waitForResponse(
+          (value) => value.url().endsWith("/api/scene/create") && value.request().method() === "POST",
+        );
+        await setup.getByRole("button", { name: "Plan Scene", exact: true }).click();
+        const created = await response;
+        expect(created.ok()).toBeTruthy();
+        const id: string = (await created.json()).chatId;
+        sceneIds.push(id);
+        return id;
+      };
+
+      await start();
+      await setup.getByRole("combobox", { name: "Prompt preset", exact: false }).selectOption(preset.id);
+      // Cancel must not create a scene or replace the previously remembered preset.
+      await setup.getByRole("button", { name: "Cancel", exact: true }).click();
+      await start();
+      await expect(setup.getByRole("combobox", { name: "Prompt preset", exact: false })).toHaveValue("");
+      await setup.getByRole("combobox", { name: "Prompt preset", exact: false }).selectOption(preset.id);
+      const firstId = await create();
+      await expect(choices).toBeVisible();
+      await expect(choices.getByRole("button", { name: /^Detailed/ })).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(activeChatId).toBe(origin.id);
+      await choices.getByRole("button", { name: /^Brief/ }).click();
+      await page.screenshot({ path: testInfo.outputPath(`scene-preset-variables-${theme}.png`) });
+
+      const pendingSave = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      let saveAttempts = 0;
+      await page.route(`**/api/chats/${firstId}/metadata`, async (route) => {
+        if (++saveAttempts === 1) {
+          await route.fulfill({ status: 503, json: { error: "Synthetic unavailable save" } });
+          return;
+        }
+        await pendingSave;
+        await route.continue();
+      });
+      const failedSave = page.waitForResponse(
+        (value) => value.url().endsWith(`/api/chats/${firstId}/metadata`) && value.status() === 503,
+      );
+      await choices.getByRole("button", { name: "Confirm Choices", exact: true }).click();
+      await failedSave;
+      await expect(choices.getByRole("button", { name: "Confirm Choices", exact: true })).toBeEnabled();
+      await expect(choices.getByRole("button", { name: /^Brief/ })).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(activeChatId).toBe(origin.id);
+      const saved = page.waitForResponse(
+        (value) => value.url().endsWith(`/api/chats/${firstId}/metadata`) && value.request().method() === "PATCH",
+      );
+      await choices.getByRole("button", { name: "Confirm Choices", exact: true }).click();
+      await expect(choices.getByRole("button", { name: /^Saving/ })).toBeDisabled();
+      await expect(choices.getByRole("button", { name: "Skip", exact: true })).toBeDisabled();
+      await page.keyboard.press("Escape");
+      await expect(choices).toBeVisible();
+      await expect.poll(activeChatId).toBe(origin.id);
+      releaseSave();
+      expect((await saved).ok()).toBeTruthy();
+      await expect(choices).toBeHidden();
+      await expect.poll(activeChatId).toBe(firstId);
+      const first = await (await request.get(`/api/chats/${firstId}`)).json();
+      const firstMeta = typeof first.metadata === "string" ? JSON.parse(first.metadata) : first.metadata;
+      expect(firstMeta.presetChoices).toEqual({ length: "Write briefly." });
+
+      await page.reload();
+      await start();
+      await expect(setup.getByRole("combobox", { name: "Prompt preset", exact: false })).toHaveValue(preset.id);
+      const secondId = await create();
+      await expect(choices).toBeVisible();
+      // A scene-local choice must not overwrite the preset's saved defaults.
+      await expect(choices.getByRole("button", { name: /^Detailed/ })).toHaveAttribute("aria-pressed", "true");
+      await choices.getByRole("button", { name: "Skip", exact: true }).click();
+      await expect.poll(activeChatId).toBe(secondId);
+      const second = await (await request.get(`/api/chats/${secondId}`)).json();
+      const secondMeta = typeof second.metadata === "string" ? JSON.parse(second.metadata) : second.metadata;
+      expect(secondMeta.presetChoices).toBeUndefined();
+    } finally {
+      releaseSave();
+      await page.close();
+      for (const id of sceneIds) await request.delete(`/api/chats/${id}?force=true`);
+      await request.delete(`/api/chats/${origin.id}?force=true`);
+      await request.delete(`/api/prompts/${preset.id}`);
+    }
+  });
+}
+
 test("Scene setup remembers the selected preset and handles a deleted selection", async ({
   page,
   request,
