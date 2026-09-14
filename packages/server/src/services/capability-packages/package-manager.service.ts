@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import AdmZip from "adm-zip";
+import { z } from "zod";
 import {
   APP_VERSION,
   parseCapabilityCatalogWithCompat,
@@ -13,6 +14,7 @@ import {
   GM_VERB_TABLE_MAX_BYTES,
   isInstalledCapabilityReady,
   installedCapabilityRegistrySchema,
+  installedCapabilityPackageSchema,
   packagedAgentDefinitionsSchema,
   capabilityReleaseNotesSchema,
   type CapabilityCatalog,
@@ -278,7 +280,10 @@ function runtimeBlockReason(installed: InstalledCapabilityPackage): string | nul
   );
 }
 
-function assertNotDowngrade(current: InstalledCapabilityPackage | undefined, nextVersion: string) {
+function assertNotDowngrade(
+  current: Pick<InstalledCapabilityPackage, "id" | "version"> | undefined,
+  nextVersion: string,
+) {
   if (current && compareCapabilityPackageVersions(nextVersion, current.version) < 0) {
     throw new Error(
       `Installed ${current.id} ${current.version} is newer than catalog version ${nextVersion}; refusing to downgrade`,
@@ -286,19 +291,52 @@ function assertNotDowngrade(current: InstalledCapabilityPackage | undefined, nex
   }
 }
 
-async function readRegistry() {
+const rawRegistrySchema = installedCapabilityRegistrySchema.extend({ packages: z.array(z.unknown()) });
+const installedVersionSchema = installedCapabilityPackageSchema.pick({ id: true, version: true });
+
+async function readRawRegistry() {
   try {
-    return installedCapabilityRegistrySchema.parse(JSON.parse(await readFile(REGISTRY, "utf8")));
+    return rawRegistrySchema.parse(JSON.parse(await readFile(REGISTRY, "utf8")));
   } catch (error) {
     if (!existsSync(REGISTRY)) return { schemaVersion: 1 as const, packages: [] };
     throw error;
   }
 }
 
+async function readRegistry() {
+  const raw = await readRawRegistry();
+  return {
+    ...raw,
+    packages: raw.packages.flatMap((entry) => {
+      const parsed = installedCapabilityPackageSchema.safeParse(entry);
+      if (parsed.success) return [parsed.data];
+      logger.warn("[capability] Skipping an unsupported installed package record: %s", parsed.error.message);
+      return [];
+    }),
+  };
+}
+
+async function readInstalledVersion(packageId: string) {
+  for (const entry of (await readRawRegistry()).packages) {
+    const parsed = installedVersionSchema.safeParse(entry);
+    if (parsed.success && parsed.data.id === packageId) return parsed.data;
+  }
+}
+
 async function writeRegistry(packages: InstalledCapabilityPackage[]) {
   await mkdir(ROOT, { recursive: true });
+  // Operational reads omit unsupported manifests, but writes must retain their raw records.
+  // Re-read here so an unrelated readiness/update write cannot erase an unseen sibling.
+  const ids = new Set(packages.map((item) => item.id));
+  const unsupported = (await readRawRegistry()).packages.filter(
+    (entry) =>
+      !installedCapabilityPackageSchema.safeParse(entry).success &&
+      !(entry && typeof entry === "object" && "id" in entry && typeof entry.id === "string" && ids.has(entry.id)),
+  );
   const temporary = `${REGISTRY}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temporary, JSON.stringify({ schemaVersion: 1, packages }, null, 2), { mode: 0o600 });
+  await writeFile(temporary, JSON.stringify({ schemaVersion: 1, packages: [...packages, ...unsupported] }, null, 2), {
+    mode: 0o600,
+  });
   await rename(temporary, REGISTRY);
 }
 
@@ -647,7 +685,7 @@ async function installCatalogPackage(entry: CapabilityCatalogPackage, activateDu
   const { manifest, artifact } = entry;
   const installIssue = getCapabilityPackageInstallIssue(manifest);
   if (installIssue) throw new Error(installIssue);
-  const initiallyInstalled = (await readRegistry()).packages.find((item) => item.id === manifest.id);
+  const initiallyInstalled = await readInstalledVersion(manifest.id);
   assertNotDowngrade(initiallyInstalled, manifest.version);
   const capabilityApiIssue = getCapabilityApiCompatibilityIssue(manifest);
   if (capabilityApiIssue) throw new Error(capabilityApiIssue);
@@ -732,7 +770,7 @@ async function installCatalogPackage(entry: CapabilityCatalogPackage, activateDu
     const registry = await readRegistry();
     const registryPrevious = registry.packages.find((item) => item.id === manifest.id);
     const previous = registryPrevious ? await hydratePreviousManifest(registryPrevious) : undefined;
-    assertNotDowngrade(previous, manifest.version);
+    assertNotDowngrade(await readInstalledVersion(manifest.id), manifest.version);
     const activePrevious =
       previous?.status === "restart-required" && previous.previousVersion && previous.previousManifest
         ? { version: previous.previousVersion, manifest: previous.previousManifest }

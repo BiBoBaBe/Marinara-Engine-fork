@@ -104,7 +104,7 @@ try {
   const legacyManifest = capabilityPackageManifestSchema.parse(installedPackage("legacy", ["agent"]).manifest);
   assert.equal(legacyManifest.schemaVersion, 1, "Existing manifest v1 packages must remain readable");
   assert.equal(getCapabilityApiCompatibilityIssue(legacyManifest), null);
-  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 17 });
+  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 18 });
 
   const manifestV2 = capabilityPackageManifestSchema.parse({
     ...legacyManifest,
@@ -140,20 +140,20 @@ try {
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMajorManifest) ?? "",
-    /requires capability API 2\.0; this Engine supports 1\.17/,
+    /requires capability API 2\.0; this Engine supports 1\.18/,
   );
   const currentMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 17 },
+    capabilityApi: { major: 1, minor: 18 },
   });
   assert.equal(getCapabilityApiCompatibilityIssue(currentMinorManifest), null);
   const unsupportedMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 18 },
+    capabilityApi: { major: 1, minor: 19 },
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMinorManifest) ?? "",
-    /requires capability API 1\.18; this Engine supports 1\.17/,
+    /requires capability API 1\.19; this Engine supports 1\.18/,
   );
   const startupManifest = {
     ...currentMinorManifest,
@@ -174,6 +174,42 @@ try {
         contributions: { gameSurface: { prepareBeforeStart: true } },
       }),
     /prepareBeforeStart requires the .*game-surface.* slot/,
+  );
+
+  const inlineSetupManifest = {
+    ...startupManifest,
+    contributions: {
+      slots: ["game-surface"],
+      gameSurface: {
+        setup: {
+          seed: { key: "worldSeed" },
+          config: { generate: true },
+          requires: { enableCustomWidgets: false },
+        },
+      },
+    },
+  };
+  const inlineSetup = capabilityPackageManifestSchema.parse(inlineSetupManifest);
+  assert.equal(inlineSetup.contributions?.gameSurface?.setup?.seed?.key, "worldSeed");
+  assert.throws(
+    () => capabilityPackageManifestSchema.parse({ ...inlineSetupManifest, capabilityApi: { major: 1, minor: 17 } }),
+    /requires.*1\.18/,
+  );
+  assert.throws(
+    () =>
+      capabilityPackageManifestSchema.parse({
+        ...inlineSetupManifest,
+        contributions: {
+          slots: ["game-surface"],
+          gameSurface: {
+            setup: {
+              seed: { key: "worldSeed" },
+              config: { worldSeed: 7 },
+            },
+          },
+        },
+      }),
+    /cannot override.*seed/,
   );
 
   const forwardCompatibleCatalog = capabilityCatalogSchema.parse({
@@ -258,6 +294,85 @@ try {
     resolveCapabilityPackageIconUrl,
     validatePackageArchiveEntries,
   } = await import("../../packages/server/src/services/capability-packages/package-manager.service.js");
+  const validInstalled = installedPackage("conversation-calls", ["agent", "conversation-calls"]);
+  const futureInstalled = installedPackage("future-package", ["agent"]);
+  const unsupportedInstalledRecord = {
+    ...futureInstalled,
+    manifest: { ...futureInstalled.manifest, unknownFutureField: { preserve: ["exact", 42] } },
+  };
+  writeFileSync(
+    registryPath,
+    JSON.stringify({ schemaVersion: 1, packages: [validInstalled, unsupportedInstalledRecord] }),
+  );
+  assert.deepEqual(
+    (await capabilityPackageManager.installed()).map((item) => item.id),
+    [validInstalled.id],
+    "One unsupported record must not prevent supported packages loading",
+  );
+  await capabilityPackageManager.markRuntimeReadiness(validInstalled.id, "ready");
+  const preservedRegistry = JSON.parse(readFileSync(registryPath, "utf8"));
+  assert.equal(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === validInstalled.id).readiness,
+    "ready",
+  );
+  assert.deepEqual(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === futureInstalled.id),
+    unsupportedInstalledRecord,
+    "A real readiness write must preserve the unsupported sibling, including unknown nested fields",
+  );
+  const registryGuardCatalog = capabilityPackageManager.catalog;
+  const olderManifest = capabilityPackageManifestSchema.parse({ ...futureInstalled.manifest, version: "0.9.0" });
+  capabilityPackageManager.catalog = async () => ({
+    schemaVersion: 1,
+    generatedAt: "2026-09-14T00:00:00.000Z",
+    packages: [
+      {
+        manifest: olderManifest,
+        artifact: { url: "https://invalid.example/never-download.zip", sha256: "0".repeat(64), bytes: 1 },
+      },
+    ],
+  });
+  try {
+    await assert.rejects(
+      () => capabilityPackageManager.install(futureInstalled.id, "0.9.0", "0".repeat(64)),
+      /refusing to downgrade/,
+      "Unsupported manifests must not hide the installed version from the pre-download downgrade guard",
+    );
+    assert.deepEqual(JSON.parse(readFileSync(registryPath, "utf8")), preservedRegistry);
+  } finally {
+    capabilityPackageManager.catalog = registryGuardCatalog;
+  }
+  writeFileSync(
+    registryPath,
+    JSON.stringify({ schemaVersion: 1, packages: [validInstalled, futureInstalled, unsupportedInstalledRecord] }),
+  );
+  await capabilityPackageManager.markRuntimeReadiness(futureInstalled.id, "ready");
+  assert.equal(
+    JSON.parse(readFileSync(registryPath, "utf8")).packages.filter(
+      (item: { id: string }) => item.id === futureInstalled.id,
+    ).length,
+    1,
+    "A now-valid replacement must not duplicate its old unsupported record",
+  );
+  for (const invalidRegistry of [
+    "",
+    "{",
+    "null",
+    "{}",
+    '{"schemaVersion":2,"packages":[]}',
+    '{"schemaVersion":1,"packages":{}}',
+  ]) {
+    writeFileSync(registryPath, invalidRegistry);
+    await assert.rejects(() => capabilityPackageManager.installed(), "Malformed outer registries remain strict");
+    await assert.rejects(() => capabilityPackageManager.markRuntimeReadiness(validInstalled.id, "ready"));
+    assert.equal(readFileSync(registryPath, "utf8"), invalidRegistry, "Rejected files must not be rewritten");
+  }
+  writeRegistry([]);
+  assert.deepEqual(await capabilityPackageManager.installed(), [], "An empty registry remains supported");
+  rmSync(registryPath);
+  assert.deepEqual(await capabilityPackageManager.installed(), [], "A missing registry remains a fresh installation");
+  writeRegistry([validInstalled]);
+
   const directoryFloodArchive = {
     getEntries: () => Array.from({ length: 8_193 }, (_, index) => ({ isDirectory: true, entryName: `dir-${index}/` })),
   } as unknown as Parameters<typeof validatePackageArchiveEntries>[0];
