@@ -279,6 +279,11 @@ for (const isNewGame of [true, false]) {
             }),
           ),
         });
+      // The import handler is async, so wait for it to land before switching the Experience back on.
+      await expect(wizard.getByRole("switch", { name: "Setup fixture", exact: true })).toHaveAttribute(
+        "aria-checked",
+        "false",
+      );
       await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
       await expect(wizard.getByRole("spinbutton", { name: "World seed" })).toHaveValue("4242");
     } else {
