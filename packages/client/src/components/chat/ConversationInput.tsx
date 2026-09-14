@@ -34,6 +34,7 @@ import {
   matchSlashCommand,
   shouldExecuteQuickPostAsCommand,
   getSlashCompletions,
+  getSlashCommandUsage,
   type ConversationGameSlashContribution,
   type SlashCommand,
   type SlashCommandContext,
@@ -113,6 +114,7 @@ type MobilePickerTab = ConversationMediaPickerTabId;
 type ConversationSlashCompletion = {
   key: string;
   label: string;
+  command?: SlashCommand;
   description?: string;
   insertValue: string;
   cursor: number;
@@ -246,6 +248,7 @@ function buildConversationSlashCompletions(
       return {
         key: `command:${command.name}`,
         label: `/${command.name}`,
+        command,
         description:
           command.name === "status"
             ? `${command.description}. Use online, idle, dnd, offline, or clear, then a character name.`
@@ -2057,20 +2060,24 @@ export function ConversationInput({
                 }
               }}
               className={cn(
-                "flex w-full min-w-0 items-start gap-2 px-3 py-2.5 text-left text-sm transition-colors",
+                "flex w-full min-w-0 flex-col items-start gap-1 px-3 py-2.5 text-left text-sm transition-colors",
                 i === selectedCompletion ? "bg-foreground/10 text-foreground" : "hover:bg-foreground/10",
               )}
             >
               <span
                 className={cn(
-                  "shrink-0 whitespace-nowrap text-xs",
+                  "min-w-0 whitespace-normal text-xs [overflow-wrap:anywhere]",
                   cmd.kind === "character" ? "font-medium" : "font-mono",
                 )}
               >
-                {cmd.label}
+                {cmd.command
+                  ? getSlashCommandUsage(cmd.command, t)
+                  : cmd.kind === "status"
+                    ? t("ui.chat.slash.statusCompletionUsage", { status: cmd.label })
+                    : cmd.label}
               </span>
               {cmd.description && (
-                <span className="min-w-0 flex-1 text-[0.6875rem] leading-snug text-foreground/45 [overflow-wrap:anywhere]">
+                <span className="min-w-0 text-[0.6875rem] leading-snug text-foreground/45 [overflow-wrap:anywhere]">
                   {cmd.description}
                 </span>
               )}

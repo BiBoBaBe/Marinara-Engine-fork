@@ -4,6 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Slash-command suggestions and guides show argument formats, including optional inputs; `/hide` also accepts a message range followed by an optional character name (#6209).
 - Opening Roleplay trackers tolerates missing or invalid character IDs without losing named NPCs or saved tracker data (#6202).
 - Game lorebook entries keep their before/after placement around the Game Master context, while explicit depth and role settings remain respected (#6203).
 - Professor Mari requests JSON command responses from Google and Vertex Gemini and uses bounded protocol recovery for malformed function-call responses (#6204).
