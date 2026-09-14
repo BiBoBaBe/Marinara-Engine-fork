@@ -78,7 +78,11 @@ import {
 } from "../../hooks/use-chats";
 import { useConnections } from "../../hooks/use-connections";
 import { useAgentConfigs } from "../../hooks/use-agents";
-import { selectGameExperiencePackages, useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
+import {
+  selectGameExperiencePackages,
+  useCapabilityClientModuleState,
+  useInstalledCapabilityPackages,
+} from "../../hooks/use-capability-packages";
 import { useGenerate } from "../../hooks/use-generate";
 import { isVisibleGameMessage } from "../../lib/chat-message-visibility";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
@@ -331,6 +335,7 @@ const GAME_MOBILE_FLOATING_PANEL =
   "fixed z-[9999] h-[min(42rem,calc(100dvh-4.75rem))] w-[min(42rem,calc(100vw-4.75rem))]";
 const GAME_MOBILE_FLOATING_MENU = "fixed z-[9999] max-h-[min(32rem,calc(100dvh-4.75rem))] overflow-y-auto";
 const EXPERIENCE_UNDERLAY_LAYER = "underlay" as const;
+const EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH = 8_000;
 const EMPTY_SPEAKER_AVATARS: ReadonlyMap<string, { url: string }> = new Map();
 /** Classic chrome an experience declares it replaces; anything left undeclared stays Classic. */
 type ExperienceChromeDeclaration = {
@@ -2318,6 +2323,7 @@ function GameSurfaceComponent({
     return selectGameExperiencePackages(installedCapabilityPackages).find((pkg) => pkg.id === gameExperienceId) ?? null;
   }, [gameExperienceId, installedCapabilityPackages]);
   const experienceSurfaceId = experienceSurfacePackage?.id ?? null;
+  const experienceClientModule = useCapabilityClientModuleState(experienceSurfaceId ?? "");
   /** Class the manifest asks the host to stamp on the game area, so the package can restyle the shared
    *  chrome that renders outside its element. Declared rather than pushed, so it applies on first paint. */
   const experienceSurfaceClass = experienceSurfacePackage?.manifest.contributions?.gameSurface?.surfaceClass ?? null;
@@ -2627,6 +2633,46 @@ function GameSurfaceComponent({
       gameSurfaceMountedRef.current = false;
     };
   }, []);
+  const experiencePreparesBeforeStart =
+    experienceSurfacePackage?.manifest.contributions?.gameSurface?.prepareBeforeStart === true;
+  const experienceStartupScope = useMemo(
+    () => ({
+      chat: sceneRuntimeScopeKey,
+      packageId: experienceSurfaceId,
+      version: experienceSurfacePackage?.version,
+      attempt: experienceClientModule.attempt,
+    }),
+    [sceneRuntimeScopeKey, experienceSurfaceId, experienceSurfacePackage?.version, experienceClientModule.attempt],
+  );
+  const experienceStartupScopeRef = useRef(experienceStartupScope);
+  experienceStartupScopeRef.current = experienceStartupScope;
+  const [experienceStartup, setExperienceStartup] = useState<{
+    scope: typeof experienceStartupScope;
+    context: string | null;
+    invalid: boolean;
+  } | null>(null);
+  const setStartupReady = useCallback(
+    (context: string | null) => {
+      if (!gameSurfaceMountedRef.current || experienceStartupScopeRef.current !== experienceStartupScope) return;
+      const invalid =
+        context !== null && (typeof context !== "string" || context.length > EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH);
+      const nextContext = invalid ? null : context;
+      setExperienceStartup((previous) =>
+        previous?.scope === experienceStartupScope && previous.context === nextContext && previous.invalid === invalid
+          ? previous
+          : { scope: experienceStartupScope, context: nextContext, invalid },
+      );
+    },
+    [experienceStartupScope],
+  );
+  const handleStartupHostError = useCallback(() => setStartupReady(null), [setStartupReady]);
+  const startupContext = experienceStartup?.scope === experienceStartupScope ? experienceStartup.context : null;
+  const experienceStartupInvalid = experienceStartup?.scope === experienceStartupScope && experienceStartup.invalid;
+  const experienceStartupBlocked =
+    (gameExperienceId !== null && installedCapabilityPackagesPending) ||
+    (experiencePreparesBeforeStart && startupContext === null);
+  const experienceStartupRef = useRef({ blocked: experienceStartupBlocked, context: startupContext });
+  experienceStartupRef.current = { blocked: experienceStartupBlocked, context: startupContext };
   const currentBackground = useGameAssetStore((s) => s.currentBackground);
   const gameAssetExcludedFolders = useMemo(
     () => parseGameAssetExcludedFolders(chatMeta.gameAssetSelection),
@@ -6582,13 +6628,18 @@ function GameSurfaceComponent({
   }, [activeChatId, generate]);
 
   const generateInitialGameTurn = useCallback(() => {
+    if (experienceStartupScopeRef.current !== experienceStartupScope || experienceStartupRef.current.blocked) return;
+    const context = experienceStartupRef.current.context;
     generate({
       chatId: activeChatId,
       connectionId: null,
-      generationGuide: GAME_START_GENERATION_GUIDE,
+      generationGuide:
+        experiencePreparesBeforeStart && context
+          ? `${GAME_START_GENERATION_GUIDE}\n\nGround the opening in this prepared Experience world. Keep its established places and characters consistent:\n${context}`
+          : GAME_START_GENERATION_GUIDE,
       generationGuideSource: "game_start",
     });
-  }, [activeChatId, generate]);
+  }, [activeChatId, experiencePreparesBeforeStart, experienceStartupScope, generate]);
 
   const handleRetryTurn = useCallback(async () => {
     const msg = latestAssistantMsgRef.current;
@@ -7040,7 +7091,7 @@ function GameSurfaceComponent({
   );
 
   const handleStartGameNow = useCallback(() => {
-    if (startGame.isPending || startGameRequested || startGameGuardRef.current) return;
+    if (experienceStartupBlocked || startGame.isPending || startGameRequested || startGameGuardRef.current) return;
     startGameGuardRef.current = true;
     setStartGameRequested(true);
     startGame.mutate(
@@ -7066,7 +7117,7 @@ function GameSurfaceComponent({
         },
       },
     );
-  }, [activeChatId, generateInitialGameTurn, startGame, startGameRequested, localizeUi]);
+  }, [activeChatId, experienceStartupBlocked, generateInitialGameTurn, startGame, startGameRequested, localizeUi]);
 
   const handleJsonRepairError = useCallback((error: unknown) => {
     const request = getJsonRepairRequest(error);
@@ -8856,6 +8907,8 @@ function GameSurfaceComponent({
         : {
             chatId: activeChatId,
             chatMeta,
+            startup: experiencePreparesBeforeStart && !introPresented,
+            setStartupReady: experiencePreparesBeforeStart ? setStartupReady : undefined,
             messages,
             latestAssistant: latestAssistantMsg,
             isStreaming,
@@ -8893,6 +8946,9 @@ function GameSurfaceComponent({
           },
     [
       experienceSurfaceActive,
+      experiencePreparesBeforeStart,
+      introPresented,
+      setStartupReady,
       activeChatId,
       chatMeta,
       messages,
@@ -10444,13 +10500,13 @@ function GameSurfaceComponent({
   }, [hudWidgets]);
 
   const handleStartGameRequest = useCallback(() => {
-    if (startGame.isPending || startGameRequested || startGameGuardRef.current) return;
+    if (experienceStartupBlocked || startGame.isPending || startGameRequested || startGameGuardRef.current) return;
     if (normalizedWidgets.length > 0) {
       setPrepareInitialWidgetsOpen(true);
       return;
     }
     handleStartGameNow();
-  }, [handleStartGameNow, normalizedWidgets.length, startGame.isPending, startGameRequested]);
+  }, [experienceStartupBlocked, handleStartGameNow, normalizedWidgets.length, startGame.isPending, startGameRequested]);
 
   useEffect(() => {
     if (combatUiActive || normalizedWidgets.length === 0) {
@@ -10932,7 +10988,30 @@ function GameSurfaceComponent({
       "flex items-center gap-2 rounded-lg bg-[var(--muted)]/30 px-4 py-2 text-xs text-[var(--foreground)]/70 transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)] dark:bg-white/10 dark:text-white/70 dark:hover:bg-white/20 dark:hover:text-white";
     return (
       <>
-        <div className="flex h-full items-center justify-center overflow-hidden bg-[var(--background)] dark:bg-black/80 p-6">
+        <div className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--background)] dark:bg-black/80 p-6">
+          {experiencePreparesBeforeStart && experienceSurfaceId && (
+            // ponytail: reuse the package's idempotent mount when Continue opens the normal surface;
+            // a shared persistent slot is only needed if an Experience cannot retain its prepared world.
+            <div className={cn("absolute inset-0 z-30", !experienceStartupBlocked && "hidden")}>
+              <CapabilityElement
+                packageId={experienceSurfaceId}
+                view="surface"
+                capabilityProps={experienceSurfaceProps}
+                className={cn("block h-full w-full", experienceSurfaceClass)}
+                onHostError={handleStartupHostError}
+              />
+              {experienceStartupInvalid && (
+                <p
+                  role="alert"
+                  className="absolute inset-x-3 bottom-3 z-50 rounded-lg border border-[var(--destructive)] bg-[var(--card)] p-3 text-sm text-[var(--card-foreground)]"
+                >
+                  {localizeUi("game.experienceStartup.invalidContext", {
+                    count: EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH,
+                  })}
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex max-h-full max-w-lg flex-col items-center gap-6 text-center">
             {/* Genre / Setting tag */}
             {setupConfig && (
@@ -10954,6 +11033,11 @@ function GameSurfaceComponent({
 
             {/* Start button or generating indicator */}
             <div className="flex w-full flex-shrink-0 flex-col items-center gap-4">
+              {experienceStartupBlocked && (
+                <p role="status" className="text-sm text-[var(--foreground)]">
+                  {localizeUi("game.experienceStartup.preparing")}
+                </p>
+              )}
               <label className="flex w-full max-w-sm flex-col gap-1.5 text-left">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--muted-foreground)] dark:text-white/50">
                   <Plug size={12} />
@@ -11045,7 +11129,11 @@ function GameSurfaceComponent({
                   )}
                   {/* Show retry when generation stopped but no content arrived. */}
                   {!isStreaming && !hasEverHadPlayableContent && !startGame.isPending && (
-                    <button onClick={generateInitialGameTurn} className={SURFACE_BTN}>
+                    <button
+                      onClick={generateInitialGameTurn}
+                      disabled={experienceStartupBlocked}
+                      className={SURFACE_BTN}
+                    >
                       <RefreshCw size={14} />
                       {localizeUi("ui.game.gamesurfacecomponent.retry")}
                     </button>
@@ -11057,7 +11145,7 @@ function GameSurfaceComponent({
                     audioManager.unlock();
                     handleStartGameRequest();
                   }}
-                  disabled={startGame.isPending || startGameRequested}
+                  disabled={experienceStartupBlocked || startGame.isPending || startGameRequested}
                   className="group flex items-center gap-2 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-semibold text-zinc-100 ring-1 ring-zinc-700/80 transition-all hover:scale-105 hover:bg-zinc-800 hover:shadow-lg hover:shadow-black/25 disabled:opacity-50 disabled:hover:scale-100"
                 >
                   <Play size={18} className="transition-transform group-hover:scale-110" />
@@ -11077,7 +11165,7 @@ function GameSurfaceComponent({
             setPrepareInitialWidgetsOpen(false);
             handleStartGameNow();
           }}
-          isStartingSession={startGame.isPending || startGameRequested}
+          isStartingSession={experienceStartupBlocked || startGame.isPending || startGameRequested}
         />
         {imagePromptReviewModal}
         {widgetSessionPrepModal}

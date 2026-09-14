@@ -3040,6 +3040,14 @@ function buildAgentExtras(
     parts.push(`</current_game_state>`);
   }
 
+  if (
+    agentTypes.some((type) =>
+      ["world-state", "character-tracker", "custom-tracker", "inventory-tracker"].includes(type),
+    )
+  ) {
+    parts.push("Tracker capability: tracker_incremental_updates: supported. Existing array output remains supported.");
+  }
+
   const gameImageStylePrompt =
     context.chatMode === "game" && typeof context.memory._gameImageStylePrompt === "string"
       ? context.memory._gameImageStylePrompt.trim()

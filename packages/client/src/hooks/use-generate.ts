@@ -1161,7 +1161,9 @@ function applyGameStatePatchToStore(
 
   // Agent data may arrive before the base game state is loaded. Seed a minimal
   // state with chatId so mounted tracker/HUD views recognise it as current.
-  useGameStateStore.getState().setGameState({ ...patch, chatId, ...(anchor ?? {}) } as any);
+  useGameStateStore
+    .getState()
+    .setGameState({ ...applyTrackerFieldLocksToGameStatePatch(patch, null), chatId, ...(anchor ?? {}) } as any);
 }
 
 /**

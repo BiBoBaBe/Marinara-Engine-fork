@@ -4,6 +4,115 @@ import { seedUIState } from "./ui-state-fixture";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+test("Roleplay scene controls keep readable Chroma surfaces over chat text", async ({ page, request }, testInfo) => {
+  const chatIds: string[] = [];
+  try {
+    const origin = await (
+      await request.post("/api/chats", {
+        data: { name: "Scene controls origin", mode: "conversation", characterIds: [] },
+      })
+    ).json();
+    chatIds.push(origin.id);
+    const scene = await (
+      await request.post("/api/chats", { data: { name: "Scene controls fixture", mode: "roleplay", characterIds: [] } })
+    ).json();
+    chatIds.push(scene.id);
+    expect(
+      (
+        await request.patch(`/api/chats/${scene.id}/metadata`, {
+          data: { sceneStatus: "active", sceneOriginChatId: origin.id },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    await request.post(`/api/chats/${scene.id}/messages`, {
+      data: {
+        role: "assistant",
+        content: Array(12)
+          .fill(
+            "The city lights shimmer beyond the laboratory windows. Notes and instruments cover the table as the conversation continues.",
+          )
+          .join("\n\n"),
+      },
+    });
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["roleplay"],
+      appAccentPulseMode: false,
+      theme: "dark",
+      appAccentColor: "#14b8a6",
+      chatChromeTextColor: "#99f6e4",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: scene.id, version },
+    );
+    await page.goto("/");
+    const back = page.getByRole("button", { name: "Back to conversation", exact: true });
+    const bar = back.locator("..");
+    const discard = bar.getByRole("button", { name: "Discard", exact: true });
+    const convert = bar.getByRole("button", { name: "Convert", exact: true });
+    for (const theme of ["dark", "light"] as const) {
+      const color = theme === "dark" ? "#99f6e4" : "#115e59";
+      await page.evaluate(
+        async ({ theme, color }) => {
+          const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+          useUIStore.getState().setTheme(theme);
+          useUIStore.getState().setChatChromeTextColor(color);
+        },
+        { theme, color },
+      );
+      await expect(back).toBeVisible();
+      await expect(discard).toBeVisible();
+      await expect(convert).toBeVisible();
+      // Wait for the existing theme transition before comparing the settled Chroma colors.
+      for (const button of [back, bar.getByRole("button", { name: "End Scene", exact: true }), discard, convert]) {
+        await expect(button).toHaveCSS("color", theme === "dark" ? "rgb(153, 246, 228)" : "rgb(17, 94, 89)");
+      }
+      await page.screenshot({ path: testInfo.outputPath(`scene-controls-${theme}.png`) });
+      const appearance = await bar.locator("button").evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const style = getComputedStyle(button);
+          const rect = button.getBoundingClientRect();
+          return {
+            background: style.backgroundColor,
+            border: style.border,
+            left: rect.left,
+            right: rect.right,
+          };
+        }),
+      );
+      expect(appearance).toHaveLength(4);
+      for (const button of appearance) {
+        expect(button.background).toBe(appearance[0]!.background);
+        expect(button.background).not.toBe("rgba(0, 0, 0, 0)");
+        expect(button.border).toBe(appearance[0]!.border);
+        expect(button.left).toBeGreaterThanOrEqual(0);
+        expect(button.right).toBeLessThanOrEqual(page.viewportSize()!.width);
+      }
+      await discard.click();
+      await expect(bar.getByText("Discard scene?", { exact: true })).toBeVisible();
+      await bar.getByRole("button", { name: "No", exact: true }).click();
+      await expect(discard).toBeVisible();
+      await convert.click();
+      const confirmation = page.getByRole("dialog", {
+        name: "Convert this scene into a standalone roleplay?",
+        exact: true,
+      });
+      await expect(confirmation).toBeVisible();
+      await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+    }
+  } finally {
+    await page.close();
+    for (const id of chatIds.reverse()) await request.delete(`/api/chats/${id}?force=true`).catch(() => undefined);
+  }
+});
+
 test("Roleplay line volume stays on screen and touch reveal preserves action colors", async ({
   page,
   request,
