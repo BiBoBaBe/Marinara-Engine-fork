@@ -33,8 +33,9 @@ function isBrokenTerminalError(error: unknown) {
 }
 function isTerminalUnavailable() {
   try {
-    // macOS can still report isatty(1) after hangup. Probe without printing.
-    writeSync(1, "");
+    // macOS can still report isatty(1) after hangup, and zero-byte writes need
+    // not probe a PTY. Send one ignorable NUL byte to exercise the actual fd.
+    writeSync(1, "\0");
     return false;
   } catch (error) {
     return isBrokenTerminalError(error);

@@ -997,7 +997,7 @@ export function GameSetupWizard({
   const canStartMessage = experienceSeedInvalid
     ? localizeUi("game.experienceSetup.invalidSeed")
     : activeLorebookEntryIds.length && !eligibleEntries
-      ? localizeUi("game.setupLore.loading")
+      ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
       : !gmConnectionId
         ? localizeUi("ui.game.gamesetupwizard.selectAConnectionOnTheFirstStepBeforeStarting")
         : !spatialMapTargetLocationCountValid && enableAgents && hierarchicalMapsInstalled && draftSpatialMap
@@ -3177,15 +3177,25 @@ export function GameSetupWizard({
                         <p className="text-xs text-[var(--muted-foreground)]">
                           {localizeUi("game.setupLore.description")}
                         </p>
-                        {entryQuery.isLoading && (
+                        {entryQuery.isFetching && (
                           <p role="status" className="text-xs">
                             {localizeUi("game.setupLore.loading")}
                           </p>
                         )}
                         {entryQuery.isError && (
-                          <p role="alert" className="text-xs text-[var(--destructive)]">
-                            {localizeUi("game.setupLore.error")}
-                          </p>
+                          <div className="space-y-2">
+                            <p role="alert" className="text-xs text-[var(--destructive)]">
+                              {localizeUi("game.setupLore.error")}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void entryQuery.refetch()}
+                              disabled={entryQuery.isFetching}
+                              className="flex min-h-11 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40 disabled:cursor-wait disabled:opacity-50"
+                            >
+                              {localizeUi("ui.game.gamesurfacecomponent.retry")}
+                            </button>
+                          </div>
                         )}
                         {eligibleBooks.map((book) => (
                           <details key={book.id} className="border-b border-[var(--border)] py-1">

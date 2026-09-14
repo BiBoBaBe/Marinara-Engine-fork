@@ -90,29 +90,38 @@ for (const isNewGame of [true, false]) {
       }),
     );
     await page.route("**/api/lorebooks", (route) => route.fulfill({ json: books }));
+    let failEntryFetch = true;
     await page.route("**/api/lorebooks/free-book/entries", (route) =>
-      route.fulfill({
-        json: [
-          {
-            id: "keyword-entry",
-            lorebookId: "free-book",
-            name: "Keyword entry",
-            enabled: true,
-            constant: false,
-            order: 0,
-          },
-          {
-            id: "constant-entry",
-            lorebookId: "free-book",
-            name: "Constant entry",
-            enabled: true,
-            constant: true,
-            order: 1,
-          },
-          { id: "disabled-entry", lorebookId: "free-book", name: "Disabled entry", enabled: false, order: 2 },
-          { id: "chat-disabled-entry", lorebookId: "free-book", name: "Chat disabled entry", enabled: true, order: 3 },
-        ],
-      }),
+      failEntryFetch
+        ? route.fulfill({ status: 503, json: { error: "Temporary entry loading failure" } })
+        : route.fulfill({
+            json: [
+              {
+                id: "keyword-entry",
+                lorebookId: "free-book",
+                name: "Keyword entry",
+                enabled: true,
+                constant: false,
+                order: 0,
+              },
+              {
+                id: "constant-entry",
+                lorebookId: "free-book",
+                name: "Constant entry",
+                enabled: true,
+                constant: true,
+                order: 1,
+              },
+              { id: "disabled-entry", lorebookId: "free-book", name: "Disabled entry", enabled: false, order: 2 },
+              {
+                id: "chat-disabled-entry",
+                lorebookId: "free-book",
+                name: "Chat disabled entry",
+                enabled: true,
+                order: 3,
+              },
+            ],
+          }),
     );
     await seedUIState(page, {
       hasCompletedOnboarding: true,
@@ -227,7 +236,7 @@ for (const isNewGame of [true, false]) {
                 enableAgents: true,
                 gameExperienceId: "setup-fixture",
                 experienceConfig: { worldSeed: 7, stalePackageState: "discard me", generate: false },
-                activeLorebookEntryIds: ["missing-entry"],
+                activeLorebookEntryIds: ["keyword-entry", "missing-entry"],
               },
             },
           }),
@@ -251,10 +260,19 @@ for (const isNewGame of [true, false]) {
     await expect(wizard.getByRole("heading", { name: "Goals", exact: true })).toBeVisible();
     await next();
     await wizard.getByRole("button", { name: "Select individual entries", exact: true }).click();
+    await expect(wizard.getByRole("alert")).toContainText("Could not load the entries.");
+    await next();
+    await next();
+    await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
+    await back();
+    await back();
+    failEntryFetch = false;
+    await wizard.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(wizard.getByRole("alert")).toHaveCount(0);
     await wizard.locator("summary").filter({ hasText: "Unattached lore" }).click();
     await expect(wizard.getByRole("checkbox")).toHaveCount(2);
     await expect(wizard.getByRole("checkbox").first()).toHaveAccessibleName("Constant entry");
-    await wizard.getByRole("checkbox", { name: "Keyword entry", exact: true }).check();
+    await expect(wizard.getByRole("checkbox", { name: "Keyword entry", exact: true })).toBeChecked();
     await page.screenshot({ path: testInfo.outputPath("setup-lore-entry-picker.png") });
     await next();
     await expect(wizard.getByRole("heading", { name: "Features", exact: true })).toBeVisible();
