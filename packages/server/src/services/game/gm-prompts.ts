@@ -14,7 +14,7 @@ import { DEFAULT_GAME_SYSTEM_PROMPT, wrapGameInstructions } from "@marinara-engi
 import type { CharacterSpriteInfo } from "./sprite.service.js";
 
 /**
- * The sheet names a one-request dice placeholder can actually resolve this turn (#one-request-dice).
+ * The sheet names a one-request dice placeholder can actually resolve this turn (#6215).
  *
  * The prompt advertises `[[roll: 1d8+STR]]` only when this carries names, because a name the
  * chat cannot resolve is refused rather than defaulted to zero: a placeholder's name is only a
@@ -657,7 +657,7 @@ export function buildGmFormatReminder(
      *  `injectGameGmPromptRuntime` — anything spliced into it there would be overwritten. Empty or
      *  absent (the normal case, and every case today) renders nothing at all. */
     experienceGmVerbs?: string[];
-    /** One-request dice (#one-request-dice): the chat's "Finish rolled turns in one request"
+    /** One-request dice (#6215): the chat's "Finish rolled turns in one request"
      *  switch. Off, absent, or anything but `true` renders today's block byte for byte. */
     oneRequestDice?: boolean;
     /** The sheet names the placeholder's `+NAME` form can resolve this turn. Without names the
@@ -676,7 +676,7 @@ export function buildGmFormatReminder(
 ): string {
   const lines: string[] = [];
   const normalizedLanguage = normalizePromptLanguage(ctx.language);
-  // One-request dice (#one-request-dice). Everything this gates is additive: with the switch
+  // One-request dice (#6215). Everything this gates is additive: with the switch
   // off every line below renders exactly the bytes it renders today.
   const oneRequestDice = ctx.oneRequestDice === true;
 

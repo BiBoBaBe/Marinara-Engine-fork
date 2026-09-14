@@ -446,7 +446,7 @@ const generateRouteSource = readFileSync(
 );
 
 // The condition moved into a named const so the GM format reminder can read the same
-// fact (#one-request-dice): the prompt line that describes roll_dice and the attachment
+// fact (#6215): the prompt line that describes roll_dice and the attachment
 // itself must never disagree. Both halves are anchored, because either one alone would
 // still pass with the other deleted.
 assert.match(

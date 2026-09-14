@@ -2073,7 +2073,7 @@ export function GameNarration({
     sourceMessagesById,
   ]);
 
-  // ── One-request dice: the inline marker (#one-request-dice) ──
+  // ── One-request dice: the inline marker (#6215) ──
   // The substituted number is saved bare, so the breakdown is reattached here at render
   // time and nowhere else. A record that cannot be matched to exactly one number in this
   // text is skipped: the plain number is still true, the session log still carries the

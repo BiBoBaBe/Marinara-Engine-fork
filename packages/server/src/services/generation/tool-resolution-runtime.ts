@@ -178,7 +178,7 @@ export function resolveChatToolDefs(args: {
  *
  * Split out of `resolveChatToolDefs` so a caller that has to know the answer BEFORE the
  * tool set is built can ask the same question instead of restating its three rules. The
- * one caller today is the Game format reminder (#one-request-dice): the prompt line that
+ * one caller today is the Game format reminder (#6215): the prompt line that
  * describes `roll_dice` and the attachment itself are gated on this one fact, so the tool
  * is never attached without being described and never described without being attached.
  *

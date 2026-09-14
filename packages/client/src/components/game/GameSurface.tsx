@@ -4987,7 +4987,7 @@ function GameSurfaceComponent({
     // Preserve reading order, including the legacy endpoint fallback. A late
     // fallback from another chat or swipe must never append to the new queue.
     setPendingSkillChecks([]);
-    // ── One-request dice: the sighted pool's client gate (#one-request-dice) ──
+    // ── One-request dice: the sighted pool's client gate (#6215) ──
     // This fallback rolls a fresh d20 through POST /game/skill-check for every check tag
     // a freshly read turn still owes, with no setting guard at all. That is right for
     // every other mode and wrong for the pool: an overflowed check would be rolled live,

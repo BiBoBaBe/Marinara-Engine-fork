@@ -3863,12 +3863,12 @@ export async function generateRoutes(app: FastifyInstance) {
           return promptContext;
         };
 
-        // ── One-request dice: the roll_dice split (#one-request-dice) ──
+        // ── One-request dice: the roll_dice split (#6215) ──
         // Resolved here, above the GM format reminder, because the reminder has to describe the
         // tool exactly when the turn offers it. Both facts below are read twice: once by the
         // reminder, once by the tool resolution far below, and they must be the same answer.
         const oneRequestDiceTurn = chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta);
-        // ── One-request dice: the sighted pool sub-option (#one-request-dice) ──
+        // ── One-request dice: the sighted pool sub-option (#6215) ──
         // Off by default, and only ever read while the switch above is on. The session is
         // loaded once for the whole turn and shared by the prompt block and both readers,
         // because the queue the model was SHOWN and the queue the engine spends from have to
@@ -4077,7 +4077,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const playerDiceRollSubmitted = /\[dice\b/i.test(latestUserContent);
           // The same table object the post-save parse will use — resolved here, cached for the turn.
           const gmVerbTableForPrompt = await getGmVerbTable();
-          // One-request dice (#one-request-dice): the sheet names a `[[roll: 1d8+STR]]` placeholder
+          // One-request dice (#6215): the sheet names a `[[roll: 1d8+STR]]` placeholder
           // can actually resolve this turn. A name the chat cannot resolve is refused rather than
           // defaulted to zero, so the form is advertised only when there is something to resolve.
           // One read, on the switched-on path only, from the same loader the pass itself uses.
@@ -4114,7 +4114,7 @@ export async function generateRoutes(app: FastifyInstance) {
               artStylePrompt: gmCtx.artStylePrompt,
               addressMode,
               playerDiceRollSubmitted,
-              // One-request dice (#one-request-dice). Off, the three fields below are inert and
+              // One-request dice (#6215). Off, the three fields below are inert and
               // the reminder renders the bytes it renders today.
               oneRequestDice: oneRequestDiceTurn,
               skillModifiers: gameSkillModifierView,
@@ -5319,7 +5319,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // Impersonation writes the player's own line rather than GM narration, so it is left
           // out: there is nothing for the GM to resolve and no turn for the card to belong to.
           //
-          // One-request dice withdraws this default (#one-request-dice): see
+          // One-request dice withdraws this default (#6215): see
           // `gameDiceToolAutoAttached` above, which the format reminder reads from too.
           autoAttachToolNames: gameDiceToolAutoAttached ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
         });
@@ -6076,7 +6076,7 @@ export async function generateRoutes(app: FastifyInstance) {
           hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")
             ? createAssistantSpatialDirectiveStreamFilter()
             : null;
-        // ── One-request dice: the stream filter (#one-request-dice) ──
+        // ── One-request dice: the stream filter (#6215) ──
         // A placeholder and a branch block both stream before the chance pass runs, so
         // without this the player watches `[[roll: 2d6+3]]` appear and silently become a
         // number. Held here, the finished text arrives through content_replace instead.
@@ -8055,7 +8055,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // The outcome rewrite must see the commands it is asked to retain or reject.
           const gameDraftWithCommands = fullResponse;
 
-          // ── One-request dice: the chance pass, branch arm (#one-request-dice) ──
+          // ── One-request dice: the chance pass, branch arm (#6215) ──
           // One session per turn, two insertion points. This is the first: before spatial
           // extraction and before the package-verb strip, so a discarded half's commands are
           // gone before anything collects them. The placeholder arm cannot run here — the verb
@@ -8130,7 +8130,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          // ── One-request dice: the chance pass, placeholder arm (#one-request-dice) ──
+          // ── One-request dice: the chance pass, placeholder arm (#6215) ──
           // The second insertion point, deliberately right here: a claimed verb and its
           // argument are already gone, so a placeholder written inside a verb's argument is
           // never rolled and the scanner needs no verb-table awareness of its own.
@@ -8291,7 +8291,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          // ── One-request dice: the turn notice (#one-request-dice) ──
+          // ── One-request dice: the turn notice (#6215) ──
           // Sibling of the narration-failure notice above: a clean turn records nothing, and a
           // turn where something could not be rolled says so in plain words instead of leaving
           // the player to guess. The saved flag rides on the message extra; the frame is for the
@@ -8601,7 +8601,7 @@ export async function generateRoutes(app: FastifyInstance) {
           await executeCollectedGmVerbCalls({ messageId: savedMsg?.id ?? "", swipeIndex: savedSwipeIndex ?? 0 });
           await persistGameStateToolCalls(savedMsg?.id ?? "", savedSwipeIndex ?? 0);
 
-          // ── One-request dice: the pool row (#one-request-dice) ──
+          // ── One-request dice: the pool row (#6215) ──
           // Written in the same block as the message rather than through the game-state
           // snapshot, because that snapshot is gated on a tracker agent result and with
           // agents off no row is created at all. The REFILL is deliberately not applied
