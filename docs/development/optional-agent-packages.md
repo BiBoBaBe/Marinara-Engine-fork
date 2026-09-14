@@ -601,7 +601,8 @@ Packages without this declaration retain their legacy setup dialog.
 ```
 
 All three fields are optional. The declared seed appears beneath the selected
-Experience with a Randomize button. Blank or non-finite input blocks Start.
+Experience with a Randomize button. The seed is an unsigned whole number from 0
+to 4294967295; blank, fractional, negative, exponent, or hex input blocks Start.
 The host writes the numeric seed and declared constants to `experienceConfig`;
 `config` cannot contain the seed key. Constants must serialize to at most 8,000
 characters. A seed label is package-authored display text; omit it to use the
@@ -620,12 +621,15 @@ respected. These ids travel in `GameSetupConfig.activeLorebookEntryIds`. On
 `/game/setup` they are additive forced entries: they skip probability rolls but
 retain ordinary token limits. Global, character-bound, and attached lore still
 participate in the ordinary scan. Packages can read the same selected ids from
-the setup config for their own world-generation request.
+the setup config for their own world-generation request. Imported entry ids that
+do not exist on this machine are reported and skipped.
 
 A setup-file import restores an installed compatible Experience and its valid
 numeric seed, but discards arbitrary package config. The current manifest supplies
-constants again. Existing games skip Experience imports with an explanation.
-Creation snapshots retain the Experience name and seed for the setup summary.
+constants again. A file that carries no usable Experience seed leaves the
+prefilled random seed alone. Existing games skip Experience imports with an
+explanation. Creation snapshots retain the Experience name and seed for the setup
+summary.
 
 Use the existing startup-readiness declaration independently when the world must
 be prepared before the opening turn. Declare API 1.18 as the package minimum;
