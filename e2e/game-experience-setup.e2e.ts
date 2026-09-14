@@ -8,6 +8,8 @@ for (const isNewGame of [true, false]) {
   test(`Experience wizard preserves ordinary steps and import scope (${isNewGame ? "new" : "existing"} game)`, async ({
     page,
   }, testInfo) => {
+    // Includes legacy setup, file import and two passes through all seven steps.
+    if (isNewGame) test.setTimeout(120_000);
     const experience = {
       id: "setup-fixture",
       version: "1.0.0",
