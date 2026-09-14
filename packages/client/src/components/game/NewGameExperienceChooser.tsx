@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { Gamepad2, Sparkles, Shuffle } from "lucide-react";
 import type { InstalledCapabilityPackage } from "@marinara-engine/shared";
+import { MAX_EXPERIENCE_SEED } from "../../lib/game-experience-setup";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -107,7 +108,9 @@ export function NewGameExperienceChooser({
                           localizeUi("game.experienceSetup.seed")}
                         <input
                           type="number"
-                          step="any"
+                          step={1}
+                          min={0}
+                          max={MAX_EXPERIENCE_SEED}
                           value={seed}
                           onChange={(event) => onSeedChange(event.target.value)}
                           disabled={launching}
@@ -121,7 +124,7 @@ export function NewGameExperienceChooser({
                       </button>
                       {seedInvalid && (
                         <p role="alert" className="w-full text-xs text-[var(--destructive)]">
-                          {localizeUi("game.experienceSetup.invalidSeed")}
+                          {localizeUi("game.experienceSetup.invalidSeed", { max: MAX_EXPERIENCE_SEED })}
                         </p>
                       )}
                     </div>

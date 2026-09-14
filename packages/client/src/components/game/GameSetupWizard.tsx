@@ -102,7 +102,7 @@ import { CapabilityElement } from "../capabilities/CapabilityElement";
 
 import { NewGameExperienceChooser } from "./NewGameExperienceChooser";
 import { LegacyExperienceSetupDialog } from "./LegacyExperienceSetupDialog";
-import { buildExperienceSetup, parseExperienceSeed } from "../../lib/game-experience-setup";
+import { MAX_EXPERIENCE_SEED, buildExperienceSetup, parseExperienceSeed } from "../../lib/game-experience-setup";
 
 const GameAssetsBrowserView = lazy(() =>
   import("../game-assets/GameAssetsBrowserView").then((module) => ({ default: module.GameAssetsBrowserView })),
@@ -545,13 +545,14 @@ export function GameSetupWizard({
   const [activeLorebookIds, setActiveLorebookIds] = useState<string[]>([]);
   const [lbSearch, setLbSearch] = useState("");
   const [activeLorebookEntryIds, setActiveLorebookEntryIds] = useState<string[]>([]);
+  const [importedLorebookEntryIds, setImportedLorebookEntryIds] = useState<string[] | null>(null);
   const [entryPickerOpened, setEntryPickerOpened] = useState(false);
   const [customWidgetsChoice, setEnableCustomWidgets] = useState(true);
-  const [customWidgetsTouched, setCustomWidgetsTouched] = useState(false);
-  const enableCustomWidgets =
-    !customWidgetsTouched && experienceSetup?.requires?.enableCustomWidgets !== undefined
-      ? experienceSetup.requires.enableCustomWidgets
-      : customWidgetsChoice;
+  // A declaring Experience owns this control while it is active. The player's own choice stays
+  // untouched underneath and comes back on its own once the Experience is turned off.
+  const requiredCustomWidgets = experienceSetup?.requires?.enableCustomWidgets;
+  const customWidgetsLocked = requiredCustomWidgets !== undefined;
+  const enableCustomWidgets = requiredCustomWidgets ?? customWidgetsChoice;
   const [manualWidgetSetupEnabled, setManualWidgetSetupEnabled] = useState(false);
   const [customHudWidgets, setCustomHudWidgets] = useState(() =>
     normalizeGameHudWidgets([createDefaultGameHudWidget("progress_bar", [])]),
@@ -668,6 +669,11 @@ export function GameSetupWizard({
   const selectedEntryIds = [...new Set(activeLorebookEntryIds)]
     .filter((id) => eligibleEntries?.some((entry) => entry.id === id))
     .slice(0, 100);
+  // Imported picks are dropped silently when the entry no longer exists on this machine. The count is
+  // taken only once every book has loaded, so a pending or failed fetch never reports entries as gone.
+  const missingImportedEntryCount = eligibleEntries
+    ? new Set(importedLorebookEntryIds?.filter((id) => !eligibleEntries.some((entry) => entry.id === id))).size
+    : 0;
   const hasInstalledAgents = installedAgentIds.size > 0;
   const hierarchicalMapsInstalled = installedAgentIds.has("hierarchical-maps") && !experienceSetup;
   const musicDjInstalled = installedAgentIds.has("spotify");
@@ -1001,7 +1007,7 @@ export function GameSetupWizard({
     !!gmConnectionId &&
     (!enableAgents || !hierarchicalMapsInstalled || !draftSpatialMap || spatialMapTargetLocationCountValid);
   const canStartMessage = experienceSeedInvalid
-    ? localizeUi("game.experienceSetup.invalidSeed")
+    ? localizeUi("game.experienceSetup.invalidSeed", { max: MAX_EXPERIENCE_SEED })
     : activeLorebookEntryIds.length && !eligibleEntries
       ? localizeUi(entryQuery.isError && !entryQuery.isFetching ? "game.setupLore.error" : "game.setupLore.loading")
       : !gmConnectionId
@@ -1057,9 +1063,12 @@ export function GameSetupWizard({
       const config = imported.config;
       const importedExperience = experiences.find((item) => item.id === config.gameExperienceId);
       const importedSetup = importedExperience?.manifest.contributions?.gameSurface?.setup;
-      const seed = importedSetup?.seed ? config.experienceConfig?.[importedSetup.seed.key] : null;
+      const importedSeed = importedSetup?.seed
+        ? parseExperienceSeed(config.experienceConfig?.[importedSetup.seed.key])
+        : null;
       setExperienceId(isNewGame && importedExperience ? importedExperience.id : null);
-      setExperienceSeed(typeof seed === "number" && Number.isFinite(seed) ? String(seed) : "");
+      // A setup file without a usable Experience seed leaves the prefilled seed alone instead of blanking it.
+      if (importedSeed !== null) setExperienceSeed(String(importedSeed));
       setExperienceImportNotice(
         shareFile.setup.config.gameExperienceId
           ? !isNewGame
@@ -1159,9 +1168,9 @@ export function GameSetupWizard({
       setEnableGameMusic(config.enableGameMusic !== false);
       setActiveLorebookIds(config.activeLorebookIds ?? []);
       setActiveLorebookEntryIds(config.activeLorebookEntryIds ?? []);
+      setImportedLorebookEntryIds(config.activeLorebookEntryIds?.length ? config.activeLorebookEntryIds : null);
       setLbSearch("");
       setEnableCustomWidgets(config.enableCustomWidgets !== false);
-      setCustomWidgetsTouched(config.enableCustomWidgets !== undefined || config.customHudWidgets !== undefined);
       setManualWidgetSetupEnabled(importedWidgets.length > 0);
       setCustomHudWidgets(
         importedWidgets.length > 0
@@ -1536,6 +1545,11 @@ export function GameSetupWizard({
                     {experienceImportNotice && (
                       <p role="status" className="text-xs text-[var(--muted-foreground)]">
                         {experienceImportNotice}
+                      </p>
+                    )}
+                    {missingImportedEntryCount > 0 && (
+                      <p role="status" className="text-xs text-[var(--muted-foreground)]">
+                        {localizeUi("game.setupLore.missingImport", { count: missingImportedEntryCount })}
                       </p>
                     )}
 
@@ -2914,13 +2928,18 @@ export function GameSetupWizard({
                     {/* Custom Widgets Toggle */}
                     <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
                       <button
+                        type="button"
+                        aria-pressed={enableCustomWidgets}
+                        disabled={customWidgetsLocked}
                         onClick={() => {
-                          setCustomWidgetsTouched(true);
                           const nextEnabled = !enableCustomWidgets;
                           setEnableCustomWidgets(nextEnabled);
                           if (!nextEnabled) setManualWidgetSetupEnabled(false);
                         }}
-                        className="flex w-full items-center justify-between gap-2 text-left"
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 text-left",
+                          customWidgetsLocked && "cursor-not-allowed opacity-50",
+                        )}
                       >
                         <div className="flex items-center gap-2">
                           <Sparkles
@@ -2952,20 +2971,13 @@ export function GameSetupWizard({
                           />
                         </div>
                       </button>
-                      {experienceSetup?.requires?.enableCustomWidgets !== undefined && (
+                      {customWidgetsLocked && (
                         <p className="mt-2 text-xs text-[var(--muted-foreground)]">
                           {localizeUi(
-                            enableCustomWidgets === experienceSetup.requires.enableCustomWidgets
-                              ? "game.experienceSetup.widgetRequirement"
-                              : "game.experienceSetup.widgetOverride",
-                            {
-                              name: activeExperience?.manifest.name,
-                              state: localizeUi(
-                                experienceSetup.requires.enableCustomWidgets
-                                  ? "game.experienceSetup.enabled"
-                                  : "game.experienceSetup.disabled",
-                              ),
-                            },
+                            requiredCustomWidgets
+                              ? "game.experienceSetup.widgetRequirementOn"
+                              : "game.experienceSetup.widgetRequirementOff",
+                            { name: activeExperience?.manifest.name },
                           )}
                         </p>
                       )}
