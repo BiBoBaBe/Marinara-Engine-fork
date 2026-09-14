@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
 import {
   NEUTRAL_PANEL_CLOSE_BUTTON,
   NEUTRAL_PANEL_CLOSE_ICON_SIZE,
@@ -47,10 +48,14 @@ export function LegacyExperienceSetupDialog({
   const launching = createGame.isPending || gameSetup.isPending;
   const selectedId = experience.id;
   // Escape closes the package's setup, matching the backdrop click and the wizard this panel replaces.
+  // A stacked `Modal` — the malformed-JSON repair dialog `GameSurface` mounts beside setup — takes the
+  // press first from its own `document` listener without stopping propagation, so stand down while one
+  // is open or a single press would dismiss both it and the setup behind it.
   useEffect(() => {
     if (!selectedId || launching) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancelSetup();
+      if (event.key !== "Escape" || isModalOverlayOpen()) return;
+      onCancelSetup();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

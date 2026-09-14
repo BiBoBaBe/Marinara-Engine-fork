@@ -15,6 +15,7 @@ import {
 import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
+import { registerModalOverlay } from "../../lib/modal-overlay-registry";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -103,6 +104,14 @@ export function Modal({
       }
     };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tell screens that draw their own full-page shell that a dialog is stacked
+  // above them. The Escape listener below does not stop propagation, so without
+  // this they would act on the same press.
+  useEffect(() => {
+    if (!open) return;
+    return registerModalOverlay();
+  }, [open]);
 
   // Close on Escape
   useEffect(() => {
