@@ -7684,7 +7684,6 @@ test("Roleplay Tracker preserves named characters with missing or malformed card
     await page.screenshot({ path: testInfo.outputPath("tracker-opening-failure.png") }).catch(() => undefined);
     throw error;
   } finally {
-    await page.close();
     if (chatId) await bestEffortDelete(request, `/api/chats/${chatId}`);
     if (characterId) await bestEffortDelete(request, `/api/characters/${characterId}`);
   }
