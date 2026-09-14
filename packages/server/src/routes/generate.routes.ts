@@ -559,6 +559,16 @@ import {
   resolveSkillCheckTagsInContent,
 } from "../services/game/skill-check-resolution.service.js";
 import {
+  createGameTurnChanceSession,
+  isOneRequestDiceEnabled,
+  resolveGameTurnBranches,
+  resolveGameTurnPlaceholders,
+  runGameTurnChancePass,
+  shouldNarrateGameDiceOutcome,
+  summarizeGameDiceTurn,
+} from "../services/game/one-request-dice.js";
+import type { GameDiceTurnNotice } from "@marinara-engine/shared";
+import {
   applyMapUpdateCommand,
   getGameMapsFromMeta,
   parseMapUpdateCommands,
@@ -7532,6 +7542,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
           let contentReplaced = false;
           let gameOutcomeNarrationFailed = false;
+          let gameDiceTurnNotice: GameDiceTurnNotice | null = null;
 
           // Some models inline reasoning blocks instead of using provider-native
           // thinking channels. Lift those blocks into message.extra.thinking.
@@ -7930,6 +7941,31 @@ export async function generateRoutes(app: FastifyInstance) {
 
           // The outcome rewrite must see the commands it is asked to retain or reject.
           const gameDraftWithCommands = fullResponse;
+
+          // ── One-request dice: the chance pass, branch arm (#one-request-dice) ──
+          // One session per turn, two insertion points. This is the first: before spatial
+          // extraction and before the package-verb strip, so a discarded half's commands are
+          // gone before anything collects them. The placeholder arm cannot run here — the verb
+          // table is not fetched until below — so it runs immediately after that strip instead.
+          // The wrapper never throws out: on an internal failure the turn is saved with a notice
+          // and the affected tags are left sparse.
+          const gameChanceSession =
+            chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta)
+              ? createGameTurnChanceSession({ db: app.db, chatId: input.chatId })
+              : null;
+          if (gameChanceSession) {
+            const branchArm = await runGameTurnChancePass(
+              fullResponse,
+              gameChanceSession,
+              resolveGameTurnBranches,
+              "branch",
+            );
+            if (branchArm.changed) {
+              fullResponse = branchArm.content;
+              contentReplaced = true;
+            }
+          }
+
           if (hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")) {
             const parsedSpatial = extractAssistantSpatialDirective(fullResponse);
             assistantSpatialDirectiveDetected = parsedSpatial.directive !== null;
@@ -7981,6 +8017,23 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // ── One-request dice: the chance pass, placeholder arm (#one-request-dice) ──
+          // The second insertion point, deliberately right here: a claimed verb and its
+          // argument are already gone, so a placeholder written inside a verb's argument is
+          // never rolled and the scanner needs no verb-table awareness of its own.
+          if (gameChanceSession) {
+            const placeholderArm = await runGameTurnChancePass(
+              fullResponse,
+              gameChanceSession,
+              resolveGameTurnPlaceholders,
+              "placeholder",
+            );
+            if (placeholderArm.changed) {
+              fullResponse = placeholderArm.content;
+              contentReplaced = true;
+            }
+          }
+
           // Resolve this new segment before content_replace and persistence.
           // A continuation's already-saved segment is never rolled again.
           if (chatMode === "game" && !input.impersonate) {
@@ -8005,7 +8058,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 },
               });
             }
-            if (chatMeta.gameDiceOutcomeNarration !== false && (rolled.resolved || generalRolls.rolled)) {
+            if (shouldNarrateGameDiceOutcome(chatMeta, Boolean(rolled.resolved || generalRolls.rolled))) {
               // The first draft predates these results. Rewrite it with the real
               // outcomes in context, including on providers without a tools API.
               const records = [...fullResponse.matchAll(createGameRollTagRegex())].map((match) => match[0]);
@@ -8105,6 +8158,21 @@ export async function generateRoutes(app: FastifyInstance) {
               }
               contentReplaced = true;
               durationMs = Date.now() - genStartTime;
+            }
+          }
+
+          // ── One-request dice: the turn notice (#one-request-dice) ──
+          // Sibling of the narration-failure notice above: a clean turn records nothing, and a
+          // turn where something could not be rolled says so in plain words instead of leaving
+          // the player to guess. The saved flag rides on the message extra; the frame is for the
+          // live session log.
+          if (gameChanceSession) {
+            gameDiceTurnNotice = summarizeGameDiceTurn(gameChanceSession);
+            if (gameDiceTurnNotice) {
+              sendSseEvent(reply, {
+                type: "game_dice_turn_notice",
+                data: { chatId: input.chatId, ...gameDiceTurnNotice },
+              });
             }
           }
 
@@ -8455,6 +8523,7 @@ export async function generateRoutes(app: FastifyInstance) {
           } else if (savedMsg?.id) {
             const extraUpdate: Record<string, unknown> = {
               ...(chatMode === "game" ? { gameOutcomeNarrationFailed } : {}),
+              ...(chatMode === "game" && gameDiceTurnNotice ? { gameDiceTurn: gameDiceTurnNotice } : {}),
               ...(gameToolPlan && gameToolConnection
                 ? {
                     gameToolPlanning: {

@@ -623,6 +623,12 @@ export interface ChatMetadata {
   gameLorebookSearch?: boolean;
   /** Rewrite Game narration after new text-command dice rolls; absent means enabled. */
   gameDiceOutcomeNarration?: boolean;
+  /**
+   * Finish a rolled Game turn in one provider request: the GM commits its prose blind,
+   * the engine rolls afterwards and fills the result in, and the narration rewrite never
+   * fires. Absent means off.
+   */
+  gameOneRequestDice?: boolean;
   /** Serialize narration, agents, and scene media within this Game chat. */
   gameSequentialAgents?: boolean;
   /** Master visibility/runtime switch for manual Game Mode scene videos. */
@@ -889,6 +895,8 @@ export interface MessageExtra {
   diceRollResults?: DiceRollResult[] | null;
   /** Real roll records survived, but the separate outcome narration request failed. */
   gameOutcomeNarrationFailed?: boolean;
+  /** What the one-request dice pass did on this turn, when the switch was on. */
+  gameDiceTurn?: GameDiceTurnNotice | null;
   /** Separate tool planner billing; never added to the narrator model's usage. */
   gameToolPlanning?: GameToolPlanningInfo | null;
   /**
@@ -913,6 +921,23 @@ export interface MessageExtra {
     impersonateBlockAgents?: boolean;
     impersonatePromptTemplate?: string | null;
   } | null;
+}
+
+/**
+ * Summary of the one-request dice pass for one Game turn. Saved on the assistant
+ * message and mirrored on a `game_dice_turn_notice` SSE frame, so the session log can
+ * say in plain words what the engine could and could not roll. Every field is optional
+ * and only truthy values are written, so a clean turn stores nothing.
+ */
+export interface GameDiceTurnNotice {
+  /** Which blind forms actually resolved this turn, in first-seen order. */
+  forms?: Array<"branch" | "placeholder">;
+  /** Spans the pass refused to read and replaced with a visible notice. Never a number. */
+  unreadablePlaceholders?: number;
+  /** Branch blocks the pass could not read. The roll stands, the narration does not. */
+  branchFailures?: number;
+  /** The pass itself threw; its fallback rewrite ran and the turn was kept. */
+  passFailed?: boolean;
 }
 
 export interface GameToolPlanningInfo {
