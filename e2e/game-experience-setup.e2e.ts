@@ -188,10 +188,40 @@ for (const isNewGame of [true, false]) {
     const back = () => wizard.getByRole("button", { name: "Back", exact: true }).click();
     if (isNewGame) {
       await page.screenshot({ path: testInfo.outputPath("setup-before-experience.png") });
-      await wizard.getByRole("button", { name: "Show", exact: true }).click();
-      await wizard.getByRole("switch", { name: "Legacy fixture", exact: true }).click();
+      await expect(wizard.getByRole("button", { name: "Import setup", exact: true })).toBeEnabled();
+      await wizard
+        .locator('input[type="file"]')
+        .first()
+        .setInputFiles({
+          name: "legacy.marinara-game-setup.json",
+          mimeType: "application/json",
+          buffer: Buffer.from(
+            JSON.stringify({
+              format: "marinara-game-setup",
+              version: 1,
+              gameName: "Imported legacy adventure",
+              setup: {
+                config: {
+                  genre: "Fantasy",
+                  setting: "Legacy Harbor",
+                  tone: "Hopeful",
+                  difficulty: "Normal",
+                  rating: "sfw",
+                  gmMode: "standalone",
+                  partyCharacterIds: [],
+                  playerGoals: "Find the missing keeper",
+                  gameExperienceId: "legacy-fixture",
+                  experienceConfig: { stalePackageState: "discard me" },
+                },
+              },
+            }),
+          ),
+        });
       const legacy = page.getByRole("dialog", { name: "Legacy fixture", exact: true });
       await expect(legacy).toBeVisible();
+      await expect(legacy.getByText("Legacy package setup fixture", { exact: true })).toBeVisible();
+      await expect(legacy).toHaveCSS("opacity", "1");
+      await page.screenshot({ path: testInfo.outputPath("setup-imported-legacy-experience.png") });
       await expect(legacy.getByRole("button", { name: "Close setup", exact: true })).toBeFocused();
       await page.keyboard.press("Shift+Tab");
       await expect(legacy.getByRole("button", { name: "Back", exact: true })).toBeFocused();
@@ -199,6 +229,7 @@ for (const isNewGame of [true, false]) {
       await expect(legacy.getByRole("button", { name: "Close setup", exact: true })).toBeFocused();
       await legacy.getByRole("button", { name: "Back", exact: true }).click();
       await expect(wizard).toBeFocused();
+      await expect(wizard.getByText(/The saved Experience is unavailable/u)).toHaveCount(0);
       await wizard.getByRole("button", { name: "Show", exact: true }).click();
       await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
       await wizard.getByRole("spinbutton", { name: "World seed" }).fill("");
@@ -265,7 +296,9 @@ for (const isNewGame of [true, false]) {
     await next();
     await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
     await back();
+    await expect(wizard.getByRole("heading", { name: "Features", exact: true })).toBeVisible();
     await back();
+    await expect(wizard.getByRole("heading", { name: "Lorebooks", exact: true })).toBeVisible();
     failEntryFetch = false;
     await wizard.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(wizard.getByRole("alert")).toHaveCount(0);

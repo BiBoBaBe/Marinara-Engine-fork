@@ -1052,13 +1052,13 @@ export function GameSetupWizard({
       const importedExperience = experiences.find((item) => item.id === config.gameExperienceId);
       const importedSetup = importedExperience?.manifest.contributions?.gameSurface?.setup;
       const seed = importedSetup?.seed ? config.experienceConfig?.[importedSetup.seed.key] : null;
-      setExperienceId(isNewGame && importedSetup ? importedExperience!.id : null);
+      setExperienceId(isNewGame && importedExperience ? importedExperience.id : null);
       setExperienceSeed(typeof seed === "number" && Number.isFinite(seed) ? String(seed) : "");
       setExperienceImportNotice(
         shareFile.setup.config.gameExperienceId
           ? !isNewGame
             ? localizeUi("game.experienceSetup.existingImport")
-            : !importedSetup
+            : !importedExperience
               ? localizeUi("game.experienceSetup.unavailableImport")
               : null
           : null,

@@ -87,6 +87,13 @@ try {
   const imported = resolveGameSetupImport(file, resources);
   assert.deepEqual(imported.config.experienceConfig, { worldSeed: 0 }, "Imports restore only the numeric seed");
   assert.equal(imported.config.gameExperienceId, experience.id);
+  const legacyExperience = {
+    ...experience,
+    manifest: { ...experience.manifest, contributions: { gameSurface: {} } },
+  } as InstalledCapabilityPackage;
+  const legacyImport = resolveGameSetupImport(file, { ...resources, experiencePackages: [legacyExperience] });
+  assert.equal(legacyImport.config.gameExperienceId, experience.id, "Installed legacy Experiences remain selectable");
+  assert.deepEqual(legacyImport.config.experienceConfig, {}, "Legacy imports do not restore arbitrary package state");
   assert.equal(file.setup.labels?.experienceSeedKey, "worldSeed");
   assert.equal(resolveGameSetupImport(file, { ...resources, isNewGame: false }).config.gameExperienceId, undefined);
   assert.equal(

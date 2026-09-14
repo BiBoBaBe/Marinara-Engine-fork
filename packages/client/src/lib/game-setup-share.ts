@@ -483,21 +483,20 @@ export function resolveGameSetupImport(
 ): ResolvedGameSetupImport {
   const { config: sourceConfig, labels, connections: snapshots } = file.setup;
   const warnings: string[] = [];
-  // Import only a compatible Experience's declared seed, never arbitrary package state.
+  // Restore installed selections, but import only declared seeds, never arbitrary package state.
   const experience =
     context.isNewGame !== false
       ? context.experiencePackages?.find((item) => item.id === sourceConfig.gameExperienceId)
       : undefined;
   const setup = experience?.manifest.contributions?.gameSurface?.setup;
   const seed = setup?.seed ? sourceConfig.experienceConfig?.[setup.seed.key] : undefined;
-  const experienceSelection =
-    experience && setup
-      ? {
-          gameExperienceId: experience.id,
-          experienceConfig:
-            setup.seed && typeof seed === "number" && Number.isFinite(seed) ? { [setup.seed.key]: seed } : {},
-        }
-      : {};
+  const experienceSelection = experience
+    ? {
+        gameExperienceId: experience.id,
+        experienceConfig:
+          setup?.seed && typeof seed === "number" && Number.isFinite(seed) ? { [setup.seed.key]: seed } : {},
+      }
+    : {};
   const { gameExperienceId: _experienceId, experienceConfig: _experienceConfig, ...ordinaryConfig } = sourceConfig;
 
   const gmCharacterName = sourceConfig.gmCharacterId ? labels?.characterNames?.[sourceConfig.gmCharacterId] : null;
