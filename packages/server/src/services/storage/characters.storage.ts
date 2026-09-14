@@ -1024,16 +1024,6 @@ export function createCharactersStorage(db: DB) {
       return this.getPersona(id);
     },
 
-    async setActivePersona(id: string) {
-      return db.transaction(async (tx) => {
-        const existing = await tx.select({ id: personas.id }).from(personas).where(eq(personas.id, id));
-        if (!existing[0]) return false;
-        await tx.update(personas).set({ isActive: "false" });
-        await tx.update(personas).set({ isActive: "true", updatedAt: now() }).where(eq(personas.id, id));
-        return true;
-      });
-    },
-
     async removePersona(id: string) {
       await db.transaction(async (tx) => {
         await tx.delete(personas).where(eq(personas.id, id));

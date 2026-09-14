@@ -104,7 +104,7 @@ Your persona can follow any invited character, but only after that character has
 
 Each persona you create gets its own Noodle account. At the bottom of the left sidebar, your persona's name and avatar are a button. Click it to open **Switch account** and pick a different persona.
 
-Switching accounts here changes which persona you post, like, reply, and follow as inside Noodle. It does not change the app's active persona anywhere else in Marinara.
+Switching accounts here changes which persona you post, like, reply, and follow as inside Noodle. Each chat keeps its own persona selection.
 
 ## Refresh timeline
 

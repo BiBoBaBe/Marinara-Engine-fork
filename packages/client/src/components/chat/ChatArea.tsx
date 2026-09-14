@@ -39,7 +39,6 @@ import { useGenerateGallerySelfie } from "../../hooks/use-gallery";
 import {
   characterKeys,
   spriteKeys,
-  useActivePersona,
   useCharacters,
   usePersona,
   useUpdateCharacter,
@@ -350,19 +349,6 @@ function isCharacterRow(value: unknown): value is CharacterRow {
     typeof (value as { id?: unknown }).id === "string" &&
     typeof (value as { data?: unknown }).data !== "undefined"
   );
-}
-
-function resolveChatPersonaId(chat: unknown): string | null {
-  const rawPersonaId = (chat as { personaId?: unknown } | null | undefined)?.personaId;
-  if (typeof rawPersonaId === "string" && rawPersonaId.trim()) return rawPersonaId.trim();
-
-  const metadata = parseChatMetadata((chat as { metadata?: unknown } | null | undefined)?.metadata);
-  const setupConfig = metadata.gameSetupConfig;
-  const rawSetupPersonaId =
-    setupConfig && typeof setupConfig === "object" && !Array.isArray(setupConfig)
-      ? (setupConfig as { personaId?: unknown }).personaId
-      : null;
-  return typeof rawSetupPersonaId === "string" && rawSetupPersonaId.trim() ? rawSetupPersonaId.trim() : null;
 }
 
 function toCharacterMapValue(char: CharacterRow): CharacterMapValue {
@@ -867,9 +853,8 @@ export const ChatArea = memo(function ChatArea() {
   // other fields don't renew the array identity. [#3164]
   const chatCharacterIdsRaw = chat?.characterIds;
   const chatCharIds = useMemo(() => getChatCharacterIds({ characterIds: chatCharacterIdsRaw }), [chatCharacterIdsRaw]);
-  const chatPersonaId = useMemo(() => resolveChatPersonaId(chat), [chat]);
+  const chatPersonaId = chat?.personaId ?? null;
   const { data: chatPersona } = usePersona(chatPersonaId);
-  const { data: activePersonaFallback } = useActivePersona(!!chat?.id && !chatPersonaId && chatMode === "conversation");
 
   const activeCharacterQueries = useQueries({
     queries: chatCharIds.map((id) => ({
@@ -1035,10 +1020,8 @@ export const ChatArea = memo(function ChatArea() {
     });
   }, [gameLibraryCharacters, isGameChat]);
 
-  // Active persona info (for user message styling: name, avatar, colors)
+  // Chat persona info (for user message styling: name, avatar, colors)
   const personaInfo = useMemo(() => {
-    // Roleplay and Game may intentionally have no Persona; only Conversation
-    // falls back to the globally active account Persona.
     if (chat?.personaCharacterId) {
       const row = identityCharacterRow;
       if (row && row.id === chat.personaCharacterId) {
@@ -1079,7 +1062,7 @@ export const ChatArea = memo(function ChatArea() {
       }
       return undefined;
     }
-    const persona = chatPersona ?? (chatMode === "conversation" ? activePersonaFallback : null);
+    const persona = chatPersona;
     if (!persona) return undefined;
     return {
       id: persona.id,
@@ -1098,7 +1081,7 @@ export const ChatArea = memo(function ChatArea() {
       dialogueColor: persona.dialogueColor || undefined,
       boxColor: persona.boxColor || undefined,
     };
-  }, [activePersonaFallback, chat, chatMode, chatPersona, identityCharacterRow]);
+  }, [chat, chatPersona, identityCharacterRow]);
 
   const { startEncounter } = useEncounter();
   const { concludeScene, abandonScene, forkScene, isForking } = useScene();
@@ -1483,9 +1466,9 @@ export const ChatArea = memo(function ChatArea() {
   // (personas have no other data-card-css hook), so only feed it in Convo mode.
   const cardCssPersonas = useMemo<PersonaCssRow[] | undefined>(() => {
     if (chatMode !== "conversation") return undefined;
-    const persona = chatPersona ?? activePersonaFallback;
+    const persona = chatPersona;
     return persona?.id ? [{ id: persona.id, creatorNotes: persona.creatorNotes }] : undefined;
-  }, [chatMode, chatPersona, activePersonaFallback]);
+  }, [chatMode, chatPersona]);
   const cardCssInjector = (
     <CreatorNotesCssInjector
       characterIds={chatCharIds}

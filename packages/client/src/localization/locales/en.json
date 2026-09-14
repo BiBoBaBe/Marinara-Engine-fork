@@ -8494,7 +8494,6 @@
   "ui.panels.personaspanel.openPersonasLibrary": "Open Personas Library",
   "ui.panels.personaspanel.removeTagValue1FromAllPersonas": "Remove tag \"{{value1}}\" from all personas?",
   "ui.panels.personaspanel.selectPersona": "Select persona",
-  "ui.panels.personaspanel.setAsActive": "Set as active",
   "ui.panels.personaspanel.tokens": "Tokens",
   "ui.panels.pocketttsvoicecontrol.chooseServerVoice": "Choose server voice",
   "ui.panels.pocketttsvoicecontrol.loadingServerVoices": "Loading server voices…",

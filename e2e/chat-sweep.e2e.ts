@@ -4,6 +4,137 @@ import { seedUIState } from "./ui-state-fixture";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+test("Personas are chosen per chat and Conversation names match that choice", async ({ page, request }, info) => {
+  const resources: string[] = [];
+  const create = async (path: string, data: unknown) => {
+    const response = await request.post(path, { data });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const value = (await response.json()) as { id: string };
+    resources.unshift(`${path}/${value.id}`);
+    return value;
+  };
+  try {
+    const alice = await create("/api/characters/personas", {
+      name: "Alice Persona",
+      description: "A careful explorer.",
+    });
+    const bobPersona = await create("/api/characters/personas", { name: "Bob Persona" });
+    const bob = await create("/api/characters", { data: { name: "Bob Character" } });
+    const chat = await create("/api/chats", {
+      name: "Explicit persona identity",
+      mode: "conversation",
+      personaId: alice.id,
+      characterIds: [bob.id],
+    });
+    expect(
+      (
+        await request.patch(`/api/chats/${chat.id}/metadata`, {
+          data: { gameSetupConfig: { personaId: alice.id } },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    const historicalMessage = await create(`/api/chats/${chat.id}/messages`, {
+      role: "user",
+      content: "Recorded by {{user}}.",
+      extra: { personaSnapshot: { personaId: alice.id, name: "Alice Persona" } },
+    });
+    const message = await create(`/api/chats/${chat.id}/messages`, {
+      role: "assistant",
+      characterId: bob.id,
+      content: "Hello {{user}}. I am {{char}}.",
+    });
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation", "roleplay"],
+      trackerPanelEnabled: false,
+      chibiProfessorMariEnabled: false,
+      appAccentPulseMode: false,
+      theme: info.project.name === "desktop-chromium" ? "light" : "dark",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chat.id, version },
+    );
+    await page.goto("/");
+    const messageRow = page.locator(`[data-message-id="${message.id}"]`);
+    await expect(messageRow).toContainText("I am Bob Character.");
+    await page.screenshot({ path: info.outputPath("conversation-persona-identity.png") });
+    const renderedGreeting = await messageRow.innerText();
+
+    await page.locator('[data-tour="panel-personas"]').click();
+    const panel = page.locator('[data-component="RightPanel"]');
+    const aliceRow = page.locator('[data-touch-drag-card="persona"]').filter({ hasText: "Alice Persona" });
+    await expect(aliceRow).toBeVisible();
+    if (info.project.name === "desktop-chromium") await aliceRow.hover();
+    await expect(page.locator('[data-touch-drag-card="persona"]').last()).toHaveCSS("opacity", "1");
+    await page.screenshot({ path: info.outputPath("personas-panel.png") });
+    const globalControls = await panel.getByRole("button", { name: /^(Set as active|Active|Inactive)$/u }).count();
+    await page
+      .locator('[data-component="PersonaLibraryActions"]')
+      .getByRole("button", { name: "Open Library", exact: true })
+      .click();
+    const library = page.locator('[data-component="CharacterLibraryView"]');
+    await expect(library.getByRole("heading", { name: "Browse your personas" })).toBeVisible();
+    await expect(library.getByText("Alice Persona", { exact: true }).first()).toBeVisible();
+    const activeBadges = await library.getByText("Active", { exact: true }).count();
+    await page.screenshot({ path: info.outputPath("personas-library.png") });
+    expect.soft(globalControls).toBe(0);
+    expect.soft(activeBadges).toBe(0);
+    expect(renderedGreeting).toContain("Hello Alice Persona. I am Bob Character.");
+    await library.getByTitle("Close library").click();
+    if (await aliceRow.isVisible()) await page.locator('[data-tour="panel-personas"]').click();
+    const composer = page.locator("textarea[data-chat-composer]");
+    await expect(composer).toBeVisible();
+    const openPersonas = async (currentName: string) => {
+      if (info.project.name === "desktop-chromium") {
+        await page.getByTitle(currentName, { exact: true }).click();
+        return page.getByRole("menu", { name: "Personas", exact: true });
+      }
+      await page.getByTitle("Quick Switcher", { exact: true }).click();
+      const picker = page.locator(".fixed[data-chat-floating-panel]");
+      await picker.getByRole("button", { name: "Personas", exact: true }).click();
+      return picker;
+    };
+    const picker = await openPersonas("Alice Persona");
+    await picker.getByRole("button", { name: /Ungrouped/u }).click();
+    await page.getByRole("button", { name: /Bob Persona/u }).click();
+    await expect
+      .poll(async () => (await (await request.get(`/api/chats/${chat.id}`)).json()).personaId)
+      .toBe(bobPersona.id);
+    await expect(messageRow).toContainText("Hello Bob Persona. I am Bob Character.");
+    await expect(messageRow.getByText("Bob Character", { exact: true })).toBeVisible();
+    const historicalRow = page.locator(`[data-message-id="${historicalMessage.id}"]`);
+    await expect(historicalRow).toContainText("Recorded by Alice Persona.");
+    await expect(historicalRow.getByText("Alice Persona", { exact: true })).toBeVisible();
+    await page.screenshot({ path: info.outputPath("historical-persona-identity.png") });
+    await openPersonas("Bob Persona");
+    await page.getByRole("button", { name: /None.*No persona selected/u }).click();
+    await expect.poll(async () => (await (await request.get(`/api/chats/${chat.id}`)).json()).personaId).toBeNull();
+    await expect(messageRow).toContainText("Hello User. I am Bob Character.");
+    await composer.fill("/send I am {{user}}.");
+    await composer.press("Enter");
+    await expect(page.locator('[data-message-role="user"]').last()).toContainText("I am User.");
+    await page.reload();
+    await expect(messageRow).toContainText("Hello User. I am Bob Character.");
+    await expect(messageRow.getByText("Bob Character", { exact: true })).toBeVisible();
+    await expect(historicalRow).toContainText("Recorded by Alice Persona.");
+    await expect(historicalRow.getByText("Alice Persona", { exact: true })).toBeVisible();
+    await expect(
+      page.getByTitle(info.project.name === "desktop-chromium" ? "Quick Persona Switcher" : "Quick Switcher", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  } finally {
+    for (const path of resources) await request.delete(path).catch(() => undefined);
+  }
+});
+
 test("Roleplay scene controls keep readable Chroma surfaces over chat text", async ({ page, request }, testInfo) => {
   const chatIds: string[] = [];
   try {

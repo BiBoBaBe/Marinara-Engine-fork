@@ -2318,11 +2318,8 @@ export async function charactersRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get("/personas/active", async () => {
-    const personas = await storage.listPersonas();
-    const active = personas.find((persona) => persona.isActive === "true");
-    return active ? projectPersona(active) : null;
-  });
+  // Compatibility for older clients; there is no global Persona selection.
+  app.get("/personas/active", async () => null);
 
   app.get<{ Params: { id: string } }>("/personas/:id", async (req, reply) => {
     const persona = await storage.getPersona(req.params.id);
@@ -2535,15 +2532,11 @@ export async function charactersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.put<{ Params: { id: string } }>("/personas/:id/activate", async (req, reply) => {
-    const { id } = req.params;
-    if (isUnsafePathSegment(id)) {
-      return reply.status(400).send({ error: "Invalid persona id" });
-    }
-    const activated = await storage.setActivePersona(id);
-    if (!activated) return reply.status(404).send({ error: "Persona not found" });
-    return { success: true };
-  });
+  app.put("/personas/:id/activate", async (_req, reply) =>
+    reply
+      .status(410)
+      .send({ error: "Global active personas have been retired. Select a persona in the chat instead." }),
+  );
 
   app.delete<{ Params: { id: string } }>("/personas/:id", async (req, reply) => {
     const { id } = req.params;

@@ -8234,18 +8234,19 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
-    name: "Roleplay preserves an explicit no-Persona selection",
+    name: "Every chat mode requires an explicit Persona selection",
     run() {
       const personas = [
         { id: "active-persona", isActive: "true" },
         { id: "selected-persona", isActive: "false" },
       ];
 
-      assert.equal(resolveChatPersonaCandidate(personas, null, "roleplay"), null);
-      assert.equal(resolveActivePersonaCandidate(personas, null, "roleplay"), null);
-      assert.equal(resolveActivePersonaCandidate(personas, null, "game"), null);
-      assert.equal(resolveActivePersonaCandidate(personas, null, "conversation")?.id, "active-persona");
-      assert.equal(resolveActivePersonaCandidate(personas, "selected-persona", "roleplay")?.id, "selected-persona");
+      for (const mode of ["conversation", "roleplay", "game"]) {
+        assert.equal(resolveChatPersonaCandidate(personas, null, mode), null);
+        assert.equal(resolveActivePersonaCandidate(personas, null, mode), null);
+        assert.equal(resolveChatPersonaCandidate(personas, "missing-persona", mode), null);
+        assert.equal(resolveActivePersonaCandidate(personas, "selected-persona", mode)?.id, "selected-persona");
+      }
     },
   },
   {

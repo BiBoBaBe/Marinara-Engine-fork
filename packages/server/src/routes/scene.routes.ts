@@ -137,10 +137,8 @@ async function buildCharacterContext(chars: ReturnType<typeof createCharactersSt
 }
 
 /**
- * Build persona context. Prefers the chat-scoped persona (`chat.personaId`)
- * before Conversation-only fallback to the globally active Persona — the same
- * resolution order used elsewhere (see `chats.routes.ts`). Roleplay and Game
- * may intentionally remain Persona-less in scene prompts.
+ * Build context from the chat's selected Persona or character identity.
+ * Chats without an explicit identity remain Persona-less in scene prompts.
  */
 async function buildPersonaContext(
   chars: ReturnType<typeof createCharactersStorage>,

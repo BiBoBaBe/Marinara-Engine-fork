@@ -67,7 +67,6 @@ export const characterKeys = {
   personaCallVideos: (id: string) => ["conversation-calls", "persona-videos", id] as const,
   personas: personaCacheKeys.list,
   personaPages: () => [...characterKeys.personas, "page"] as const,
-  personaActive: personaCacheKeys.active,
   personaDetail: personaCacheKeys.detail,
   personaVersions: (id: string) => [...characterKeys.personaDetail(id), "versions"] as const,
   groups: ["character-groups"] as const,
@@ -1202,16 +1201,6 @@ export function usePersona(id: string | null) {
   });
 }
 
-export function useActivePersona(enabled = true) {
-  return useQuery({
-    queryKey: characterKeys.personaActive(),
-    queryFn: () => api.get<Persona | null>("/characters/personas/active"),
-    enabled,
-    retry: false,
-    staleTime: 5 * 60_000,
-  });
-}
-
 export function useCreatePersona() {
   const qc = useQueryClient();
   return useMutation({
@@ -1275,7 +1264,6 @@ export function useRestorePersonaVersion() {
       api.post<Persona>(`/characters/personas/${id}/versions/${versionId}/restore`, {}),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: characterKeys.personas });
-      qc.invalidateQueries({ queryKey: characterKeys.personaActive() });
       qc.invalidateQueries({ queryKey: characterKeys.personaDetail(variables.id) });
       qc.invalidateQueries({ queryKey: characterKeys.personaVersions(variables.id) });
     },
@@ -1310,7 +1298,6 @@ export function useResetPersonaVersions() {
     mutationFn: (id: string) => api.post<Persona>(`/characters/personas/${id}/versions/reset`, {}),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: characterKeys.personas });
-      qc.invalidateQueries({ queryKey: characterKeys.personaActive() });
       qc.invalidateQueries({ queryKey: characterKeys.personaDetail(id) });
       qc.invalidateQueries({ queryKey: characterKeys.personaVersions(id) });
     },
@@ -1323,7 +1310,6 @@ export function useDeletePersona() {
     mutationFn: (id: string) => api.delete(`/characters/personas/${id}`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: characterKeys.personas });
-      qc.invalidateQueries({ queryKey: characterKeys.personaActive() });
       qc.removeQueries({ queryKey: characterKeys.personaDetail(id) });
     },
   });
@@ -1334,18 +1320,6 @@ export function useDuplicatePersona() {
   return useMutation({
     mutationFn: (id: string) => api.post<Persona>(`/characters/personas/${id}/duplicate`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: characterKeys.personas }),
-  });
-}
-
-export function useActivatePersona() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api.put<{ success: true }>(`/characters/personas/${id}/activate`, {}),
-    onSuccess: (_data, id) => {
-      qc.invalidateQueries({ queryKey: characterKeys.personas });
-      qc.invalidateQueries({ queryKey: characterKeys.personaActive() });
-      qc.invalidateQueries({ queryKey: characterKeys.personaDetail(id) });
-    },
   });
 }
 
