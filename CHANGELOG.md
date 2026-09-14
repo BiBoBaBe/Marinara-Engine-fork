@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Slash-command suggestions and guides show argument formats, including optional inputs; `/hide` also accepts a message range followed by an optional character name (#6209).
+
 - Push Story and Combat box borders follow the selected Chroma accent instead of retaining pink outlines (#6197).
 - Translator settings can be saved as defaults for new chats, including provider, language, connection, prompts, and automatic translation options (#6199).
 
