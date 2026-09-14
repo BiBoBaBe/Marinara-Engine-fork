@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { Chat } from "../../packages/shared/src/types/chat.js";
+import { normalizeTranslatorSettings } from "../../packages/shared/src/utils/translator-defaults.js";
 import {
   captureChatWizardDefaults,
   wizardDefaultsMetadataPatch,
@@ -16,6 +17,8 @@ const chat = {
     presetChoices: { path: "left" },
     spriteCharacterIds: ["a"],
     conversationSetupComplete: true,
+    autoTranslate: false,
+    translationConnectionId: "",
     summary: "generated history",
     advancedMemory: {
       enabled: true,
@@ -33,6 +36,8 @@ assert.equal(saved.personaId, null);
 assert.deepEqual(saved.metadata.activeLorebookIds, ["lore"]);
 assert.deepEqual(saved.metadata.presetChoices, { path: "left" });
 assert.equal(saved.metadata.autonomousMessages, false);
+assert.equal(saved.metadata.autoTranslate, false, "Explicit saved wizard toggles override global translator defaults");
+assert.equal(saved.metadata.translationConnectionId, "");
 assert.ok(!Object.hasOwn(saved.metadata, "conversationSetupComplete"));
 assert.ok(!Object.hasOwn(saved.metadata, "summary"));
 assert.ok(!Object.hasOwn(saved.metadata, "advancedMemoryState"));
@@ -51,3 +56,31 @@ for (const raw of ["{broken", "null", "[]", "42"]) {
   assert.deepEqual(invalid.characterIds, []);
 }
 console.log("Wizard snapshots preserve setup choices, reset defaults, and tolerate malformed legacy data.");
+
+assert.deepEqual(
+  normalizeTranslatorSettings({
+    translationProvider: "ai",
+    translationTargetLang: "Polish",
+    translationInputTargetLang: "",
+    translationPrompt: "Legacy {{targetLanguage}} prompt",
+    translationOutputPrompt: null,
+    translationConnectionId: "",
+    autoTranslate: false,
+    translateInput: "true",
+    summary: "Must stay with this chat",
+  }),
+  {
+    translationProvider: "ai",
+    translationConnectionId: "",
+    translationTargetLang: "Polish",
+    translationInputTargetLang: "",
+    translationOutputTargetLang: "Polish",
+    translationPrompt: "Legacy {{targetLanguage}} prompt",
+    translationInputPrompt: "Legacy {{targetLanguage}} prompt",
+    translationOutputPrompt: null,
+    autoTranslate: false,
+  },
+);
+for (const value of [undefined, "{broken", "[]", "42", { translationProvider: "unknown" }]) {
+  assert.deepEqual(normalizeTranslatorSettings(value), {});
+}

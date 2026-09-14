@@ -231,6 +231,175 @@ test("Roleplay line volume stays on screen and touch reveal preserves action col
   }
 });
 
+test("Translator defaults wait for edits, survive reload, and apply only to future chats", async ({
+  page,
+  request,
+}, testInfo) => {
+  const settingsPath = "/api/app-settings/translator-defaults";
+  const previousDefaults = await (await request.get(settingsPath)).json();
+  const chatIds: string[] = [];
+  let connectionId = "";
+  let releaseMetadata: (() => void) | undefined;
+  const readMetadata = async (id: string) => {
+    const chat = await (await request.get(`/api/chats/${id}`)).json();
+    return typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+  };
+  const createChat = async (mode: "conversation" | "roleplay" | "game", name: string) => {
+    const response = await request.post("/api/chats", { data: { name, mode, characterIds: [] } });
+    expect(response.ok()).toBeTruthy();
+    const chat = await response.json();
+    chatIds.push(chat.id);
+    return chat;
+  };
+  const openSettings = async (chatId: string) => {
+    await page.evaluate(async (id) => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      useChatStore.getState().setActiveChatId(id);
+    }, chatId);
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    await page.evaluate(async () => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      useChatStore.getState().setShouldOpenSettings(true);
+    });
+    await expect(page.locator('.mari-chat-settings-drawer [data-chat-settings-section="translation"]')).toBeVisible();
+  };
+  try {
+    expect((await request.put(settingsPath, { data: { value: "" } })).ok()).toBeTruthy();
+    const connectionResponse = await request.post("/api/connections", {
+      data: {
+        name: "Translator defaults fixture",
+        provider: "custom",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "synthetic-translator-key",
+        model: "translator-fixture",
+      },
+    });
+    expect(connectionResponse.ok()).toBeTruthy();
+    connectionId = (await connectionResponse.json()).id;
+    const origin = await createChat("conversation", "Translator defaults origin");
+    const existing = await createChat("roleplay", "Existing translator settings");
+    const expected = {
+      translationProvider: "ai",
+      translationConnectionId: connectionId,
+      translationInputTargetLang: "Japanese",
+      translationOutputTargetLang: "Polish",
+      translationInputPrompt: "Translate the outgoing draft into {{targetLanguage}}.",
+      translationOutputPrompt: "Translate the newest response into {{targetLanguage}}.",
+      autoTranslate: true,
+      translateInput: true,
+      showInputTranslateButton: true,
+      translationDisplayOnly: true,
+    };
+    expect(
+      (
+        await request.patch(`/api/chats/${origin.id}/metadata`, {
+          data: { ...expected, translationOutputPrompt: "An older translation prompt.", userNote: "Origin only" },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await request.patch(`/api/chats/${existing.id}/metadata`, {
+          data: { translationProvider: "google", translationOutputTargetLang: "de", autoTranslate: false },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    const existingMetadata = await readMetadata(existing.id);
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation", "roleplay", "game"],
+      chatSettingsExpandedSections: { translation: true },
+      theme: testInfo.project.name === "desktop-chromium" ? "light" : "dark",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: origin.id, version },
+    );
+    await page.goto("/");
+    await openSettings(origin.id);
+    const section = page.locator('.mari-chat-settings-drawer [data-chat-settings-section="translation"]');
+    const save = section.getByRole("button", { name: "Save translator defaults", exact: true });
+    const forget = section.getByRole("button", { name: "Forget saved defaults", exact: true });
+    const incomingPrompt = section.locator("textarea").nth(1);
+    await expect(incomingPrompt).toHaveValue("An older translation prompt.");
+    let heldPatch = false;
+    const metadataGate = new Promise<void>((resolve) => (releaseMetadata = resolve));
+    await page.route(`**/api/chats/${origin.id}/metadata`, async (route) => {
+      if (route.request().method() === "PATCH") {
+        heldPatch = true;
+        await metadataGate;
+      }
+      await route.continue();
+    });
+    await incomingPrompt.fill(expected.translationOutputPrompt);
+    await expect.poll(() => heldPatch).toBe(true);
+    await save.click();
+    await expect(section.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
+    // Hold the real autosave before persistence: Save must not capture the older prompt.
+    expect((await (await request.get(settingsPath)).json()).value).toBe("");
+    releaseMetadata!();
+    await expect(save).toBeEnabled();
+    await expect
+      .poll(async () => JSON.parse((await (await request.get(settingsPath)).json()).value || "{}"))
+      .toEqual(expected);
+    expect(await readMetadata(existing.id)).toEqual(existingMetadata);
+    await forget.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath("translator-defaults-saved.png") });
+
+    await page.reload();
+    await openSettings(origin.id);
+    await expect(forget).toBeEnabled();
+    await expect(section.getByRole("combobox").first()).toHaveValue("ai");
+    await expect(section.getByRole("combobox").nth(1)).toHaveValue(connectionId);
+    await expect(incomingPrompt).toHaveValue(expected.translationOutputPrompt);
+    const inheritedChatIds: string[] = [];
+    let gameChatId = "";
+    for (const mode of ["conversation", "roleplay", "game"] as const) {
+      const chat = await createChat(mode, `Inherited translator ${mode}`);
+      inheritedChatIds.push(chat.id);
+      const metadata = await readMetadata(chat.id);
+      expect(metadata).toMatchObject(expected);
+      expect(metadata).not.toHaveProperty("userNote");
+      if (mode === "game") gameChatId = chat.id;
+    }
+
+    await page.locator(".mari-chat-settings-drawer").getByRole("button", { name: "Close Chat Settings" }).click();
+    await page.evaluate(async (id) => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      useChatStore.getState().setActiveChatId(id);
+    }, gameChatId);
+    const wizard = page.locator('[data-component="GameSetupWizard"]');
+    await expect(wizard).toBeVisible();
+    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(wizard.getByRole("heading", { name: "World", exact: true })).toBeVisible();
+    await expect(wizard.getByRole("checkbox", { name: "Auto-Translate Responses", exact: true })).toBeChecked();
+    await expect(wizard.getByLabel("My Language", { exact: false })).toHaveValue("Polish");
+
+    await openSettings(origin.id);
+    await forget.click();
+    await expect.poll(async () => (await (await request.get(settingsPath)).json()).value).toBe("");
+    for (const id of inheritedChatIds) expect(await readMetadata(id)).toMatchObject(expected);
+    expect(await readMetadata(existing.id)).toEqual(existingMetadata);
+    for (const mode of ["conversation", "roleplay", "game"] as const) {
+      const chat = await createChat(mode, `Forgotten translator ${mode}`);
+      const metadata = await readMetadata(chat.id);
+      for (const key of Object.keys(expected)) expect(metadata).not.toHaveProperty(key);
+    }
+  } finally {
+    releaseMetadata?.();
+    await page.close();
+    for (const id of chatIds.reverse()) await request.delete(`/api/chats/${id}?force=true`).catch(() => undefined);
+    if (connectionId) await request.delete(`/api/connections/${connectionId}`).catch(() => undefined);
+    await request.put(settingsPath, { data: { value: previousDefaults.value ?? "" } });
+  }
+});
+
 test("Game translation follows changed narration and remains manually accessible", async ({ page, request }) => {
   page.setDefaultTimeout(10_000);
   const chat = await (
