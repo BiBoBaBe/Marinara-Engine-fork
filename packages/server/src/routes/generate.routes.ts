@@ -560,6 +560,7 @@ import {
 } from "../services/game/skill-check-resolution.service.js";
 import { createGameChanceStreamFilter } from "../services/game/chance-stream-filter.js";
 import {
+  buildGameSkillModifierView,
   createGameTurnChanceSession,
   isOneRequestDiceEnabled,
   resolveGameTurnBranches,
@@ -614,6 +615,9 @@ import { resolveAgentPipelineAgents, resolveEffectiveAgentSettings } from "../se
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
 import {
   GAME_MODE_AUTO_ATTACH_TOOL_NAMES,
+  isChatToolResolved,
+  readChatActiveToolIds,
+  resolveChatToolsEnabled,
   resolveGenerationTools,
   resolveMainGenerationToolChoice,
 } from "../services/generation/tool-resolution-runtime.js";
@@ -3847,6 +3851,39 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           return promptContext;
         };
+
+        // ── One-request dice: the roll_dice split (#one-request-dice) ──
+        // Resolved here, above the GM format reminder, because the reminder has to describe the
+        // tool exactly when the turn offers it. Both facts below are read twice: once by the
+        // reminder, once by the tool resolution far below, and they must be the same answer.
+        const oneRequestDiceTurn = chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta);
+        // Auto-attach is the mode default, and a tool call costs a whole extra provider round,
+        // which is the same cost the switch exists to remove, so the switch withdraws the default.
+        // What "Enable Tool Use" then does is honored as-is: an explicit user toggle outranks a
+        // mode default, and this deliberately does not subtract a tool the user turned on.
+        const gameDiceToolAutoAttached =
+          !input.impersonate &&
+          !oneRequestDiceTurn &&
+          (chatMode === "game" || (chatMode === "roleplay" && isRoleplayCommandEnabled(chatMeta, "roll")));
+        const gameToolConnectionId =
+          chatMode === "game" && !input.impersonate && typeof chatMeta.gameGmToolConnectionId === "string"
+            ? chatMeta.gameGmToolConnectionId.trim()
+            : "";
+        // A configured Game tool connection must support native tools: generation refuses the
+        // turn below when it does not, so any turn that reaches the model has its answer. With
+        // no such connection the narrator's own decides, exactly as the tool resolution reads it.
+        const nativeToolsAvailableForTurn = gameToolConnectionId ? true : supportsNativeToolCalls(conn.provider);
+        const rollDiceToolAttached = isChatToolResolved("roll_dice", {
+          enableChatTools: resolveChatToolsEnabled({
+            requestBody: input as Record<string, unknown>,
+            chatMetadata: chatMeta,
+            nativeToolsAvailable: nativeToolsAvailableForTurn,
+          }),
+          activeToolIds: readChatActiveToolIds(chatMeta),
+          autoAttachToolNames:
+            gameDiceToolAutoAttached && nativeToolsAvailableForTurn ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
+        });
+
         if (chatMode === "game") {
           const selectedGamePrompt =
             resolvedPreset && presetId
@@ -4000,6 +4037,13 @@ export async function generateRoutes(app: FastifyInstance) {
           const playerDiceRollSubmitted = /\[dice\b/i.test(latestUserContent);
           // The same table object the post-save parse will use — resolved here, cached for the turn.
           const gmVerbTableForPrompt = await getGmVerbTable();
+          // One-request dice (#one-request-dice): the sheet names a `[[roll: 1d8+STR]]` placeholder
+          // can actually resolve this turn. A name the chat cannot resolve is refused rather than
+          // defaulted to zero, so the form is advertised only when there is something to resolve.
+          // One read, on the switched-on path only, from the same loader the pass itself uses.
+          const gameSkillModifierView = oneRequestDiceTurn
+            ? buildGameSkillModifierView(await loadSkillCheckModifierContext(app.db, input.chatId))
+            : undefined;
           const formatReminder = resolvePromptMacros(
             buildGmFormatReminder({
               hasSceneModel,
@@ -4020,6 +4064,11 @@ export async function generateRoutes(app: FastifyInstance) {
               artStylePrompt: gmCtx.artStylePrompt,
               addressMode,
               playerDiceRollSubmitted,
+              // One-request dice (#one-request-dice). Off, the three fields below are inert and
+              // the reminder renders the bytes it renders today.
+              oneRequestDice: oneRequestDiceTurn,
+              skillModifiers: gameSkillModifierView,
+              rollDiceToolAttached,
               // A package that brought its own inventory takes the built-in one out of the prompt.
               experienceProvidedSystems: capabilityPromptContext.provides,
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
@@ -5175,10 +5224,6 @@ export async function generateRoutes(app: FastifyInstance) {
           pipelineAgents = pipelineAgents.filter((a) => a.type !== "combat");
         }
 
-        const gameToolConnectionId =
-          chatMode === "game" && !input.impersonate && typeof chatMeta.gameGmToolConnectionId === "string"
-            ? chatMeta.gameGmToolConnectionId.trim()
-            : "";
         const gameToolConnection = gameToolConnectionId ? await connections.getWithKey(gameToolConnectionId) : null;
         if (
           gameToolConnectionId &&
@@ -5221,11 +5266,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // only roll_dice is attached, and everything keyed on enableChatTools stays quiet.
           // Impersonation writes the player's own line rather than GM narration, so it is left
           // out: there is nothing for the GM to resolve and no turn for the card to belong to.
-          autoAttachToolNames:
-            !input.impersonate &&
-            (chatMode === "game" || (chatMode === "roleplay" && isRoleplayCommandEnabled(chatMeta, "roll")))
-              ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES
-              : [],
+          //
+          // One-request dice withdraws this default (#one-request-dice): see
+          // `gameDiceToolAutoAttached` above, which the format reminder reads from too.
+          autoAttachToolNames: gameDiceToolAutoAttached ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
         });
         const eligiblePipelineAgents: typeof pipelineAgents = [];
         for (const agent of pipelineAgents) {

@@ -445,10 +445,24 @@ const generateRouteSource = readFileSync(
   "utf8",
 );
 
+// The condition moved into a named const so the GM format reminder can read the same
+// fact (#one-request-dice): the prompt line that describes roll_dice and the attachment
+// itself must never disagree. Both halves are anchored, because either one alone would
+// still pass with the other deleted.
 assert.match(
   generateRouteSource,
-  /autoAttachToolNames:\s*!input\.impersonate &&\s*\(chatMode === "game" \|\|\s*\(chatMode === "roleplay" && isRoleplayCommandEnabled\(chatMeta, "roll"\)\)\)\s*\? GAME_MODE_AUTO_ATTACH_TOOL_NAMES\s*: \[\]/u,
-  "Game keeps automatic dice; Roleplay requires its explicit roll opt-in, and impersonation gets neither",
+  /const gameDiceToolAutoAttached =\s*!input\.impersonate &&\s*!oneRequestDiceTurn &&\s*\(chatMode === "game" \|\| \(chatMode === "roleplay" && isRoleplayCommandEnabled\(chatMeta, "roll"\)\)\);/u,
+  "Game keeps automatic dice unless one-request dice withdraws the default; Roleplay requires its explicit roll opt-in, and impersonation gets neither",
+);
+assert.match(
+  generateRouteSource,
+  /autoAttachToolNames: gameDiceToolAutoAttached \? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : \[\]/u,
+  "and that is the only thing the auto-attach channel is told",
+);
+assert.match(
+  generateRouteSource,
+  /rollDiceToolAttached = isChatToolResolved\("roll_dice", \{/u,
+  "the prompt's tool line is gated on the resolved tool set, not on the chat's tool filter",
 );
 assert.match(
   generateRouteSource,

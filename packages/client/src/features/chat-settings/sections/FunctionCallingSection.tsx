@@ -23,6 +23,9 @@ interface FunctionCallingSectionProps {
   onGameLorebookSearchChange: (enabled: boolean) => void;
   gameDiceOutcomeNarration: boolean;
   onGameDiceOutcomeNarrationChange: (enabled: boolean) => void;
+  /** One-request dice: the Game Master finishes a rolled turn itself. Off by default. */
+  gameOneRequestDice: boolean;
+  onGameOneRequestDiceChange: (enabled: boolean) => void;
   enableTools: boolean | undefined;
   forceToolCall: boolean | undefined;
   activeToolIds: string[];
@@ -50,6 +53,8 @@ export function FunctionCallingSection({
   onGameLorebookSearchChange,
   gameDiceOutcomeNarration,
   onGameDiceOutcomeNarrationChange,
+  gameOneRequestDice,
+  onGameOneRequestDiceChange,
   enableTools,
   forceToolCall,
   activeToolIds,
@@ -123,15 +128,40 @@ export function FunctionCallingSection({
             <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
               {localizeUi("chat.settings.tools.connectionHelp")}
             </p>
+            {/* One-request dice sits directly above the narration toggle because turning this
+                on makes that one inert: its whole purpose is the second request this removes. */}
+            <SettingsSwitch
+              label={localizeUi("chat.settings.tools.oneRequestDice")}
+              description={localizeUi("chat.settings.tools.oneRequestDiceHelp")}
+              checked={gameOneRequestDice}
+              onChange={onGameOneRequestDiceChange}
+              labelPosition="start"
+              className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+              labelClassName="text-xs font-medium"
+            />
+            {gameOneRequestDice && toolConnectionId && (
+              <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("chat.settings.tools.oneRequestDiceToolConnection")}
+              </p>
+            )}
+            {/* Rendered disabled rather than hidden, and its stored value is never written here:
+                a player who turns one-request dice back off gets their narration setting back
+                exactly as they left it. */}
             <SettingsSwitch
               label={localizeUi("chat.settings.tools.diceOutcomeNarration")}
               description={localizeUi("chat.settings.tools.diceOutcomeNarrationHelp")}
               checked={gameDiceOutcomeNarration}
+              disabled={gameOneRequestDice}
               onChange={onGameDiceOutcomeNarrationChange}
               labelPosition="start"
               className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
               labelClassName="text-xs font-medium"
             />
+            {gameOneRequestDice && (
+              <p className="px-1 text-xs text-[var(--muted-foreground)]">
+                {localizeUi("chat.settings.tools.oneRequestDiceNarrationInert")}
+              </p>
+            )}
             <SettingsSwitch
               label={localizeUi("chat.settings.tools.loreSearch")}
               description={localizeUi("chat.settings.tools.loreSearchHelp")}

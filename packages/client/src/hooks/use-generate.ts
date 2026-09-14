@@ -1998,6 +1998,23 @@ export function useGenerate() {
               break;
             }
 
+            // One-request dice: the turn notice. A clean turn says nothing. Only a roll the
+            // engine had to decline is worth interrupting the player for, and the same notice
+            // is saved on the message so the session log keeps it after the toast is gone.
+            case "game_dice_turn_notice": {
+              const notice = (event.data ?? {}) as {
+                unreadablePlaceholders?: number;
+                branchFailures?: number;
+                passFailed?: boolean;
+              };
+              const declined =
+                (notice.unreadablePlaceholders ?? 0) > 0 ||
+                (notice.branchFailures ?? 0) > 0 ||
+                notice.passFailed === true;
+              if (declined && isActiveChat()) toast.warning(translate("game.dice.turnNotice.failedToast"));
+              break;
+            }
+
             case "progress": {
               if (!isActiveChat()) break;
               const phase = (event.data as { phase?: string })?.phase;

@@ -4,6 +4,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Game chats can finish a rolled turn in one model request. **Finish rolled turns in one request** in Chat Settings → Function Calling lets the Game Master write both halves of a check, or a `[[roll: 2d6+3]]` placeholder for a number, and the engine rolls afterwards and fills the result in. The Game Master never sees a number before it decides what happens. The setting is off by default and applies per chat (#TBD).
+- While one-request dice is on, the dice tool is no longer attached to a Game turn by default, **Narrate dice outcomes immediately** is shown disabled with its stored value untouched, and a chat with a separate Game tool connection is told that its planning request still applies (#TBD).
+- A number the engine cannot roll is replaced with a short notice instead of an invented value, a branch it cannot read keeps the recorded roll and drops both halves, and either case adds a plain line to the session log (#TBD).
+
 - Retire the global active-persona default so chat identity follows the persona selected for that chat; Conversation message macros use the user identity instead of the message author (#6206, #6207, #6208).
 
 - Slash-command suggestions and guides show argument formats, including optional inputs; `/hide` also accepts a message range followed by an optional character name (#6209).

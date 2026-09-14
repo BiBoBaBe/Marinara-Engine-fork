@@ -83,6 +83,7 @@ import {
   type GameNpc,
   type SkillCheckResult,
   type GameDicePlaceholderRecord,
+  type GameDiceTurnNotice,
   formatSkillCheckResultSummary,
 } from "@marinara-engine/shared";
 import { applyGameDiceMarkers, formatGameDiceModifier, formatGameDiceRolls } from "../../lib/game-dice-markers";
@@ -940,23 +941,74 @@ function getLogActionSegmentIndex(segments: NarrationSegment[]): number {
 }
 
 /**
- * The one-request dice records this turn saved, or null.
+ * What the one-request dice pass did on this turn, or null.
  *
- * They live on the message extra rather than in the content because the content has to
- * stay a bare number: the prompt leaf and an already-saved transcript both read it as
- * prose, and a marker baked into the text would change how an older turn reads.
+ * It lives on the message extra rather than in the content because the content has to
+ * stay what the player reads: a substituted number is a bare number, so the prompt leaf
+ * and an already-saved transcript both read it as prose, and a marker or a notice baked
+ * into the text would change how an older turn reads.
  */
-function readGameDicePlaceholderRecords(
+function readGameDiceTurnNotice(
   message: Pick<NarrationMessage, "extra"> | null | undefined,
-): GameDicePlaceholderRecord[] | null {
+): GameDiceTurnNotice | null {
   if (!message) return null;
   const notice = parseMessageExtraRecord(message.extra).gameDiceTurn;
   if (!notice || typeof notice !== "object" || Array.isArray(notice)) return null;
-  const records = (notice as { placeholders?: unknown }).placeholders;
+  return notice as GameDiceTurnNotice;
+}
+
+function readGameDicePlaceholderRecords(
+  message: Pick<NarrationMessage, "extra"> | null | undefined,
+): GameDicePlaceholderRecord[] | null {
+  const records = readGameDiceTurnNotice(message)?.placeholders;
   return Array.isArray(records) ? (records as GameDicePlaceholderRecord[]) : null;
 }
 
-function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment[] {
+/**
+ * The one-request dice turn notice, as plain session-log lines.
+ *
+ * A clean turn records nothing, so this renders nothing. When something could not be
+ * rolled the player is told in words rather than left to wonder why a sentence reads the
+ * way it does: one line per event, in the register the rest of the log uses. Nothing here
+ * invents a number, and none of these lines claims a roll happened.
+ */
+function formatGameDiceTurnNoticeSegments(
+  message: NarrationMessage,
+  localizeUi: (key: string) => string,
+): NarrationSegment[] {
+  const notice = readGameDiceTurnNotice(message);
+  if (!notice) return [];
+  const segments: NarrationSegment[] = [];
+  const countOf = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  for (let index = 0; index < countOf(notice.unreadablePlaceholders); index += 1) {
+    segments.push({
+      id: `${message.id}-dice-turn-placeholder-${index}`,
+      type: "system",
+      content: localizeUi("game.dice.turnNotice.placeholderUnreadable"),
+    });
+  }
+  for (let index = 0; index < countOf(notice.branchFailures); index += 1) {
+    segments.push({
+      id: `${message.id}-dice-turn-branch-${index}`,
+      type: "system",
+      content: localizeUi("game.dice.turnNotice.branchFailed"),
+    });
+  }
+  if (notice.passFailed === true) {
+    segments.push({
+      id: `${message.id}-dice-turn-failed`,
+      type: "system",
+      content: localizeUi("game.dice.turnNotice.passFailed"),
+    });
+  }
+  return segments;
+}
+
+function formatSkillCheckLogContent(
+  message: NarrationMessage,
+  localizeUi: (key: string) => string,
+): NarrationSegment[] {
   const skillChecks = parseGmTags(message.content || "").skillChecks;
   const extra = parseMessageExtraRecord(message.extra);
   const diceRolls = readDiceRollResults(extra.diceRollResults ?? extra.diceRollResult);
@@ -988,6 +1040,7 @@ function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment
       }),
     ),
     ...checkSegments,
+    ...formatGameDiceTurnNoticeSegments(message, localizeUi),
   ];
 }
 
@@ -2633,7 +2686,7 @@ export function GameNarration({
       if (latestAssistant && msg.id === latestAssistant.id) {
         // Current scene: include already-read segments + current active segment
         const allSegs = parseNarrationSegments(msg, speakerColors);
-        const skillCheckSegs = formatSkillCheckLogContent(msg);
+        const skillCheckSegs = formatSkillCheckLogContent(msg, localizeUi);
         // Apply segment edit overlays
         if (segmentEdits) {
           for (let si = 0; si < allSegs.length; si++) {
@@ -2668,7 +2721,7 @@ export function GameNarration({
       } else {
         // Past scenes: include ALL segments (narration, dialogue, party chat)
         const segs = parseNarrationSegments(msg, speakerColors);
-        const skillCheckSegs = formatSkillCheckLogContent(msg);
+        const skillCheckSegs = formatSkillCheckLogContent(msg, localizeUi);
         // Apply segment edit overlays
         if (segmentEdits) {
           for (let si = 0; si < segs.length; si++) {
@@ -2812,6 +2865,7 @@ export function GameNarration({
     segmentDeletes,
     sourceMessagesById,
     doneTyping,
+    localizeUi,
   ]);
   const logPageSize = Math.max(1, messagesPerPage > 0 ? messagesPerPage : logEntries.length || 20);
   const [visibleLogCount, setVisibleLogCount] = useState(logPageSize);
