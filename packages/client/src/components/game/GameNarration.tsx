@@ -1002,6 +1002,23 @@ function formatGameDiceTurnNoticeSegments(
       content: localizeUi("game.dice.turnNotice.passFailed"),
     });
   }
+  // The sighted pool's own two lines. A pool that had no value left rolled nothing, so
+  // the line says the check was left unrolled rather than implying a number exists; a
+  // mismatch says the engine's record stands, because it does.
+  for (let index = 0; index < countOf(notice.poolOverflow); index += 1) {
+    segments.push({
+      id: `${message.id}-dice-turn-pool-overflow-${index}`,
+      type: "system",
+      content: localizeUi("game.dice.turnNotice.poolOverflow"),
+    });
+  }
+  if (Array.isArray(notice.poolMismatches) && notice.poolMismatches.length > 0) {
+    segments.push({
+      id: `${message.id}-dice-turn-pool-mismatch`,
+      type: "system",
+      content: localizeUi("game.dice.turnNotice.poolMismatch"),
+    });
+  }
   return segments;
 }
 

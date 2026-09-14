@@ -488,8 +488,18 @@ assert.match(
 const gameSurface = readFileSync(join(root, "packages/client/src/components/game/GameSurface.tsx"), "utf8");
 assert.match(
   gameSurface,
-  /isEngineRollableSkillCheckTag\(sc\)\s*\?\s*\(\s*await skillCheck\.mutateAsync\(/u,
+  /isEngineRollableSkillCheckTag\(sc\)\s*(?:&&\s*!poolModeActive\s*)?\?\s*\(\s*await skillCheck\.mutateAsync\(/u,
   "the client must not ask the endpoint to roll a system the engine does not implement",
+);
+// The one-request dice pool adds a second condition to that same arm, and it has to stay
+// a NARROWING one. With the sighted pool on, an overflowed check must be left sparse: a
+// live d20 here would bypass the pool's ordering and never-reuse properties, falsify the
+// turn notice that says the check was left unrolled, and hand the Game Master a way to
+// obtain a roll the pool did not contain by deliberately overflowing it.
+assert.match(
+  gameSurface,
+  /const poolModeActive =\s*chatMeta\.gameOneRequestDice === true && chatMeta\.gameDicePoolMode === true;/u,
+  "the client fallback must be gated on the sighted pool sub-option",
 );
 
 // ── 8. Resolution runs before the client is told what the turn says ──
@@ -705,7 +715,7 @@ assert.equal(untouched.sparse, 0);
 // through the error door.
 assert.match(
   generateRoutes,
-  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*const generalRolls = resolveGameDiceRequests\(rolled\.content, toolDiceRollResults\);\s*if \(generalRolls\.content !== fullResponse\) \{/u,
+  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*const generalRolls = resolveGameDiceRequests\(\s*rolled\.content,\s*toolDiceRollResults,[\s\S]*?\);\s*if \(generalRolls\.content !== fullResponse\) \{/u,
   "the resolver's own output decides the frame and the save on both paths",
 );
 

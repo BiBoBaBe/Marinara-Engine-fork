@@ -146,6 +146,24 @@ Some things worth knowing before you turn it on.
 - **When something cannot be rolled, you are told.** A number the engine cannot read is replaced with a short notice rather than a made-up value, a branch it cannot read leaves the recorded roll and drops both halves, and either way a plain line appears in **Logs** saying what was left out.
 - **While the turn is being written**, a placeholder or a branch block is held back from the streaming text, so you never watch a number appear and then change. The finished sentence arrives when the turn is done.
 
+### Letting the Game Master see one die of each size
+
+Under the switch there is a second setting, **Let the Game Master see one die of each size**, and it is off by default. It exists for the one case the two blind forms cannot serve: an outcome where the number itself has to pick between three or more different endings, like a margin of success, a hit-location table, or a reaction roll. Without it, that kind of check has to end the turn and be narrated at the start of the next one.
+
+When it is on, the engine throws one die of each standard size before the turn and shows the next value of each to the Game Master, so it can spend one and write what it means in the same pass.
+
+**This is the trade-off, and it is worth reading twice.** The Game Master sees the number before it decides what to check and how hard to make it. That means it can steer outcomes in a way the blind forms do not allow: it can pick a difficulty that the die it was handed will clear, and it can avoid calling for a check at all while it is holding a bad number. Nothing in the engine can tell whether a difficulty suits the fiction, so nothing in the engine can catch that. A player who does not know the Game Master saw the dice will read a suspiciously heroic session as good luck.
+
+What the engine does enforce, and enforces without asking the Game Master to cooperate:
+
+- **The values come out in order, and none of them comes out twice.** The engine keeps the queue and hands out the next one, whatever the turn claims.
+- **Every number in the record is the engine's.** The roll, the modifier, the total and the outcome are all recomputed from the queue and your character sheet. A number the Game Master wrote that does not match is replaced, and a line in **Logs** says so.
+- **The difficulty is bounded.** It is held between 1 and 40, which a written check has never been before.
+- **Being asked again does not improve the luck.** A swipe, a regenerate and a continuation of the same turn all face the same values, so there is no rerolling until something good comes up.
+- **Only the next value of each size is shown.** That is the **Values shown per size** setting, and 1 is the default. Every later roll of the same size in one turn is unseen, and it is narrated on the next turn instead.
+- **An unspent die is thrown again after a while.** That is **Rethrow after idle turns**, 3 by default. Without it, a low value can sit at the front of the queue for the rest of the chat while the Game Master simply avoids that size. Setting it to 0 turns the rethrow off and brings that behaviour back.
+- **Asking for more rolls than the queue holds does not produce one.** The check keeps its question, loses every number, and is narrated on the next turn. **Logs** says which turn that happened on.
+
 ## Related guides
 
 - [Game Mode: Combat](combat.md)

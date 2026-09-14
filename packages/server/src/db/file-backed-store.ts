@@ -386,6 +386,7 @@ const BUILT_IN_FILE_BACKED_TABLES = [
   "game_scene_videos",
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
+  "game_dice_pools",
   "regex_scripts",
   "chat_images",
   "character_images",
@@ -472,6 +473,7 @@ const SHARD_KEY_COLUMNS: Record<string, string> = {
   game_scene_videos: "chatId",
   game_turn_storyboards: "chatId",
   game_turn_storyboard_keyframes: "storyboardId",
+  game_dice_pools: "chatId",
   chat_images: "chatId",
   character_images: "characterId",
   persona_images: "personaId",
@@ -523,6 +525,7 @@ const LAZY_UNIT_TABLES: ReadonlySet<string> =
         "game_checkpoints",
         "game_scene_videos",
         "game_turn_storyboards",
+        "game_dice_pools",
         "mari_workspace_context",
         "ooc_influences",
         "conversation_notes",
@@ -805,6 +808,7 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "game_checkpoints", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_scene_videos", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
+    { parent: "chats", child: "game_dice_pools", parentKey: "id", childKey: "chatId" },
     {
       parent: "game_turn_storyboards",
       child: "game_turn_storyboard_keyframes",
@@ -819,6 +823,11 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "messages", child: "game_state_snapshots", parentKey: "id", childKey: "messageId" },
     { parent: "messages", child: "spatial_context_snapshots", parentKey: "id", childKey: "messageId" },
     { parent: "messages", child: "game_checkpoints", parentKey: "id", childKey: "messageId" },
+    // A pool row is the record of what ONE turn was dealt. A rewind that removes the
+    // message removes the turn, so the row must go with it: left behind, it would be the
+    // "latest" row the next turn refills from, and the chat would resume from a queue
+    // belonging to a turn that no longer exists.
+    { parent: "messages", child: "game_dice_pools", parentKey: "id", childKey: "messageId" },
     // Matched on messageId ALONE — never scoped by chatId. See
     // IMPORTED_GAME_ENGINE_ANCHOR_PREFIX above for why the experience-state import must not
     // store a foreign chat's message ids verbatim, and for its validate() exemption.

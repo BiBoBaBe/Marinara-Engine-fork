@@ -62,6 +62,7 @@ import {
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
+import type { GameDicePoolSession } from "./dice-pool.service.js";
 import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
 import type { GameSkillModifierView } from "./gm-prompts.js";
 import {
@@ -628,7 +629,10 @@ export function replaceUnreadablePlaceholders(
  * Only truthy fields are written, so a clean turn stores nothing at all and an older
  * transcript reads exactly as it always did.
  */
-export function summarizeGameDiceTurn(session: GameTurnChanceSession): GameDiceTurnNotice | null {
+export function summarizeGameDiceTurn(
+  session: GameTurnChanceSession,
+  pool?: GameDicePoolSession | null,
+): GameDiceTurnNotice | null {
   const forms: Array<"branch" | "placeholder"> = [];
   let unreadablePlaceholders = 0;
   let branchFailures = 0;
@@ -647,6 +651,12 @@ export function summarizeGameDiceTurn(session: GameTurnChanceSession): GameDiceT
     ...(unreadablePlaceholders > 0 ? { unreadablePlaceholders } : {}),
     ...(branchFailures > 0 ? { branchFailures } : {}),
     ...(session.failed ? { passFailed: true } : {}),
+    // The pool's own half, written only while the sub-option is on. A turn that spent
+    // nothing and overflowed nothing adds nothing, so a chat that never turned the
+    // sub-option on stores exactly what it stored before.
+    ...(pool && pool.consumed.length > 0 ? { poolSlots: [...pool.consumed] } : {}),
+    ...(pool && pool.overflow > 0 ? { poolOverflow: pool.overflow } : {}),
+    ...(pool && pool.mismatches.length > 0 ? { poolMismatches: [...pool.mismatches] } : {}),
   };
   return Object.keys(notice).length > 0 ? notice : null;
 }

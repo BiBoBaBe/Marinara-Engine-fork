@@ -569,6 +569,16 @@ import {
   shouldNarrateGameDiceOutcome,
   summarizeGameDiceTurn,
 } from "../services/game/one-request-dice.js";
+import {
+  isGameDicePoolEnabled,
+  loadGameDicePoolSession,
+  readGameDicePoolSettings,
+  renderGameDicePoolPromptBlock,
+  serializeGameDicePoolTurn,
+  type GameDicePoolSession,
+  type GameDicePoolTarget,
+} from "../services/game/dice-pool.service.js";
+import { createGameDicePoolsStorage } from "../services/storage/game-dice-pools.storage.js";
 import type { GameDiceTurnNotice } from "@marinara-engine/shared";
 import {
   applyMapUpdateCommand,
@@ -3857,6 +3867,35 @@ export async function generateRoutes(app: FastifyInstance) {
         // tool exactly when the turn offers it. Both facts below are read twice: once by the
         // reminder, once by the tool resolution far below, and they must be the same answer.
         const oneRequestDiceTurn = chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta);
+        // ── One-request dice: the sighted pool sub-option (#one-request-dice) ──
+        // Off by default, and only ever read while the switch above is on. The session is
+        // loaded once for the whole turn and shared by the prompt block and both readers,
+        // because the queue the model was SHOWN and the queue the engine spends from have to
+        // be the same object or the slot names stop meaning anything.
+        const gameDicePoolTurn = oneRequestDiceTurn && isGameDicePoolEnabled(chatMeta);
+        const gameDicePoolTarget: GameDicePoolTarget = input.continueMessageId
+          ? {
+              kind: "continue",
+              messageId: input.continueMessageId,
+              swipeIndex:
+                typeof continueTargetMessage?.activeSwipeIndex === "number"
+                  ? continueTargetMessage.activeSwipeIndex
+                  : 0,
+            }
+          : input.regenerateMessageId
+            ? { kind: "regenerate", messageId: input.regenerateMessageId }
+            : { kind: "fresh" };
+        let gameDicePoolSession: GameDicePoolSession | null = null;
+        const ensureGameDicePoolSession = async (): Promise<GameDicePoolSession | null> => {
+          if (!gameDicePoolTurn) return null;
+          gameDicePoolSession ??= await loadGameDicePoolSession(
+            app.db,
+            input.chatId,
+            gameDicePoolTarget,
+            readGameDicePoolSettings(chatMeta),
+          );
+          return gameDicePoolSession;
+        };
         // Auto-attach is the mode default, and a tool call costs a whole extra provider round,
         // which is the same cost the switch exists to remove, so the switch withdraws the default.
         // What "Enable Tool Use" then does is honored as-is: an explicit user toggle outranks a
@@ -4041,8 +4080,18 @@ export async function generateRoutes(app: FastifyInstance) {
           // can actually resolve this turn. A name the chat cannot resolve is refused rather than
           // defaulted to zero, so the form is advertised only when there is something to resolve.
           // One read, on the switched-on path only, from the same loader the pass itself uses.
-          const gameSkillModifierView = oneRequestDiceTurn
-            ? buildGameSkillModifierView(await loadSkillCheckModifierContext(app.db, input.chatId))
+          const gameSkillModifierContext = oneRequestDiceTurn
+            ? await loadSkillCheckModifierContext(app.db, input.chatId)
+            : null;
+          const gameSkillModifierView = gameSkillModifierContext
+            ? buildGameSkillModifierView(gameSkillModifierContext)
+            : undefined;
+          // The pool block is rendered from the same session the readers spend out of, and
+          // from the same modifier context the resolver uses, so the block and the engine
+          // cannot disagree about a value or about a total.
+          const dicePoolSessionForPrompt = await ensureGameDicePoolSession();
+          const dicePoolBlock = dicePoolSessionForPrompt
+            ? renderGameDicePoolPromptBlock(dicePoolSessionForPrompt, gameSkillModifierContext)
             : undefined;
           const formatReminder = resolvePromptMacros(
             buildGmFormatReminder({
@@ -4068,6 +4117,8 @@ export async function generateRoutes(app: FastifyInstance) {
               // the reminder renders the bytes it renders today.
               oneRequestDice: oneRequestDiceTurn,
               skillModifiers: gameSkillModifierView,
+              dicePoolMode: gameDicePoolTurn,
+              dicePoolBlock,
               rollDiceToolAttached,
               // A package that brought its own inventory takes the built-in one out of the prompt.
               experienceProvidedSystems: capabilityPromptContext.provides,
@@ -8104,11 +8155,22 @@ export async function generateRoutes(app: FastifyInstance) {
           // Resolve this new segment before content_replace and persistence.
           // A continuation's already-saved segment is never rolled again.
           if (chatMode === "game" && !input.impersonate) {
+            // The sighted pool is handed to BOTH readers and to nobody else. It is what tells
+            // a record the model just wrote apart from one read back out of a saved message:
+            // the two are the same bytes, so the distinction is carried out of band rather
+            // than by a marker in the text that would change how an older turn reads.
+            const dicePoolSession = await ensureGameDicePoolSession();
             const rolled = await resolveSkillCheckTagsInContent(fullResponse, {
               loadContext: () => loadSkillCheckModifierContext(app.db, input.chatId),
               chatId: input.chatId,
+              ...(dicePoolSession ? { pool: dicePoolSession } : {}),
             });
-            const generalRolls = resolveGameDiceRequests(rolled.content, toolDiceRollResults);
+            const generalRolls = resolveGameDiceRequests(
+              rolled.content,
+              toolDiceRollResults,
+              undefined,
+              dicePoolSession ?? undefined,
+            );
             if (generalRolls.content !== fullResponse) {
               fullResponse = generalRolls.content;
               contentReplaced = true;
@@ -8234,7 +8296,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // the player to guess. The saved flag rides on the message extra; the frame is for the
           // live session log.
           if (gameChanceSession) {
-            gameDiceTurnNotice = summarizeGameDiceTurn(gameChanceSession);
+            gameDiceTurnNotice = summarizeGameDiceTurn(gameChanceSession, gameDicePoolSession);
             if (gameDiceTurnNotice) {
               sendSseEvent(reply, {
                 type: "game_dice_turn_notice",
@@ -8537,6 +8599,31 @@ export async function generateRoutes(app: FastifyInstance) {
           // Empty messageId on the paths that save no message; that costs the claim, never the effect.
           await executeCollectedGmVerbCalls({ messageId: savedMsg?.id ?? "", swipeIndex: savedSwipeIndex ?? 0 });
           await persistGameStateToolCalls(savedMsg?.id ?? "", savedSwipeIndex ?? 0);
+
+          // ── One-request dice: the pool row (#one-request-dice) ──
+          // Written in the same block as the message rather than through the game-state
+          // snapshot, because that snapshot is gated on a tracker agent result and with
+          // agents off no row is created at all. The REFILL is deliberately not applied
+          // here: the row carries the queue this turn was prompted with plus what it spent,
+          // and the next accepted turn derives the refill from the pair — which is what
+          // makes a swipe, a regenerate and a continuation of this same turn all face the
+          // same luck instead of a queue that moved on.
+          if (gameDicePoolSession && savedMsg?.id) {
+            try {
+              const turn = serializeGameDicePoolTurn(gameDicePoolSession);
+              await createGameDicePoolsStorage(app.db).save({
+                chatId: input.chatId,
+                messageId: savedMsg.id,
+                swipeIndex: savedSwipeIndex ?? 0,
+                pool: turn.pool,
+                consumed: turn.consumed,
+              });
+            } catch (err) {
+              // A row that will not write costs the chat its dice continuity — the next turn
+              // throws a fresh allotment and says so — and never costs it the turn.
+              logger.error(err, "[game/dice-pool] Could not save the pool row for chat %s", input.chatId);
+            }
+          }
 
           if (
             savedMsg?.id &&

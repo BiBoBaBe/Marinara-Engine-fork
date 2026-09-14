@@ -67,15 +67,41 @@ function serializeSkillCheckAttribute(value: string): string {
  * `isEngineRollableSkillCheckTag` verdict, so the check is still owed a roll and
  * the client's fallback can still ask for one.
  */
-export function serializeSparseSkillCheckTag(request: {
-  skill: string;
-  dc: number;
-  advantage?: boolean;
-  disadvantage?: boolean;
-  preRolledD20?: number;
-  declaredDice?: string;
-  declaredResolution?: string;
-}): string {
+/**
+ * Attributes appended after everything a check tag has always carried.
+ *
+ * Both are optional and both render nothing when absent, so every shipped call site
+ * writes the same bytes it has always written and no already-saved transcript changes
+ * how it reads. `threshold=` used to be spliced onto the end of a finished tag by the
+ * one caller that needed it; it is written here now so the two spellings cannot drift.
+ */
+export interface SkillCheckTagExtras {
+  /** Per-die threshold for a success pool, when the GM declared a usable one. */
+  threshold?: number;
+  /** `pool="d20:1"` — the slot the engine actually spent, never the one the model claimed. */
+  pool?: string;
+}
+
+function serializeSkillCheckExtras(extras: SkillCheckTagExtras | undefined): string {
+  if (!extras) return "";
+  const parts: string[] = [];
+  if (extras.threshold != null && Number.isFinite(extras.threshold)) parts.push(`threshold="${extras.threshold}"`);
+  if (extras.pool) parts.push(`pool="${serializeSkillCheckAttribute(extras.pool)}"`);
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+export function serializeSparseSkillCheckTag(
+  request: {
+    skill: string;
+    dc: number;
+    advantage?: boolean;
+    disadvantage?: boolean;
+    preRolledD20?: number;
+    declaredDice?: string;
+    declaredResolution?: string;
+  },
+  extras?: SkillCheckTagExtras,
+): string {
   const parts = [`[skill_check: skill="${serializeSkillCheckAttribute(request.skill)}"`, `dc="${request.dc}"`];
   if (request.preRolledD20 != null) parts.push(`rolls="${request.preRolledD20}"`);
   if (request.advantage && !request.disadvantage) parts.push(`mode="advantage"`);
@@ -83,11 +109,11 @@ export function serializeSparseSkillCheckTag(request: {
   if (request.declaredDice) parts.push(`dice="${serializeSkillCheckAttribute(request.declaredDice)}"`);
   if (request.declaredResolution)
     parts.push(`resolution="${serializeSkillCheckAttribute(request.declaredResolution)}"`);
-  return `${parts.join(" ")}]`;
+  return `${parts.join(" ")}${serializeSkillCheckExtras(extras)}]`;
 }
 
-export function serializeResolvedSkillCheckTag(result: SkillCheckResult): string {
-  return [
+export function serializeResolvedSkillCheckTag(result: SkillCheckResult, extras?: SkillCheckTagExtras): string {
+  return `${[
     `[skill_check: skill="${serializeSkillCheckAttribute(result.skill)}"`,
     `dc="${result.dc}"`,
     `rolls="${result.rolls.join("|")}"`,
@@ -97,6 +123,6 @@ export function serializeResolvedSkillCheckTag(result: SkillCheckResult): string
     `result="${getSkillCheckOutcomeKey(result)}"`,
     `mode="${result.rollMode}"`,
     `resolution="${result.resolution}"`,
-    `dice="${serializeSkillCheckAttribute(result.dice ?? "1d20")}"]`,
-  ].join(" ");
+    `dice="${serializeSkillCheckAttribute(result.dice ?? "1d20")}"`,
+  ].join(" ")}${serializeSkillCheckExtras(extras)}]`;
 }

@@ -27,6 +27,7 @@ import {
   gameEngineState,
   chatImages,
   gameSceneVideos,
+  gameDicePools,
   gameTurnStoryboardKeyframes,
   gameTurnStoryboards,
   oocInfluences,
@@ -941,6 +942,10 @@ export function createChatsStorage(db: DB) {
       await db
         .delete(gameEngineState)
         .where(chatScoped(gameEngineState.chatId, inArray(gameEngineState.messageId, chunk)));
+      // A dice-pool row is the record of what one turn was dealt. Left behind after a
+      // rewind it becomes the "latest" row the next turn refills from, so the chat would
+      // resume from a queue belonging to a turn that no longer exists.
+      await db.delete(gameDicePools).where(chatScoped(gameDicePools.chatId, inArray(gameDicePools.messageId, chunk)));
     }
   }
 
@@ -1133,6 +1138,7 @@ export function createChatsStorage(db: DB) {
     }
     await database.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chatId));
     await database.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chatId));
+    await database.delete(gameDicePools).where(eq(gameDicePools.chatId, chatId));
     const galleryFiles = await database
       .select({ filePath: chatImages.filePath })
       .from(chatImages)
@@ -1752,6 +1758,7 @@ export function createChatsStorage(db: DB) {
         }
         await db.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chat.id));
         await db.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chat.id));
+        await db.delete(gameDicePools).where(eq(gameDicePools.chatId, chat.id));
         await cleanupChatGallery(chat.id);
         const videoDir = join(GAME_SCENE_VIDEOS_DIR, chat.id);
         if (existsSync(videoDir)) rmSync(videoDir, { recursive: true, force: true });

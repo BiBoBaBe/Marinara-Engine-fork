@@ -308,3 +308,229 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
     await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
   }
 });
+
+// The sighted pool sub-option, which is the one mechanism in this feature that puts a
+// number in front of the Game Master before it decides what happens. It ships off, under
+// a parent switch that also ships off, and its help text says the trade-off outright.
+//
+// Two things are asserted here that no unit lane can see: the sub-option renders under
+// its parent in the real drawer, and OVERFLOW DOES NOT REACH THE ENDPOINT. That second
+// one is the whole reason the client fallback is gated: ungated, a check the pool had no
+// value for would be rolled live by POST /game/skill-check, the notice saying it was left
+// unrolled would become false, and overflowing the allotment on purpose would become a
+// way to obtain a roll the pool did not contain.
+const POOL_CHECK = (index: number) =>
+  `[skill_check: skill="Stealth" dc="15" mode="normal" dice="1d20" rolls="10" pool="d20:${index}"]`;
+// Seven d20 checks against an allotment of six. The seventh has no value to spend.
+const POOL_DRAFT = [
+  "You move along the crates, counting your chances.",
+  [1, 2, 3, 4, 5, 6, 7].map((index) => POOL_CHECK(index)).join(" "),
+].join("\n");
+
+test("Game spends the sighted pool in order and leaves an overflowed check for the next turn", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  page.setDefaultTimeout(10_000);
+  const providerRequests: string[] = [];
+  const provider = createServer(async (incoming, response) => {
+    if (incoming.method !== "POST") {
+      incoming.resume();
+      response.writeHead(404).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    providerRequests.push(JSON.stringify(body.messages ?? []));
+    response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+    const write = (delta: unknown, finishReason: string | null = null) =>
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+    write({ content: POOL_DRAFT });
+    write({}, "stop");
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  let connectionId = "";
+  let chatId = "";
+  try {
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("Dice pool fixture did not bind");
+    const connection = await request.post("/api/connections", {
+      data: {
+        name: "Local dice pool fixture",
+        provider: "custom",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "synthetic-test-key",
+        model: "dice-pool-fixture",
+        maxContext: 32768,
+        treatAsLocalEndpoint: true,
+      },
+    });
+    expect(connection.ok()).toBeTruthy();
+    connectionId = (await connection.json()).id;
+    const chat = await request.post("/api/chats", {
+      data: { name: "Dice pool browser proof", mode: "game", characterIds: [], connectionId },
+    });
+    expect(chat.ok()).toBeTruthy();
+    chatId = (await chat.json()).id;
+    expect(
+      (
+        await request.patch(`/api/chats/${chatId}/metadata`, {
+          data: {
+            gameId: chatId,
+            gameSessionStatus: "active",
+            gameIntroPresented: true,
+            gameImageAutoGenerationEnabled: false,
+            enableAgents: false,
+            enableTools: false,
+            gameOneRequestDice: true,
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await request.post(`/api/chats/${chatId}/messages`, {
+          data: { role: "assistant", content: "A guard paces the warehouse floor." },
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["game"],
+      gameInstantTextReveal: true,
+      debugMode: false,
+      theme: "dark",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chatId, version },
+    );
+
+    // Every live roll the client could ask for, counted. Fulfilled rather than aborted so
+    // a failure reads as "the client asked" rather than as a network error.
+    const liveRolls: string[] = [];
+    await page.route("**/api/game/skill-check", async (route) => {
+      liveRolls.push(route.request().url());
+      await route.fulfill({ json: { result: null } });
+    });
+
+    const metadata = async () => {
+      const row = await (await request.get(`/api/chats/${chatId}`)).json();
+      return typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata;
+    };
+    const savedMessages = async () =>
+      (await (await request.get(`/api/chats/${chatId}/messages`)).json()) as Array<{
+        id: string;
+        role: string;
+        content: string;
+        extra: unknown;
+      }>;
+    const openTools = async () => {
+      if (testInfo.project.name.includes("mobile"))
+        await page.getByRole("button", { name: "Game actions", exact: true }).click();
+      await page.getByRole("button", { name: "Chat Settings", exact: true }).filter({ visible: true }).click();
+      const section = page.locator('[data-chat-settings-section="function-calling"]');
+      const header = section.locator('[role="button"][aria-expanded]');
+      await expect(header).toBeVisible();
+      if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
+      await expect(header).toHaveAttribute("aria-expanded", "true");
+      return section;
+    };
+    const closeTools = async () => {
+      await page.locator(".mari-chat-settings-drawer").getByRole("button", { name: "Close Chat Settings" }).click();
+      await expect(page.locator(".mari-chat-settings-drawer")).toHaveCount(0);
+    };
+
+    await page.goto("/");
+    const narration = page.locator('[data-component="GameNarration.ActivePanel"]');
+    await expect(narration).toContainText("A guard paces the warehouse floor.");
+
+    // ── The sub-option renders under its parent, defaults off, and names the trade-off ──
+    let section = await openTools();
+    const dicePool = () => section.getByLabel("Let the Game Master see one die of each size", { exact: true });
+    await expect(dicePool()).not.toBeChecked();
+    await expect(section).toContainText("it can steer outcomes in a way the blind forms do not allow");
+    await section
+      .locator("label")
+      .filter({ has: page.getByLabel("Let the Game Master see one die of each size", { exact: true }) })
+      .click();
+    await expect.poll(async () => (await metadata()).gameDicePoolMode).toBe(true);
+    // The two sub-controls appear with the defaults that make the mechanism safe to ship.
+    await expect(section.getByLabel("Values shown per size", { exact: true })).toHaveValue("1");
+    await expect(section.getByLabel("Rethrow after idle turns", { exact: true })).toHaveValue("3");
+    await closeTools();
+
+    // ── The turn: one request, the pool shown, six spends and one overflow ──
+    providerRequests.length = 0;
+    liveRolls.length = 0;
+    await page.getByPlaceholder("What do you do?", { exact: true }).fill("Count your chances.");
+    await page.getByRole("button", { name: "Send game turn", exact: true }).click();
+    await expect.poll(async () => (await savedMessages()).at(-1)?.content ?? "").toContain("You move along the crates");
+    expect(providerRequests).toHaveLength(1);
+    expect(providerRequests[0]).toContain("<dice_pool>");
+    expect(providerRequests[0]).toContain("<check_modifiers>");
+
+    const rolled = (await savedMessages()).at(-1)!;
+    const records = rolled.content.match(/\[skill_check:[^\]]+\]/g) ?? [];
+    expect(records).toHaveLength(7);
+    // Six spent, in order, each naming the slot the ENGINE spent rather than the one the
+    // draft claimed. The seventh overflowed: the ask stands and every number is gone.
+    expect(records.slice(0, 6).map((record) => /pool="(d20:\d+)"/.exec(record)?.[1])).toEqual([
+      "d20:1",
+      "d20:2",
+      "d20:3",
+      "d20:4",
+      "d20:5",
+      "d20:6",
+    ]);
+    expect(records[6]).not.toContain("pool=");
+    expect(records[6]).not.toMatch(/total=|result=|used=|modifier=/);
+    expect(records[6]).toContain('skill="Stealth"');
+
+    const extra = (typeof rolled.extra === "string" ? JSON.parse(rolled.extra) : (rolled.extra ?? {})) as {
+      gameDiceTurn?: { poolSlots?: unknown[]; poolOverflow?: number };
+    };
+    expect(extra.gameDiceTurn?.poolSlots).toHaveLength(6);
+    expect(extra.gameDiceTurn?.poolOverflow).toBe(1);
+
+    // The gate. An overflowed check is left sparse and the client must not roll it live:
+    // doing so would bypass the queue and make the notice below a false statement.
+    await page.waitForTimeout(1500);
+    expect(liveRolls).toEqual([]);
+
+    await page.reload();
+    await expect(narration).toContainText("You move along the crates");
+    await page.waitForTimeout(1500);
+    expect(liveRolls).toEqual([]);
+
+    const dismiss = page.getByRole("button", { name: "Dismiss dice roll result" });
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if ((await dismiss.count()) === 0) break;
+      await dismiss.first().click();
+    }
+    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    const logs = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Session Logs" }) });
+    await expect(logs).toContainText("Dice: this turn asked for more rolls than the pool held");
+    await testInfo.attach(`dice-pool-overflow-${testInfo.project.name}.png`, {
+      body: await logs.screenshot({ path: testInfo.outputPath("dice-pool-overflow.png") }),
+      contentType: "image/png",
+    });
+    await logs.getByRole("button", { name: "Close logs", exact: true }).click();
+  } finally {
+    await page.close().catch(() => undefined);
+    if (chatId) await request.delete(`/api/chats/${chatId}?force=true`).catch(() => undefined);
+    if (connectionId) await request.delete(`/api/connections/${connectionId}`).catch(() => undefined);
+    provider.closeAllConnections();
+    await new Promise<void>((resolve, reject) => provider.close((error) => (error ? reject(error) : resolve())));
+  }
+});

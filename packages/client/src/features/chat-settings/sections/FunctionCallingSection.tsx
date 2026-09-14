@@ -26,6 +26,15 @@ interface FunctionCallingSectionProps {
   /** One-request dice: the Game Master finishes a rolled turn itself. Off by default. */
   gameOneRequestDice: boolean;
   onGameOneRequestDiceChange: (enabled: boolean) => void;
+  /** The sighted pool sub-option. Rendered only while the parent switch is on; off by default. */
+  gameDicePoolMode: boolean;
+  onGameDicePoolModeChange: (enabled: boolean) => void;
+  /** How many values per size the GM is shown. 1 is the default and the largest mitigation. */
+  gameDicePoolWindow: number;
+  onGameDicePoolWindowChange: (value: number) => void;
+  /** Accepted turns a size may sit unspent before it is rethrown. 0 turns aging off. */
+  gameDicePoolAgeTurns: number;
+  onGameDicePoolAgeTurnsChange: (value: number) => void;
   enableTools: boolean | undefined;
   forceToolCall: boolean | undefined;
   activeToolIds: string[];
@@ -55,6 +64,12 @@ export function FunctionCallingSection({
   onGameDiceOutcomeNarrationChange,
   gameOneRequestDice,
   onGameOneRequestDiceChange,
+  gameDicePoolMode,
+  onGameDicePoolModeChange,
+  gameDicePoolWindow,
+  onGameDicePoolWindowChange,
+  gameDicePoolAgeTurns,
+  onGameDicePoolAgeTurnsChange,
   enableTools,
   forceToolCall,
   activeToolIds,
@@ -143,6 +158,58 @@ export function FunctionCallingSection({
               <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi("chat.settings.tools.oneRequestDiceToolConnection")}
               </p>
+            )}
+            {/* The sighted pool, indented under its parent and rendered only while the parent
+                is on. Its help text names the trade-off outright, because a player who does not
+                know the Game Master saw the dice will read a suspiciously heroic session as luck. */}
+            {gameOneRequestDice && (
+              <div className="ml-3 space-y-2 border-l border-[var(--border)] pl-3">
+                <SettingsSwitch
+                  label={localizeUi("chat.settings.tools.dicePool")}
+                  description={localizeUi("chat.settings.tools.dicePoolHelp")}
+                  checked={gameDicePoolMode}
+                  onChange={onGameDicePoolModeChange}
+                  labelPosition="start"
+                  className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+                  labelClassName="text-xs font-medium"
+                />
+                {gameDicePoolMode && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                      {localizeUi("chat.settings.tools.dicePoolWindow")}
+                      <input
+                        type="number"
+                        aria-label={localizeUi("chat.settings.tools.dicePoolWindow")}
+                        min={1}
+                        max={6}
+                        value={gameDicePoolWindow}
+                        onChange={(event) => {
+                          const value = Number.parseInt(event.target.value, 10);
+                          onGameDicePoolWindowChange(Number.isFinite(value) ? Math.max(1, Math.min(6, value)) : 1);
+                        }}
+                        className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      />
+                      <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolWindowHelp")}</span>
+                    </label>
+                    <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                      {localizeUi("chat.settings.tools.dicePoolAging")}
+                      <input
+                        type="number"
+                        aria-label={localizeUi("chat.settings.tools.dicePoolAging")}
+                        min={0}
+                        max={20}
+                        value={gameDicePoolAgeTurns}
+                        onChange={(event) => {
+                          const value = Number.parseInt(event.target.value, 10);
+                          onGameDicePoolAgeTurnsChange(Number.isFinite(value) ? Math.max(0, Math.min(20, value)) : 3);
+                        }}
+                        className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      />
+                      <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolAgingHelp")}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
             )}
             {/* Rendered disabled rather than hidden, and its stored value is never written here:
                 a player who turns one-request dice back off gets their narration setting back

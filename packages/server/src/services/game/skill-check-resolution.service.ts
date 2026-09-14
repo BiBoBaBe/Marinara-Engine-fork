@@ -14,6 +14,8 @@
 
 import {
   createSkillCheckTagRegex,
+  formatPoolSlotName,
+  readGmTagAttributes,
   isEngineRollableSkillCheckTag,
   parseSkillCheckTagBody,
   serializeResolvedSkillCheckTag,
@@ -24,6 +26,10 @@ import {
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
+// Type-only, deliberately: the pool service imports this module for the resolver and the
+// modifier context, so a value import here would close the cycle.
+import type { GameDicePoolSession } from "./dice-pool.service.js";
+import { logPoolDcFit } from "./dice-pool.service.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { createGameStateStorage } from "../storage/game-state.storage.js";
@@ -246,6 +252,17 @@ export interface SkillCheckTagResolutionOptions {
   rollD20?: () => number;
   /** Chat id for logging only. */
   chatId?: string;
+  /**
+   * The sighted pool, supplied by exactly ONE caller: generation post-processing, for the
+   * newly generated segment only.
+   *
+   * A record the model just wrote and a record read back out of a saved message are the
+   * same bytes; no regex, marker or heuristic on the text can tell them apart, and adding
+   * one would change how an already-saved transcript reads. So freshness is carried out of
+   * band, here. Every other caller — the client's parser, the segment editor, any re-read —
+   * passes nothing and behaves byte for byte as it does today.
+   */
+  pool?: GameDicePoolSession;
 }
 
 export interface SkillCheckTagResolution {
@@ -311,7 +328,14 @@ export async function resolveSkillCheckTagsInContent(
     return { content, resolved: 0, trusted: 0, left: 0, sparse: 0 };
   }
 
-  const pending: Array<{ start: number; end: number; request: SkillCheckRequest; tag: SkillCheckTag }> = [];
+  const pending: Array<{
+    start: number;
+    end: number;
+    request: SkillCheckRequest;
+    tag: SkillCheckTag;
+    /** Set only for a tag the pool spends for, carrying the body the audit reads. */
+    poolBody?: string;
+  }> = [];
   let trusted = 0;
   let left = 0;
 
@@ -332,6 +356,31 @@ export async function resolveSkillCheckTagsInContent(
       const tag = parseSkillCheckTagBody(match[1] ?? "");
       // Not a check at all (no skill or DC) — leave whatever the model wrote.
       if (!tag) {
+        left += 1;
+        continue;
+      }
+      // ── The sighted pool's attachment point ──
+      // Placed BEFORE the two short-circuits below on purpose. A pool tag arrives either
+      // complete (its own numbers, which are never believed) or sparse with a `rolls=` the
+      // sparse path would otherwise adopt as a player-submitted die. Both readers return
+      // before any injected roller for exactly the shape the pool prompt asks for, so a
+      // branch placed after them would never run at all.
+      if (options.pool && tag.poolDeclared && isEngineRollableSkillCheckTag(tag)) {
+        const request = boundPoolCheckRequest(tag);
+        if (request) {
+          pending.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            request,
+            tag,
+            poolBody: match[1] ?? "",
+          });
+          continue;
+        }
+        logger.debug(
+          "[game/skill-check] Leaving a pool check whose skill is unusable for chat %s",
+          options.chatId ?? "unknown",
+        );
         left += 1;
         continue;
       }
@@ -377,7 +426,32 @@ export async function resolveSkillCheckTagsInContent(
 
     const context = await options.loadContext();
     const results: SkillCheckResult[] = [];
+    let poolTagIndex = 0;
     const rolled = rewrite((entry) => {
+      if (entry.poolBody != null && options.pool) {
+        const spent = resolvePoolCheckTag(
+          options.pool,
+          context,
+          entry.request,
+          entry.tag,
+          entry.poolBody,
+          poolTagIndex,
+        );
+        poolTagIndex += 1;
+        if (spent) {
+          results.push(spent.result);
+          return spent.record;
+        }
+        // Overflow: no value exists, so nothing is written. The ask is kept, every number
+        // is dropped, and the outcome is owed to the next turn — never a second request.
+        return serializeSparseSkillCheckTag({
+          skill: entry.request.skill,
+          dc: entry.request.dc,
+          advantage: entry.request.advantage,
+          disadvantage: entry.request.disadvantage,
+          declaredDice: entry.tag.declaredDice,
+        });
+      }
       const result = resolveSkillCheckWithContext(context, entry.request, options.rollD20);
       results.push(result);
       return serializeResolvedSkillCheckTag(result);
@@ -418,4 +492,95 @@ export async function resolveSkillCheckTagsInContent(
     );
     return { content: honest, resolved: 0, trusted, left: left + pending.length, sparse: pending.length };
   }
+}
+
+/**
+ * A pool check's request, with the DC bounded rather than the tag refused.
+ *
+ * The numeric bound does not exist today for a written tag: `isResolvableSkillCheckRequest`
+ * is only applied to tags entering the roll list, and a tag the reader trusted never gets
+ * there. Under the pool the model chooses the DC after seeing the die, which makes an
+ * unbounded DC the sharpest of its freedoms, so the bound is restored here — as a clamp
+ * rather than a refusal, because refusing would leave the ask unrolled for a number the
+ * model wrote rather than for anything the engine could not do.
+ *
+ * Returns null only for a skill this path would never roll at all.
+ */
+export function boundPoolCheckRequest(tag: SkillCheckTag): SkillCheckRequest | null {
+  if (!tag.skill || tag.skill.length > SKILL_CHECK_MAX_SKILL_LENGTH) return null;
+  if (!Number.isFinite(tag.dc)) return null;
+  const dc = Math.min(SKILL_CHECK_MAX_DC, Math.max(SKILL_CHECK_MIN_DC, Math.round(tag.dc)));
+  return {
+    skill: tag.skill,
+    dc,
+    advantage: tag.advantage,
+    disadvantage: tag.disadvantage,
+    // Deliberately no `preRolledD20`: under the pool a number in `rolls=` is the model's
+    // claim about a slot, not a die the player threw, and adopting it would be obeying
+    // the one field the authority rule says is never obeyed.
+  };
+}
+
+/**
+ * Spend the pool for one d20 check and re-derive every number in its record.
+ *
+ * The engine COMPUTES the record here rather than checking it. It spends the next
+ * unconsumed d20 value in reading order — two under advantage or disadvantage, which is
+ * the same count the shipped roller throws — applies the sheet modifier through the same
+ * resolver every other check uses, and re-serializes. What the model wrote in `pool=` and
+ * `rolls=` is compared against what was spent and recorded as a mismatch, and never obeyed.
+ *
+ * Null means overflow: the allotment is exhausted and no value exists. The caller writes
+ * the tag back sparse; nothing is invented and no second request is made.
+ */
+export function resolvePoolCheckTag(
+  pool: GameDicePoolSession,
+  context: SkillCheckModifierContext,
+  request: SkillCheckRequest,
+  tag: SkillCheckTag,
+  /** The tag body as written, so the audit can read the model's own `rolls=`. */
+  body: string,
+  tagIndex: number,
+): { result: SkillCheckResult; record: string } | null {
+  const needed = request.advantage !== request.disadvantage && (request.advantage || request.disadvantage) ? 2 : 1;
+  const spent = pool.spend("d20", needed, tagIndex);
+  if (!spent) {
+    pool.recordOverflow("no d20 value left", `${tag.skill} dc=${request.dc}`);
+    return null;
+  }
+
+  const queue = spent.map((entry) => entry.value);
+  let cursor = 0;
+  const result = resolveSkillCheckWithContext(context, request, () => queue[cursor++] ?? queue[queue.length - 1]!);
+  pool.audit(spent, {
+    // The raw name is carried even when it did not parse, because "written and
+    // unreadable" is the same disagreement as "written and wrong".
+    ...(tag.poolRaw !== undefined ? { rawPool: tag.poolRaw } : {}),
+    ...(tag.poolSlots ? { slots: tag.poolSlots.slots } : {}),
+    // The model's OWN `rolls=`, read straight from the body: the result's rolls are the
+    // engine's, so comparing those against themselves would never find an invented number.
+    values: readClaimedRolls(body),
+  });
+  logPoolDcFit(pool, request.dc, result.usedRoll, result.modifier);
+  return {
+    result,
+    record: serializeResolvedSkillCheckTag(result, {
+      pool: formatPoolSlotName(
+        "d20",
+        spent.map((entry) => entry.slot),
+      ),
+    }),
+  };
+}
+
+/** The numbers the model wrote in `rolls=`, for the pool audit. Never used as a roll. */
+function readClaimedRolls(body: string): number[] {
+  const raw = readGmTagAttributes(body).find((attribute) => attribute.key.toLowerCase() === "rolls")?.rawValue;
+  if (!raw) return [];
+  return raw
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .split(/[|,]/)
+    .map((entry) => Number.parseInt(entry.trim(), 10))
+    .filter((entry) => Number.isFinite(entry));
 }

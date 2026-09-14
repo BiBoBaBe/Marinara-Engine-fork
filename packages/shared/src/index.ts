@@ -170,5 +170,6 @@ export * from "./utils/tracker-updates.js";
 export * from "./utils/dice-branch.js";
 export * from "./utils/dice-notation.js";
 export * from "./utils/dice-placeholder.js";
+export * from "./utils/dice-pool.js";
 
 export { parseChoiceOptions, resolveChoiceVariableValue, type ChoiceOptionValue } from "./utils/preset-choices.js";

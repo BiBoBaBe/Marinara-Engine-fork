@@ -4987,12 +4987,23 @@ function GameSurfaceComponent({
     // Preserve reading order, including the legacy endpoint fallback. A late
     // fallback from another chat or swipe must never append to the new queue.
     setPendingSkillChecks([]);
+    // ── One-request dice: the sighted pool's client gate (#one-request-dice) ──
+    // This fallback rolls a fresh d20 through POST /game/skill-check for every check tag
+    // a freshly read turn still owes, with no setting guard at all. That is right for
+    // every other mode and wrong for the pool: an overflowed check would be rolled live,
+    // the pool's ordering and never-reuse properties would be bypassed, the turn notice
+    // saying the check was left unrolled would become false, and overflowing the allotment
+    // would become a deliberate way for the Game Master to obtain a roll the pool did not
+    // contain. With the sub-option on the sparse tag is left exactly as it is, and the
+    // outcome is narrated at the start of the next turn. The endpoint is untouched and
+    // keeps serving the live path and the player's own composer.
+    const poolModeActive = chatMeta.gameOneRequestDice === true && chatMeta.gameDicePoolMode === true;
     void (async () => {
       for (const sc of tags.skillChecks) {
         try {
           const result =
             sc.resolvedResult ??
-            (isEngineRollableSkillCheckTag(sc)
+            (isEngineRollableSkillCheckTag(sc) && !poolModeActive
               ? (
                   await skillCheck.mutateAsync({
                     chatId: activeChatId,
