@@ -80,7 +80,10 @@ jobs:
       - name: Verify Windows restart ownership and ESM loader paths
         run: node scripts/run-regressions.mjs --filter scripts/regressions/restart-supervisor.regression.ts
       - name: Verify native console Ctrl+C finishes graceful shutdown
-        run: node scripts/run-regressions.mjs --filter scripts/regressions/server-signal-shutdown.regression.ts
+        # Retain the fixture's own readiness/close deadlines without the general
+        # regression runner's shorter 30s whole-file cap.
+        timeout-minutes: 5
+        run: pnpm --filter @marinara-engine/server exec tsx ../../scripts/regressions/server-signal-shutdown.regression.ts
 
   container-build-test:
     runs-on: ubuntu-latest

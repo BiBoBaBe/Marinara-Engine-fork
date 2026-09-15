@@ -57,7 +57,10 @@ jobs:
       - name: Exercise restart ownership
         run: node scripts/run-regressions.mjs --filter scripts/regressions/restart-supervisor.regression.ts
       - name: Exercise native console shutdown and saved-data flush
-        run: node scripts/run-regressions.mjs --filter scripts/regressions/server-signal-shutdown.regression.ts
+        # This file runs several separately bounded console/PTY scenarios; the
+        # general regression runner's 30s whole-file cap cuts those short.
+        timeout-minutes: 5
+        run: pnpm --filter @marinara-engine/server exec tsx ../../scripts/regressions/server-signal-shutdown.regression.ts
       - name: Exercise update apply policy
         run: node scripts/run-regressions.mjs --filter scripts/regressions/update-apply-hardening.regression.ts
 
