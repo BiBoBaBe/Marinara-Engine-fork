@@ -88,6 +88,7 @@ const { createChatsStorage } = await import("../../packages/server/src/services/
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
 const { createGameDicePoolsStorage } =
   await import("../../packages/server/src/services/storage/game-dice-pools.storage.js");
+const { gameDicePools } = await import("../../packages/server/src/db/schema/index.js");
 const { ClaudeSubscriptionProvider } =
   await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
 
@@ -500,6 +501,25 @@ try {
   const extra = JSON.parse(saved.extra) as { gameDiceTurn?: { poolSlots?: unknown[]; poolOverflow?: number } };
   assert.equal(extra.gameDiceTurn?.poolSlots?.length, 1, "the turn notice reports the slots spent");
   assert.equal(extra.gameDiceTurn?.poolOverflow, undefined, "a clean turn records no overflow");
+
+  // The row is keyed by the triple, so a second save for the same (message, swipe) is an
+  // update in place: same id, the timestamp of the save that created the row, and no second
+  // row for `getForTurn` to pick between. Only the queue and the ledger change.
+  {
+    const rewritten = await pools.save({
+      chatId: chat.id,
+      messageId: saved.id,
+      swipeIndex: 0,
+      pool: row!.pool,
+      consumed: "[]",
+    });
+    assert.equal(rewritten.id, row!.id, "the id is the triple, so it does not change");
+    assert.equal(rewritten.createdAt, row!.createdAt, "the original timestamp is kept");
+    assert.equal(rewritten.consumed, "[]", "the ledger is what changed");
+    const rows = (await db.select().from(gameDicePools)) as Array<{ id: string; messageId: string }>;
+    assert.equal(rows.filter((candidate) => candidate.messageId === saved.id).length, 1, "and there is still one row");
+    await pools.save({ chatId: chat.id, messageId: saved.id, swipeIndex: 0, pool: row!.pool, consumed: row!.consumed });
+  }
 
   // A regenerate re-reads the queue the first telling was dealt. Asked again, the model
   // faces the same luck, which is what closes reroll-until-lucky.

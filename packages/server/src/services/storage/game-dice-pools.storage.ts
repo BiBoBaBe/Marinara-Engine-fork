@@ -87,8 +87,10 @@ export function createGameDicePoolsStorage(db: DB) {
      *
      * An upsert on the primary key rather than a delete and an insert: a continuation
      * updates its own row, and whichever of two overlapping saves lands second becomes an
-     * update of the same id instead of a second row. The original timestamp is kept so an
-     * in-place update does not reorder the chat's rows under `getLatestForChat`.
+     * update of the same id instead of a second row. On a conflict only the queue and the
+     * ledger are written; `createdAt` is set on the insert alone, so the row keeps the
+     * timestamp of whichever save created it and an in-place update can never reorder
+     * the chat's rows under `getLatestForChat`, even when two saves raced past the read.
      */
     async save(input: SaveGameDicePoolInput): Promise<GameDicePoolRow> {
       const id = gameDicePoolRowId(input.chatId, input.messageId, input.swipeIndex);
@@ -109,8 +111,13 @@ export function createGameDicePoolsStorage(db: DB) {
         consumed: input.consumed,
         createdAt: existing?.createdAt ?? now(),
       };
-      await db.insert(gameDicePools).values(row).onConflictDoUpdate({ target: gameDicePools.id, set: row });
-      return row;
+      await db
+        .insert(gameDicePools)
+        .values(row)
+        .onConflictDoUpdate({ target: gameDicePools.id, set: { pool: input.pool, consumed: input.consumed } });
+      // Read back rather than trusting the local copy: in a race the stored timestamp is
+      // the other save's, and that is the one every later reader will see.
+      return (await this.getForTurn(input.chatId, input.messageId, input.swipeIndex)) ?? row;
     },
   };
 }
