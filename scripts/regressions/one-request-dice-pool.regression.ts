@@ -89,6 +89,7 @@ const { createConnectionsStorage } = await import("../../packages/server/src/ser
 const { createGameDicePoolsStorage } =
   await import("../../packages/server/src/services/storage/game-dice-pools.storage.js");
 const { gameDicePools } = await import("../../packages/server/src/db/schema/index.js");
+const { inArray } = await import("../../packages/server/src/db/file-query.js");
 const { ClaudeSubscriptionProvider } =
   await import("../../packages/server/src/services/llm/providers/claude-subscription.provider.js");
 
@@ -519,6 +520,38 @@ try {
     const rows = (await db.select().from(gameDicePools)) as Array<{ id: string; messageId: string }>;
     assert.equal(rows.filter((candidate) => candidate.messageId === saved.id).length, 1, "and there is still one row");
     await pools.save({ chatId: chat.id, messageId: saved.id, swipeIndex: 0, pool: row!.pool, consumed: row!.consumed });
+  }
+
+  // Distinct turns never tie on the stamp. The clock has millisecond precision and the
+  // reads order by the stamp alone, so two rows written in the same millisecond would
+  // leave "latest" to whichever the store kept first; the stamp is strictly increasing
+  // within the process instead, and the newest row is always the last one saved.
+  {
+    const stamps = new Set<string>();
+    for (let index = 0; index < 5; index += 1) {
+      const written = await pools.save({
+        chatId: chat.id,
+        messageId: `tie-${index}`,
+        swipeIndex: 0,
+        pool: row!.pool,
+        consumed: "[]",
+      });
+      stamps.add(written.createdAt);
+    }
+    assert.equal(stamps.size, 5, "five saves in a tight loop carry five distinct stamps");
+    assert.equal([...stamps].sort().at(-1), (await pools.getLatestForChat(chat.id))?.createdAt);
+    assert.equal((await pools.getLatestForChat(chat.id))?.messageId, "tie-4", "the newest row is the last one saved");
+    assert.ok(
+      (await pools.getLatestForChat(chat.id))!.createdAt > row!.createdAt,
+      "and it is newer than the real turn's row",
+    );
+    await db.delete(gameDicePools).where(
+      inArray(
+        gameDicePools.messageId,
+        [0, 1, 2, 3, 4].map((i) => `tie-${i}`),
+      ),
+    );
+    assert.equal((await pools.getLatestForChat(chat.id))?.id, row!.id, "the real turn's row is the latest again");
   }
 
   // A regenerate re-reads the queue the first telling was dealt. Asked again, the model

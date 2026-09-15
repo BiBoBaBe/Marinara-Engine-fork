@@ -433,7 +433,9 @@ function renderCheckModifiers(context: SkillCheckModifierContext | null): string
       // A skill key is model-written text. Only a name the placeholder grammar could read
       // back is printed, so a bracket or a newline in one cannot reshape this block, and
       // the list is bounded so a runaway sheet cannot pad the prompt.
-      if (!label || label.length > CHECK_MODIFIER_NAME_MAX || !isRollPlaceholderName(label)) continue;
+      // A key with whitespace around it is skipped rather than trimmed, for the same reason the
+      // placeholder view skips it: the resolver reads the key as written.
+      if (!label || label !== name || label.length > CHECK_MODIFIER_NAME_MAX || !isRollPlaceholderName(label)) continue;
       if (!Number.isFinite(Number(raw))) continue;
       const governing = readContextAttributeScore(context, getGoverningAttribute(label));
       const total = Number(raw) + (governing === null ? 0 : attributeModifier(governing));

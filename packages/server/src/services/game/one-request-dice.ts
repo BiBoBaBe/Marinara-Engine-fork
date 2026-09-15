@@ -513,7 +513,10 @@ export function buildGameSkillModifierView(context: SkillCheckModifierContext): 
   const skills: string[] = [];
   for (const [name, value] of Object.entries(context.skills ?? {})) {
     const trimmed = typeof name === "string" ? name.trim() : "";
-    if (!trimmed || trimmed.length > SHEET_NAME_MAX || !isRollPlaceholderName(trimmed)) continue;
+    // A key with whitespace around it is skipped rather than trimmed: the resolver looks a
+    // skill up by the written name and its lowercase form, so the trimmed spelling would
+    // be advertised and then refuse.
+    if (!trimmed || trimmed !== name || trimmed.length > SHEET_NAME_MAX || !isRollPlaceholderName(trimmed)) continue;
     if (!Number.isFinite(Number(value))) continue;
     skills.push(trimmed);
     if (skills.length >= SHEET_NAMES_MAX) break;

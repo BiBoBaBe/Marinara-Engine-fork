@@ -39,6 +39,29 @@ export function gameDicePoolRowId(chatId: string, messageId: string, swipeIndex:
   return `${chatId}:${messageId}:${swipeIndex}`;
 }
 
+let lastIssuedStamp = "";
+
+/**
+ * A creation stamp that is strictly increasing within the process.
+ *
+ * `getLatestForChat` and `getEarliestForMessage` order rows by `createdAt` alone, and the
+ * clock has millisecond precision, so two rows written in the same millisecond would tie
+ * and the newest one would be whichever the store happened to keep first. Two distinct
+ * turns of one chat never land that close in play, but a scripted provider can, and the
+ * refill must never read the wrong queue on a coin flip. The stamp steps one millisecond
+ * past the last one issued whenever the clock has not moved; the writer lease keeps one
+ * process writing a data directory, so per-process is enough.
+ */
+export function nextGameDicePoolStamp(): string {
+  let stamp = now();
+  if (stamp <= lastIssuedStamp) {
+    const previous = Date.parse(lastIssuedStamp);
+    stamp = Number.isFinite(previous) ? new Date(previous + 1).toISOString() : stamp;
+  }
+  lastIssuedStamp = stamp;
+  return stamp;
+}
+
 export function createGameDicePoolsStorage(db: DB) {
   return {
     /** The row this exact (message, swipe) already wrote, when it has one. */
@@ -109,7 +132,7 @@ export function createGameDicePoolsStorage(db: DB) {
         swipeIndex: input.swipeIndex,
         pool: input.pool,
         consumed: input.consumed,
-        createdAt: existing?.createdAt ?? now(),
+        createdAt: existing?.createdAt ?? nextGameDicePoolStamp(),
       };
       await db
         .insert(gameDicePools)
