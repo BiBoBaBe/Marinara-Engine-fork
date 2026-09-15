@@ -10,8 +10,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - The context bar uses the latest request’s size instead of adding together every request in a turn. Tool and dice follow-ups consistently retain all reported token totals (#6220, #6221).
 - Tracker cards render reliably in WebKit with simpler neutral shading, including saved custom paints and brightness settings (#6223).
 - Conversation reactions stay next to their message when action controls appear or disappear (#6224).
-- Home, sidebar, editor, and Settings borders follow the selected accent, as does the mobile Home bookmark icon (#6229).
-- The Illustrator guide describes context-token estimates accurately; translated agent guides explain summary attachment and tappable token help (#6222, #6227).
+- Home, sidebar, editor, and Settings borders follow the selected accent, as does the mobile Home bookmark icon. Suggestion-chip borders use simpler color blends so Professor Mari opens reliably in WebKit (#6229).
+- The Illustrator guide describes agent-instruction token estimates accurately; translated agent guides explain summary attachment and tappable token help (#6222, #6227).
+- Chromium browser checks run in smaller parallel shards so the complete suite fits within CI time limits.
 
 - The agent-token estimate’s help opens on tap and stays within the mobile screen (#6228).
 

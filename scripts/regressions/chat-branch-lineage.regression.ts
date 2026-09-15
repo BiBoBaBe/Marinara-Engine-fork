@@ -515,10 +515,45 @@ try {
   const presetResponse = await app.inject({ method: "POST", url: "/api/prompts", payload: { name: "Scene preset" } });
   assert.equal(presetResponse.statusCode, 200);
   const scenePresetId = presetResponse.json().id;
+  const { createPromptsStorage } = await import("../../packages/server/src/services/storage/prompts.storage.js");
+  const prompts = createPromptsStorage(db);
+  await prompts.createSection({
+    presetId: scenePresetId,
+    identifier: "scene_style",
+    name: "Scene style",
+    content: "Opening style: {{length}} Model: {{model}}",
+    role: "system",
+  });
+  await prompts.createChoiceBlock({
+    presetId: scenePresetId,
+    variableName: "length",
+    question: "Detail?",
+    options: [
+      { id: "brief", label: "Brief", value: "Write briefly." },
+      { id: "detail", label: "Detailed", value: "Write in detail." },
+    ],
+  });
+  await prompts.update(scenePresetId, { defaultChoices: { length: "Write in detail." } });
+  for (const [variableName, multiSelect, randomPick] of [
+    ["mood", true, false],
+    ["surprise", false, true],
+  ] as const) {
+    await prompts.createChoiceBlock({
+      presetId: scenePresetId,
+      variableName,
+      question: "Mood?",
+      multiSelect,
+      randomPick,
+      options: [
+        { id: "calm", label: "Calm", value: "calm" },
+        { id: "bright", label: "Bright", value: "bright" },
+      ],
+    });
+  }
   const sceneCreatePayload = {
     originChatId: conversation.id,
     promptPresetId: scenePresetId,
-    presetChoices: { length: "Write briefly." },
+    presetChoices: { length: "Write briefly.", mood: [], surprise: ["calm", "bright"] },
     initiatorCharId: null,
     plan: {
       name: "Converted roleplay scene",
@@ -552,30 +587,11 @@ try {
   assert.equal(sceneChat.mode, "roleplay");
   assert.equal(sceneChat.promptPresetId, scenePresetId);
   const sceneMetadata = typeof sceneChat.metadata === "string" ? JSON.parse(sceneChat.metadata) : sceneChat.metadata;
-  assert.deepEqual(sceneMetadata.presetChoices, { length: "Write briefly." });
+  assert.deepEqual(sceneMetadata.presetChoices, sceneCreatePayload.presetChoices);
   assert.match(sceneMetadata.sceneSystemPrompt, /^Keep the scene concise\./);
   assert.equal(sceneChat.groupId, null, "A converted scene must not join the conversation branch group");
 
   // Exercise the actual scene planner/provider boundary, not just metadata persistence.
-  const { createPromptsStorage } = await import("../../packages/server/src/services/storage/prompts.storage.js");
-  const prompts = createPromptsStorage(db);
-  await prompts.createSection({
-    presetId: scenePresetId,
-    identifier: "scene_style",
-    name: "Scene style",
-    content: "Opening style: {{length}} Model: {{model}}",
-    role: "system",
-  });
-  await prompts.createChoiceBlock({
-    presetId: scenePresetId,
-    variableName: "length",
-    question: "Detail?",
-    options: [
-      { id: "brief", label: "Brief", value: "Write briefly." },
-      { id: "detail", label: "Detailed", value: "Write in detail." },
-    ],
-  });
-  await prompts.update(scenePresetId, { defaultChoices: { length: "Write in detail." } });
   const requests: Array<{ messages: Array<{ content: string }> }> = [];
   const provider = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -606,6 +622,10 @@ try {
     for (const [selection, expected] of [
       [{ length: "Write briefly." }, "Write briefly."],
       [undefined, "Write in detail."],
+      [{}, "Write in detail."],
+      [{ length: "" }, ""],
+      [{ length: [], mood: [] }, ""],
+      [{ mood: ["calm", "bright"], surprise: ["calm", "bright"] }, "Write in detail."],
     ] as const) {
       const response = await app.inject({
         method: "POST",
@@ -637,9 +657,18 @@ try {
       assert.ok(sent.includes("Return ONLY a JSON object"), "Scene output format remains authoritative");
     }
     const count = requests.length;
+    const chatsBeforeInvalidChoices = (await app.inject({ method: "GET", url: "/api/chats" })).json();
     for (const preferences of [
       { promptPresetId: "missing-preset" },
       { promptPresetId: scenePresetId, presetChoices: { length: 42 } },
+      { promptPresetId: scenePresetId, presetChoices: { unknown: "calm" } },
+      { promptPresetId: scenePresetId, presetChoices: { length: "outside the preset" } },
+      { promptPresetId: scenePresetId, presetChoices: { length: ["Write briefly."] } },
+      { promptPresetId: scenePresetId, presetChoices: { length: ["Write briefly.", "Write in detail."] } },
+      { promptPresetId: scenePresetId, presetChoices: { mood: "calm" } },
+      { promptPresetId: scenePresetId, presetChoices: { mood: ["calm", "calm"] } },
+      { promptPresetId: scenePresetId, presetChoices: { mood: ["unknown"] } },
+      { promptPresetId: null, presetChoices: { length: "Write briefly." } },
     ]) {
       const response = await app.inject({
         method: "POST",
@@ -651,8 +680,22 @@ try {
           promptPreferences: { pov: "first_person", tense: "past", ...preferences },
         },
       });
-      assert.equal(response.statusCode, 400);
+      assert.equal(response.statusCode, 400, `Invalid planning choices: ${JSON.stringify(preferences)}`);
       assert.equal(requests.length, count, "Invalid selections must not call the provider");
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/scene/create",
+        payload: {
+          ...sceneCreatePayload,
+          ...preferences,
+        },
+      });
+      assert.equal(created.statusCode, 400, `Invalid creation choices: ${JSON.stringify(preferences)}`);
+      assert.deepEqual(
+        (await app.inject({ method: "GET", url: "/api/chats" })).json(),
+        chatsBeforeInvalidChoices,
+        "Invalid choices must not create a scene or change the origin chat metadata",
+      );
     }
   } finally {
     await new Promise<void>((resolve) => provider.close(() => resolve()));

@@ -2284,7 +2284,7 @@ test("mobile Conversation editing exposes the final line before text changes", a
     await page.goto("/");
 
     const messageRow = page.locator(`[data-message-id="${message.id}"]`);
-    const content = messageRow.locator(':scope > [data-component="ConversationMessage.Content"]');
+    const content = messageRow.locator('[data-component="ConversationMessage.Content"]');
     await messageRow.scrollIntoViewIfNeeded();
     await expect(async () => {
       await activateControl(content, testInfo);
@@ -2486,8 +2486,8 @@ test("Conversation message actions follow their messages on desktop and mobile",
 
       for (const message of messages) {
         const messageRow = page.locator(`[data-message-id="${message.id}"]`);
-        const content = messageRow.locator(':scope > [data-component="ConversationMessage.Content"]');
-        const actions = messageRow.locator(':scope > [data-component="ConversationMessage.Actions"]');
+        const content = messageRow.locator('[data-component="ConversationMessage.Content"]');
+        const actions = messageRow.locator('[data-component="ConversationMessage.Actions"]');
         const bubble = content.locator(".texting-bubble").first();
         if (style === "bubble") await expect(bubble).toBeVisible();
         else await expect(bubble).toHaveCount(0);
@@ -2508,16 +2508,12 @@ test("Conversation message actions follow their messages on desktop and mobile",
         await expect(actions.locator('[title="Copy"]')).toHaveCSS("color", expectedActionColor);
 
         const metrics = await messageRow.evaluate((element) => {
-          const contentElement = element.querySelector<HTMLElement>(
-            ':scope > [data-component="ConversationMessage.Content"]',
-          );
-          const actionElement = element.querySelector<HTMLElement>(
-            ':scope > [data-component="ConversationMessage.Actions"]',
-          );
+          const contentElement = element.querySelector<HTMLElement>('[data-component="ConversationMessage.Content"]');
+          const actionElement = element.querySelector<HTMLElement>('[data-component="ConversationMessage.Actions"]');
           const firstButton = actionElement?.querySelector<HTMLElement>("button");
           if (!contentElement || !actionElement || !firstButton) return null;
           const contentBox = contentElement.getBoundingClientRect();
-          const swipeBox = element.querySelector<HTMLElement>(":scope > .mari-message-swipes")?.getBoundingClientRect();
+          const swipeBox = element.querySelector<HTMLElement>(".mari-message-swipes")?.getBoundingClientRect();
           const actionBox = actionElement.getBoundingClientRect();
           const buttonBox = firstButton.getBoundingClientRect();
           return {
@@ -5991,13 +5987,15 @@ test("Conversation swipe controls match Roleplay sizing and chat-chrome colors",
           const control = row.locator(".mari-message-swipes");
           await expect(control).toBeVisible();
           if (layout !== "roleplay") {
-            const start = await row.evaluate(
-              (element) =>
-                element.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(element).paddingLeft),
-            );
-            expect
-              .soft(Math.abs((await control.boundingBox())!.x - start), `${layout} swipes align with the message row`)
-              .toBeLessThan(1);
+            const offset = await row.evaluate((element) => {
+              // The message owner also contains reactions/actions; measure its actual content edge.
+              const content = element.querySelector('[data-component="ConversationMessage.Content"]');
+              const start = content
+                ? content.getBoundingClientRect().left
+                : element.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(element).paddingLeft);
+              return Math.abs(element.querySelector(".mari-message-swipes")!.getBoundingClientRect().left - start);
+            });
+            expect.soft(offset, `${layout} swipes align with the message row`).toBeLessThan(1);
           }
           const input = control.getByRole("textbox");
           await expect(input).toHaveValue("1");
@@ -17173,6 +17171,8 @@ test("Professor Mari chat fills the mobile home viewport and keeps its composer 
       );
     })
     .toBe(true);
+  await expect(window.locator(".mari-suggestion-chips")).toHaveCSS("opacity", "1");
+  await page.screenshot({ path: testInfo.outputPath("professor-chat-mobile.png") });
 });
 
 test("Professor Mari follows an open conversation across chats and mobile navigation", async ({ page }, testInfo) => {

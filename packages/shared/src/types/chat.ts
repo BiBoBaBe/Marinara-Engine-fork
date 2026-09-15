@@ -996,6 +996,10 @@ export interface GenerationInfo {
   /** Completed main-model requests in this turn; agent and separate Game planner calls are excluded. */
   requestCount?: number;
   tokensAcceptedPrediction?: number | null;
+  tokensRejectedPrediction?: number | null;
+  /** Completion tokens excluding hidden reasoning tokens. */
+  tokensVisibleCompletion?: number | null;
+  tokensCompletionAudio?: number | null;
   /** Provider-reported hidden reasoning-token usage, when available. */
   tokensReasoning?: number | null;
   tokensCachedPrompt?: number | null;

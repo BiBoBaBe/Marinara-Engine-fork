@@ -23,7 +23,7 @@ import { createReplyFallbackNotifier } from "./generate/fallback-notification.js
 import { stripConversationPromptTimestamps } from "../services/conversation/transcript-sanitize.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import type { ChatCompletionResult, ChatMessage } from "../services/llm/base-provider.js";
-import { localAuthProviderBaseUrl } from "@marinara-engine/shared";
+import { localAuthProviderBaseUrl, parseChoiceOptions } from "@marinara-engine/shared";
 import type {
   SceneCreateRequest,
   SceneCreateResponse,
@@ -52,6 +52,32 @@ const SCENE_GUIDELINES = [
   `    - Portray violence in gory detail, blood squirting around like in a slasher movie.`,
   `</guidelines>`,
 ].join("\n");
+
+function areScenePresetChoicesValid(
+  choices: Record<string, string | string[]> | null,
+  blocks: ReadonlyArray<{ variableName: string; options: unknown; multiSelect: unknown; randomPick: unknown }>,
+): boolean {
+  if (!choices) return true;
+  const variables = new Map(blocks.map((block) => [block.variableName, block]));
+  return Object.entries(choices).every(([name, selection]) => {
+    const block = variables.get(name);
+    if (!block) return false;
+    // Shared choice resolution treats either explicit empty shape as OFF, not a fallback.
+    if (selection === "" || (Array.isArray(selection) && selection.length === 0)) return true;
+    const isMulti = [true, "true", 1, "1"].some((flag) => flag === block.multiSelect);
+    const values = new Set(parseChoiceOptions(block.options).map((option) => option.value));
+    if (Array.isArray(selection)) {
+      // Legacy Random Pick presets may store a candidate array without the multi-select flag.
+      const isRandom = [true, "true", 1, "1"].some((flag) => flag === block.randomPick);
+      return (
+        (isMulti || isRandom) &&
+        new Set(selection).size === selection.length &&
+        selection.every((value) => values.has(value))
+      );
+    }
+    return !isMulti && values.has(selection);
+  });
+}
 
 function normalizeScenePromptPreferences(value: unknown): ScenePromptPreferences | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -320,10 +346,15 @@ export async function sceneRoutes(app: FastifyInstance) {
     if (promptPresetId !== undefined && promptPresetId !== null && typeof promptPresetId !== "string")
       return reply.status(400).send({ error: "Prompt preset must be an ID or null" });
     const selectedPresetId = promptPresetId?.trim() || null;
-    if (selectedPresetId && !(await createPromptsStorage(app.db).getById(selectedPresetId)))
+    const prompts = createPromptsStorage(app.db);
+    if (selectedPresetId && !(await prompts.getById(selectedPresetId)))
       return reply.status(400).send({ error: "The selected scene prompt preset no longer exists" });
     const presetChoices = parsePromptPresetChoices(req.body.presetChoices);
-    if (req.body.presetChoices !== undefined && !presetChoices)
+    const choiceBlocks = selectedPresetId ? await prompts.listChoiceBlocksForPreset(selectedPresetId) : [];
+    if (
+      (req.body.presetChoices !== undefined && !presetChoices) ||
+      !areScenePresetChoicesValid(presetChoices, choiceBlocks)
+    )
       return reply.status(400).send({ error: "Invalid scene preset choices" });
 
     // Resolve participants — use plan's characterIds if present, else all origin chars
@@ -822,7 +853,11 @@ export async function sceneRoutes(app: FastifyInstance) {
     if (selectedPresetId && !preset)
       return reply.status(400).send({ error: "The selected scene prompt preset no longer exists" });
     const presetChoices = parsePromptPresetChoices(req.body.promptPreferences?.presetChoices);
-    if (req.body.promptPreferences?.presetChoices !== undefined && !presetChoices)
+    const choiceBlocks = preset ? await prompts.listChoiceBlocksForPreset(preset.id) : [];
+    if (
+      (req.body.promptPreferences?.presetChoices !== undefined && !presetChoices) ||
+      !areScenePresetChoicesValid(presetChoices, choiceBlocks)
+    )
       return reply.status(400).send({ error: "Invalid scene preset choices" });
 
     const { conn, baseUrl } = await resolveConnection(connections, connectionId, chat.connectionId);
@@ -917,11 +952,7 @@ export async function sceneRoutes(app: FastifyInstance) {
     ];
 
     if (preset) {
-      const [sections, groups, choiceBlocks] = await Promise.all([
-        prompts.listSections(preset.id),
-        prompts.listGroups(preset.id),
-        prompts.listChoiceBlocksForPreset(preset.id),
-      ]);
+      const [sections, groups] = await Promise.all([prompts.listSections(preset.id), prompts.listGroups(preset.id)]);
       const assembled = await assemblePrompt({
         db: app.db,
         model: conn.model,

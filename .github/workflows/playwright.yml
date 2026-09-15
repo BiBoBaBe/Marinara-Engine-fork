@@ -101,7 +101,7 @@ jobs:
           echo "browser=$needed" >> "$GITHUB_OUTPUT"
 
   desktop-chromium-shards:
-    name: desktop-chromium ${{ matrix.shard }}/3
+    name: desktop-chromium ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
@@ -113,7 +113,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -127,7 +127,7 @@ jobs:
           project: desktop-chromium
           browser: chromium
           shard: ${{ matrix.shard }}
-          total-shards: 3
+          total-shards: 4
           server-project: desktop
 
       - name: Upload failure evidence
@@ -140,7 +140,7 @@ jobs:
           retention-days: 7
 
   mobile-chromium-shards:
-    name: mobile-chromium ${{ matrix.shard }}/3
+    name: mobile-chromium ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
@@ -152,7 +152,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -166,7 +166,7 @@ jobs:
           project: mobile-chromium
           browser: chromium
           shard: ${{ matrix.shard }}
-          total-shards: 3
+          total-shards: 4
           server-project: mobile
 
       - name: Upload failure evidence
@@ -179,7 +179,7 @@ jobs:
           retention-days: 7
 
   mobile-webkit-shards:
-    # Four shards for webkit alone (#5637): WebKit-on-Linux is the slowest
+    # Four shards for WebKit (#5637): WebKit-on-Linux is the slowest
     # lane, and matrix wall time is the slowest single shard.
     name: mobile-webkit ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
