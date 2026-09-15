@@ -446,6 +446,8 @@ export interface ChatMetadata {
   discordWebhookUrl?: string;
   /** When true, Noodle timeline refreshes may include this chat's recent messages as generation context. */
   noodleTimelineContextEnabled?: boolean;
+  /** When true, the Slurp package may add this chat's characters' recent Slurp activity to the prompt. Off unless set. */
+  slurp2ActivityContextEnabled?: boolean;
   /** Per-chat ephemeral / enabled overrides for lorebook entries (entryId → state).
    *  Tracked per-chat so ephemeral countdown in one chat doesn't affect others. */
   entryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;

@@ -957,22 +957,50 @@ export function ChatSettingsDrawer({
     () => (typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {})),
     [chat.metadata],
   );
+  // Package integrations only show while their package is installed and active.
+  const noodleInstalled = installedCapabilities.some(
+    (capability) => capability.id === "noodle" && capability.status === "active",
+  );
+  const slurp2Installed = installedCapabilities.some(
+    (capability) => capability.id === "slurp2" && capability.status === "active",
+  );
   const noodleTimelineContextEnabled = metadata.noodleTimelineContextEnabled === true;
-  const renderNoodleTimelineContextToggle = () => (
-    <SettingsSwitch
-      label={localizeUi("ui.chat.chatsettingsdrawer.allowNoodleReferences")}
-      description={localizeUi("ui.chat.chatsettingsdrawer.timelineRefreshesMayIncludeRecentMessagesFromThisChat")}
-      checked={noodleTimelineContextEnabled}
-      onChange={(checked) => updateMeta.mutate({ id: chat.id, noodleTimelineContextEnabled: checked })}
-      labelPosition="start"
-      className={cn(
-        "justify-between rounded-md px-3 py-2.5 text-left",
-        noodleTimelineContextEnabled
-          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-          : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+  const slurp2ActivityContextEnabled = metadata.slurp2ActivityContextEnabled === true;
+  const renderPackageContextToggles = () => (
+    <>
+      {noodleInstalled && (
+        <SettingsSwitch
+          label={localizeUi("ui.chat.chatsettingsdrawer.allowNoodleReferences")}
+          description={localizeUi("ui.chat.chatsettingsdrawer.timelineRefreshesMayIncludeRecentMessagesFromThisChat")}
+          checked={noodleTimelineContextEnabled}
+          onChange={(checked) => updateMeta.mutate({ id: chat.id, noodleTimelineContextEnabled: checked })}
+          labelPosition="start"
+          className={cn(
+            "justify-between rounded-md px-3 py-2.5 text-left",
+            noodleTimelineContextEnabled
+              ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+              : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+          )}
+          labelClassName="text-[0.6875rem] font-medium"
+        />
       )}
-      labelClassName="text-[0.6875rem] font-medium"
-    />
+      {slurp2Installed && (
+        <SettingsSwitch
+          label={localizeUi("ui.chat.chatsettingsdrawer.allowSlurpActivity")}
+          description={localizeUi("ui.chat.chatsettingsdrawer.allowSlurpActivityDescription")}
+          checked={slurp2ActivityContextEnabled}
+          onChange={(checked) => updateMeta.mutate({ id: chat.id, slurp2ActivityContextEnabled: checked })}
+          labelPosition="start"
+          className={cn(
+            "justify-between rounded-md px-3 py-2.5 text-left",
+            slurp2ActivityContextEnabled
+              ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+              : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+          )}
+          labelClassName="text-[0.6875rem] font-medium"
+        />
+      )}
+    </>
   );
   const { data: currentPromptPresetFull } = usePresetFull(isRoleplayMode ? (chat.promptPresetId ?? null) : null);
   const promptPresetOptionsLoaded = Array.isArray(presets);
@@ -7017,7 +7045,7 @@ export function ChatSettingsDrawer({
                       ))}
                   </PickerDropdown>
                 )}
-                {renderNoodleTimelineContextToggle()}
+                {renderPackageContextToggles()}
                 <DiscordMirrorControls
                   webhookUrl={(metadata.discordWebhookUrl as string) ?? ""}
                   onWebhookUrlChange={(discordWebhookUrl) => updateMeta.mutate({ id: chat.id, discordWebhookUrl })}
@@ -7083,7 +7111,7 @@ export function ChatSettingsDrawer({
                   </p>
                 )}
 
-                {renderNoodleTimelineContextToggle()}
+                {renderPackageContextToggles()}
 
                 <DiscordMirrorControls
                   className="space-y-2"
@@ -7129,7 +7157,7 @@ export function ChatSettingsDrawer({
                     </div>
                   );
                 })()}
-                {renderNoodleTimelineContextToggle()}
+                {renderPackageContextToggles()}
                 <DiscordMirrorControls
                   webhookUrl={(metadata.discordWebhookUrl as string) ?? ""}
                   onWebhookUrlChange={(discordWebhookUrl) => updateMeta.mutate({ id: chat.id, discordWebhookUrl })}
@@ -7199,7 +7227,7 @@ export function ChatSettingsDrawer({
                       ))}
                   </PickerDropdown>
                 )}
-                {renderNoodleTimelineContextToggle()}
+                {renderPackageContextToggles()}
                 <DiscordMirrorControls
                   webhookUrl={(metadata.discordWebhookUrl as string) ?? ""}
                   onWebhookUrlChange={(discordWebhookUrl) => updateMeta.mutate({ id: chat.id, discordWebhookUrl })}

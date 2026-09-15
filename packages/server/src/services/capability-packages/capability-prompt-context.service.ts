@@ -21,6 +21,8 @@ export interface CapabilityPromptContextRequest {
   personaId?: string | null;
   /** Agent-data sections already placed by the active preset. */
   placedAgentTypes?: string[];
+  /** The preset's section wrap format, so a contributor's block matches the prompt around it. */
+  wrapFormat?: "xml" | "markdown" | "none";
 }
 
 /** Built-in game systems an experience can declare it replaces. Open set — undeclared stays built-in. */

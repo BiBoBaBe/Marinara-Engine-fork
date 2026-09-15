@@ -1507,6 +1507,10 @@ function ConvoTab({
   const ext = formData.extensions;
   const { t: localizeUi } = useUiTranslation();
   const generateCharacterConvoProfile = useGenerateCharacterConvoProfile();
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages(kind === "character");
+  const noodleInstalled = installedCapabilities.some(
+    (capability) => capability.id === "noodle" && capability.status === "active",
+  );
   const currentCharacterIdRef = useRef(characterId);
   currentCharacterIdRef.current = characterId;
   const currentConvoProfileDraft = {
@@ -1582,8 +1586,8 @@ function ConvoTab({
         imageInstructions={(ext.conversationImageInstructions as string) ?? ""}
         onImageInstructionsChange={(value) => updateExtension("conversationImageInstructions", value)}
         applyImageInstructionsToNoodle={ext.applyConversationImageInstructionsToNoodle === true}
-        onApplyImageInstructionsToNoodleChange={(value) =>
-          updateExtension("applyConversationImageInstructionsToNoodle", value)
+        onApplyImageInstructionsToNoodleChange={
+          noodleInstalled ? (value) => updateExtension("applyConversationImageInstructionsToNoodle", value) : undefined
         }
         schedule={schedule}
         onEditSchedule={kind === "character" && characterId ? () => setScheduleOpen(true) : undefined}
