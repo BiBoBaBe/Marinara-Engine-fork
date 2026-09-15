@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Added Professor Mari’s v2.4.6 What’s New story with release screenshots and demonstrations (#6240).
+
 - Characters keeps its pink gradient on the topbar underline, sidebar header icon, and New buttons when the Chroma accent changes (#6238).
 
 ## [2.4.6]
