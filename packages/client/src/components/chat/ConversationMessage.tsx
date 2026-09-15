@@ -955,17 +955,13 @@ export const ConversationMessage = memo(function ConversationMessage({
   // ── Reaction chip row ──
   // Rendered by the shell as a sibling of the message row, OUTSIDE the
   // [data-card-css] container, so a character's bubble theme can't restyle it.
-  // Indented to sit under the message body; right-aligned for user bubbles.
+  // Sits before the revealable action row, indented under the message body
+  // and right-aligned for user bubbles.
   // Holds the whole-message reactions; segment-targeted ones render inline under
   // their segment inside the grouped layout instead.
   const reactionRow =
     messageReactions.length > 0 && !isHiddenCollapsed ? (
-      <div
-        className={cn(
-          "mari-message-reactions-row pb-1",
-          isBubbleStyle && isUser ? "flex justify-end px-4" : "pl-[4.5rem] pr-4",
-        )}
-      >
+      <div className={cn("mari-message-reactions-row pb-1", isBubbleStyle && isUser ? "flex justify-end" : "pl-14")}>
         <MessageReactions
           reactions={messageReactions}
           resolveReactorName={resolveReactorName}
@@ -1110,8 +1106,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   if (groupedLayoutActive) {
     return (
       <>
-        <ConversationMessageGrouped ctx={ctx} msgRef={msgRef} />
-        {reactionRow}
+        <ConversationMessageGrouped ctx={ctx} msgRef={msgRef} reactionRow={reactionRow} />
         {modals}
       </>
     );
@@ -1122,75 +1117,79 @@ export const ConversationMessage = memo(function ConversationMessage({
     <>
       <div
         ref={msgRef}
-        className={cn(
-          "mari-message relative w-full min-w-0 max-w-full px-4 transition-colors",
-          !noHoverGroup && "group",
-          isBubbleStyle
-            ? cn("py-1", isUser ? "mari-message-user" : "mari-message-assistant", !isGrouped && "mt-0.5")
-            : cn(
-                "py-0.5 hover:bg-[var(--secondary)]/30",
-                isUser ? "mari-message-user" : "mari-message-assistant",
-                isGrouped ? "mt-0" : "mt-0.5",
-                isStreaming && "bg-[var(--secondary)]/20",
-              ),
-          isConversationStart && cn("rounded-lg ring-1", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
-          isHiddenFromAI && cn("rounded-lg ring-1 saturate-75", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
-          multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
-        )}
+        className={cn("min-w-0", !noHoverGroup && "group")}
         tabIndex={0}
         data-message-id={message.id}
         data-message-role={message.role}
-        data-card-css={message.characterId ?? undefined}
-        data-grouped={isGrouped || undefined}
         onClick={handleMobileTap}
       >
-        {isUser && !isHiddenCollapsed && <MessageReplyPreview reply={extra.replyTo} />}
         <div
-          className={cn("min-w-0 max-w-full", !isBubbleStyle && "flex gap-4")}
-          data-component="ConversationMessage.Content"
+          className={cn(
+            "mari-message relative w-full min-w-0 max-w-full px-4 transition-colors",
+            isBubbleStyle
+              ? cn("py-1", isUser ? "mari-message-user" : "mari-message-assistant", !isGrouped && "mt-0.5")
+              : cn(
+                  "py-0.5 hover:bg-[var(--secondary)]/30",
+                  isUser ? "mari-message-user" : "mari-message-assistant",
+                  isGrouped ? "mt-0" : "mt-0.5",
+                  isStreaming && "bg-[var(--secondary)]/20",
+                ),
+            isConversationStart && cn("rounded-lg ring-1", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
+            isHiddenFromAI && cn("rounded-lg ring-1 saturate-75", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
+            multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
+          )}
+          data-card-css={message.characterId ?? undefined}
+          data-grouped={isGrouped || undefined}
         >
-          {isBubbleStyle ? <ConversationMessageBubble ctx={ctx} /> : <ConversationMessageLine ctx={ctx} />}
+          {isUser && !isHiddenCollapsed && <MessageReplyPreview reply={extra.replyTo} />}
+          <div
+            className={cn("min-w-0 max-w-full", !isBubbleStyle && "flex gap-4")}
+            data-component="ConversationMessage.Content"
+          >
+            {isBubbleStyle ? <ConversationMessageBubble ctx={ctx} /> : <ConversationMessageLine ctx={ctx} />}
+          </div>
+
+          <ConversationMessageSwipes ctx={ctx} />
         </div>
-
-        <ConversationMessageSwipes ctx={ctx} />
-
-        {(!hideActions || (hasReasoning && !isUser)) && (
-          <ConversationMessageActions
-            message={message}
-            name={displayName}
-            isUser={isUser}
-            showActions={showActions}
-            forceShowActions={hideActions && hasReasoning ? true : forceShowActions}
-            thinkingOnly={hideActions && hasReasoning}
-            copied={copied}
-            translatedText={translatedText}
-            isHiddenFromAI={isHiddenFromAI}
-            canRegenerate={canRegenerate}
-            isLastAssistantMessage={isLastAssistantMessage}
-            hasReasoning={hasReasoning}
-            reasoningSummaryUnavailable={reasoningSummaryUnavailable}
-            thinkingButtonRef={thinkingButtonRef}
-            generationReplay={generationReplay}
-            isGuided={isGuided}
-            regenerateButtonTitle={regenerateButtonTitle}
-            regenerateGuidedClass={regenerateGuidedClass}
-            onCopy={handleCopy}
-            onTranslate={handleTranslate}
-            onEdit={handleStartEdit}
-            onRegenerate={onRegenerate ? () => onRegenerate(message.id) : undefined}
-            onBranch={onBranch ? () => onBranch(message.id) : undefined}
-            onToggleHiddenFromAI={
-              onToggleHiddenFromAI ? () => onToggleHiddenFromAI(message.id, isHiddenFromAI) : undefined
-            }
-            onPeekPrompt={onPeekPrompt}
-            onDelete={onDelete ? () => onDelete(message.id) : undefined}
-            onShowGenerationReplay={() => setShowGenerationReplay(true)}
-            onShowThinking={() => setShowThinking(true)}
-            onPickReaction={handleToggleReaction}
-          />
-        )}
+        <div className="px-4">
+          {reactionRow}
+          {(!hideActions || (hasReasoning && !isUser)) && (
+            <ConversationMessageActions
+              message={message}
+              name={displayName}
+              isUser={isUser}
+              showActions={showActions}
+              forceShowActions={hideActions && hasReasoning ? true : forceShowActions}
+              thinkingOnly={hideActions && hasReasoning}
+              copied={copied}
+              translatedText={translatedText}
+              isHiddenFromAI={isHiddenFromAI}
+              canRegenerate={canRegenerate}
+              isLastAssistantMessage={isLastAssistantMessage}
+              hasReasoning={hasReasoning}
+              reasoningSummaryUnavailable={reasoningSummaryUnavailable}
+              thinkingButtonRef={thinkingButtonRef}
+              generationReplay={generationReplay}
+              isGuided={isGuided}
+              regenerateButtonTitle={regenerateButtonTitle}
+              regenerateGuidedClass={regenerateGuidedClass}
+              onCopy={handleCopy}
+              onTranslate={handleTranslate}
+              onEdit={handleStartEdit}
+              onRegenerate={onRegenerate ? () => onRegenerate(message.id) : undefined}
+              onBranch={onBranch ? () => onBranch(message.id) : undefined}
+              onToggleHiddenFromAI={
+                onToggleHiddenFromAI ? () => onToggleHiddenFromAI(message.id, isHiddenFromAI) : undefined
+              }
+              onPeekPrompt={onPeekPrompt}
+              onDelete={onDelete ? () => onDelete(message.id) : undefined}
+              onShowGenerationReplay={() => setShowGenerationReplay(true)}
+              onShowThinking={() => setShowThinking(true)}
+              onPickReaction={handleToggleReaction}
+            />
+          )}
+        </div>
       </div>
-      {reactionRow}
       {modals}
     </>
   );

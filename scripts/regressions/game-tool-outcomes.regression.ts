@@ -38,11 +38,28 @@ let requestedLocation = "Harbor";
 let failBeforeSave = false;
 let lockBeforeSave = false;
 let emptyFollowup = false;
+let forceToolLimit = false;
+let omitFollowupUsage = false;
 let lockedSnapshotId: string | undefined;
-OpenAIProvider.prototype.chatComplete = async (messages) => {
+OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   const result = messages.findLast((message) => message.role === "tool");
-  if (!result)
-    return { content: null, toolCalls: [call("location_change", requestedLocation)], finishReason: "tool_calls" };
+  if (!result || (forceToolLimit && options.tools?.length))
+    return {
+      content: null,
+      toolCalls: [{ ...call("location_change", requestedLocation), id: `change-${messages.length}` }],
+      finishReason: "tool_calls",
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+        cachedPromptTokens: 60,
+        cacheWritePromptTokens: 5,
+        completionReasoningTokens: 8,
+        completionAudioTokens: 2,
+        acceptedPredictionTokens: 3,
+        rejectedPredictionTokens: 1,
+      },
+    };
   const receipt = JSON.parse(result.content);
   assert.notEqual(receipt.applied, true, "the model must not receive an applied receipt before its message is saved");
   if (expectedSuccess) assert.equal(receipt.pending, true);
@@ -57,6 +74,19 @@ OpenAIProvider.prototype.chatComplete = async (messages) => {
     content: emptyFollowup ? "" : expectedSuccess ? "The party reaches the harbor." : "The location stays unchanged.",
     toolCalls: [],
     finishReason: "stop",
+    usage: omitFollowupUsage
+      ? undefined
+      : {
+          promptTokens: 200,
+          completionTokens: 30,
+          totalTokens: 230,
+          cachedPromptTokens: 100,
+          cacheWritePromptTokens: 10,
+          completionReasoningTokens: 12,
+          completionAudioTokens: 4,
+          acceptedPredictionTokens: 5,
+          rejectedPredictionTokens: 2,
+        },
   };
 };
 try {
@@ -175,6 +205,24 @@ try {
       "a new turn must not rewrite the previous snapshot",
     );
     const saved = (await chats.listMessages(chat.id)).at(-1)!;
+    const info = JSON.parse(saved.extra).generationInfo;
+    assert.equal(info.tokensPrompt, 300, "billing totals retain both requests");
+    assert.equal(info.tokensReasoning, 20, "reasoning includes the tool follow-up");
+    assert.equal(info.tokensCompletionAudio, 6);
+    assert.equal(info.tokensRejectedPrediction, 3);
+    assert.equal(info.tokensAcceptedPrediction, 8);
+    assert.equal(info.tokensContext, 230, "context uses the latest request without double-counting cached tokens");
+    assert.equal(info.requestCount, 2);
+    const savedEvents = response.body
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) => event.type === "message_saved" && event.data.id === saved.id);
+    const streamedExtra = savedEvents.at(-1)?.data.extra;
+    assert.deepEqual(
+      (typeof streamedExtra === "string" ? JSON.parse(streamedExtra) : streamedExtra)?.generationInfo,
+      info,
+    );
     if (!locked)
       assert.equal((await states.getByChatAndMessage(chat.id, saved.id, saved.activeSwipeIndex))?.location, "Harbor");
     assert.equal((await states.getLatest(chat.id))?.location, locked ? "Square" : "Harbor");
@@ -207,6 +255,10 @@ try {
         "regeneration preserves the previous swipe's snapshot",
       );
       assert.equal((await states.getByChatAndMessage(chat.id, saved.id, 1))?.location, "Forest");
+      const swipe = (await chats.getSwipes(saved.id)).find((entry) => entry.index === 1)!;
+      const swipeExtra = typeof swipe.extra === "string" ? JSON.parse(swipe.extra) : swipe.extra;
+      assert.equal(swipeExtra.generationInfo.tokensContext, 230);
+      assert.equal(swipeExtra.generationInfo.requestCount, 2);
       requestedLocation = "Tower";
       const continued = await app.inject({
         method: "POST",
@@ -268,6 +320,25 @@ try {
   assert.equal(JSON.parse(anchor.extra!).hiddenFromUser, true);
   assert.equal((await states.getByChatAndMessage(chat.id, anchor.id, anchor.activeSwipeIndex))?.location, "Harbor");
   assert.equal((await states.getById(beforeFailure.id, chat.id))?.location, "Square");
+  emptyFollowup = false;
+  forceToolLimit = true;
+  const previousMaxRounds = process.env.MAX_TOOL_ROUNDS;
+  process.env.MAX_TOOL_ROUNDS = "2";
+  try {
+    for (const missingUsage of [false, true]) {
+      omitFollowupUsage = missingUsage;
+      await chats.createMessage({ chatId: chat.id, role: "user", content: "Finish after the tool limit." });
+      const response = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
+      assert.ok(!response.body.includes('"type":"error"'), response.body);
+      const info = JSON.parse((await chats.listMessages(chat.id)).at(-1)!.extra).generationInfo;
+      assert.equal(info.requestCount, 3, "two tool rounds plus the forced final request");
+      assert.equal(info.tokensContext, missingUsage ? null : 230);
+      assert.equal(info.tokensReasoning, missingUsage ? 16 : 28, "all reported requests contribute reasoning");
+    }
+  } finally {
+    if (previousMaxRounds === undefined) delete process.env.MAX_TOOL_ROUNDS;
+    else process.env.MAX_TOOL_ROUNDS = previousMaxRounds;
+  }
 } finally {
   OpenAIProvider.prototype.chatComplete = original;
   await app.close();

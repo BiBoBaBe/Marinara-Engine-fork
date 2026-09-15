@@ -182,6 +182,12 @@ async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGe
     promptTokens: 11,
     completionTokens: 5,
     totalTokens: 16,
+    cachedPromptTokens: 7,
+    cacheWritePromptTokens: 2,
+    completionReasoningTokens: 2,
+    completionAudioTokens: 1,
+    acceptedPredictionTokens: 1,
+    rejectedPredictionTokens: 1,
     ...(omitFinishReason ? {} : { finishReason: "stop" }),
   };
 }
@@ -347,6 +353,8 @@ try {
       assert.equal(extra.gameToolPlanning.model, "cheap-planner");
       assert.equal(extra.gameToolPlanning.usage.totalTokens, 10);
       assert.equal(extra.generationInfo.tokensPrompt, 11, "planner usage cannot be charged to the narrator model");
+      assert.equal(extra.generationInfo.requestCount, 1, "the separate planner is not a narrator request");
+      assert.equal(extra.generationInfo.tokensContext, provider === "claude_subscription" ? 25 : 16);
       const peekResponse = await app.inject({
         method: "POST",
         url: `/api/chats/${chat.id}/peek-prompt`,
@@ -367,6 +375,14 @@ try {
       order.length = 0;
       const rolled = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
       assert.ok(!rolled.body.includes('"type":"error"'), rolled.body);
+      const outcomeUsage = JSON.parse((await chats.listMessages(chat.id)).at(-1)!.extra).generationInfo;
+      assert.equal(outcomeUsage.requestCount, 2);
+      assert.equal(outcomeUsage.tokensContext, 25, "dice follow-up context is one Claude request, including caches");
+      assert.equal(outcomeUsage.tokensPrompt, 22);
+      assert.equal(outcomeUsage.tokensReasoning, 4);
+      assert.equal(outcomeUsage.tokensCompletionAudio, 2);
+      assert.equal(outcomeUsage.tokensAcceptedPrediction, 2);
+      assert.equal(outcomeUsage.tokensRejectedPrediction, 2);
       assert.deepEqual(order, ["planner", "narrator", "narrator"]);
       const message = (await chats.listMessages(chat.id)).at(-1)!;
       assert.match(

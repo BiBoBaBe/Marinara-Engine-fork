@@ -62,6 +62,8 @@ export interface ScenePromptPreferences {
   tense: ScenePromptTense;
   extraInstructions?: string;
   promptPresetId?: string | null;
+  /** Scene-local selections, confirmed before planning; not remembered as UI defaults. */
+  presetChoices?: Record<string, string | string[]>;
 }
 
 /** Request body for POST /scene/create. */
@@ -76,6 +78,7 @@ export interface SceneCreateRequest {
   connectionId?: string | null;
   /** Optional preset for the scene's generations, alongside its scene instructions. */
   promptPresetId?: string | null;
+  presetChoices?: Record<string, string | string[]>;
 }
 
 /** Response from POST /scene/create. */
@@ -149,6 +152,8 @@ export interface SceneForkResponse {
 
 /** Request body for POST /scene/plan (user-initiated via /scene command). */
 export interface ScenePlanRequest {
+  /** Show the final provider prompt when UI debug mode is enabled. */
+  debugMode?: boolean;
   /** The conversation chat where the user typed /scene. */
   chatId: string;
   /** The user's description of what kind of scene they want. */

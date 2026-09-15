@@ -531,6 +531,8 @@ import { cardPromptText } from "../services/prompt/card-text.js";
 import {
   getHiddenCompletionTokens,
   getVisibleCompletionTokens,
+  addGenerationUsage,
+  getRequestContextTokens,
   stripSpacesBeforeLineBreaks,
   trimIncompleteModelEnding,
 } from "../services/generation/generation-text-utils.js";
@@ -6983,6 +6985,13 @@ export async function generateRoutes(app: FastifyInstance) {
           const genStartTime = Date.now();
           generationStartedAt = genStartTime;
           let usage: LLMUsage | undefined;
+          let tokensContext: number | null = null;
+          let requestCount = 0;
+          const recordRequestUsage = (next: LLMUsage | undefined) => {
+            requestCount++;
+            tokensContext = getRequestContextTokens(next, generationProviderOrigin.provider);
+            usage = addGenerationUsage(usage, next);
+          };
           let finishReason: string | undefined;
 
           const logPromptSentToModel = (messages: ChatMessage[], label = "Prompt sent to model") => {
@@ -7245,22 +7254,7 @@ export async function generateRoutes(app: FastifyInstance) {
               geminiResponseParts = appendRoundGeminiParts(geminiResponseParts, result.providerMetadata);
 
               // Accumulate usage across tool rounds
-              if (result.usage) {
-                if (!usage) {
-                  usage = { ...result.usage };
-                } else {
-                  usage.promptTokens += result.usage.promptTokens;
-                  usage.completionTokens += result.usage.completionTokens;
-                  usage.totalTokens += result.usage.totalTokens;
-                  if (result.usage.cachedPromptTokens != null) {
-                    usage.cachedPromptTokens = (usage.cachedPromptTokens ?? 0) + result.usage.cachedPromptTokens;
-                  }
-                  if (result.usage.cacheWritePromptTokens != null) {
-                    usage.cacheWritePromptTokens =
-                      (usage.cacheWritePromptTokens ?? 0) + result.usage.cacheWritePromptTokens;
-                  }
-                }
-              }
+              if (!gameToolPlan) recordRequestUsage(result.usage);
               finishReason = result.finishReason;
 
               let textualRoleplayRoll = false;
@@ -7556,22 +7550,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   await writeContentChunked(finalResult.content);
                 }
                 geminiResponseParts = appendRoundGeminiParts(geminiResponseParts, finalResult.providerMetadata);
-                if (finalResult.usage) {
-                  if (!usage) {
-                    usage = { ...finalResult.usage };
-                  } else {
-                    usage.promptTokens += finalResult.usage.promptTokens;
-                    usage.completionTokens += finalResult.usage.completionTokens;
-                    usage.totalTokens += finalResult.usage.totalTokens;
-                    if (finalResult.usage.cachedPromptTokens != null) {
-                      usage.cachedPromptTokens = (usage.cachedPromptTokens ?? 0) + finalResult.usage.cachedPromptTokens;
-                    }
-                    if (finalResult.usage.cacheWritePromptTokens != null) {
-                      usage.cacheWritePromptTokens =
-                        (usage.cacheWritePromptTokens ?? 0) + finalResult.usage.cacheWritePromptTokens;
-                    }
-                  }
-                }
+                recordRequestUsage(finalResult.usage);
                 finishReason = finalResult.finishReason;
               }
             }
@@ -7603,10 +7582,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next());
               }
               // Generator return value contains usage
-              if (result.value) {
-                usage = result.value;
-                finishReason = usage.finishReason ?? finishReason;
-              }
+              recordRequestUsage(result.value || undefined);
+              finishReason = result.value?.finishReason ?? finishReason;
             } catch (err) {
               if (abortController.signal.aborted || isAbortLikeError(err)) {
                 return null;
@@ -8227,23 +8204,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
                 }
                 finishReason = next.value?.finishReason;
-                if (next.value) {
-                  const prior = usage;
-                  usage = { ...next.value };
-                  for (const key of [
-                    "promptTokens",
-                    "completionTokens",
-                    "totalTokens",
-                    "cachedPromptTokens",
-                    "cacheWritePromptTokens",
-                    "completionReasoningTokens",
-                    "completionAudioTokens",
-                    "acceptedPredictionTokens",
-                    "rejectedPredictionTokens",
-                  ] as const) {
-                    if (prior?.[key] != null) usage[key] = (usage[key] ?? 0) + prior[key];
-                  }
-                }
+                recordRequestUsage(next.value || undefined);
                 const thinking = extractLeadingThinkingBlocks(narration, customThinkingTags);
                 narration = thinking.content;
                 if (thinking.thinking) fullThinking = [fullThinking, thinking.thinking].filter(Boolean).join("\n\n");
@@ -8703,11 +8664,14 @@ export async function generateRoutes(app: FastifyInstance) {
                 assistantReasoningPrefill: assistantReasoningPrefill || null,
                 customParameters: Object.keys(customParameters).length > 0 ? customParameters : null,
                 tokensPrompt: usage?.promptTokens ?? null,
+                tokensContext,
+                requestCount,
                 tokensCompletion: usage?.completionTokens ?? null,
                 tokensVisibleCompletion: getVisibleCompletionTokens(usage) ?? null,
                 tokensReasoning: usage?.completionReasoningTokens ?? null,
                 tokensCompletionAudio: usage?.completionAudioTokens ?? null,
                 tokensRejectedPrediction: usage?.rejectedPredictionTokens ?? null,
+                tokensAcceptedPrediction: usage?.acceptedPredictionTokens ?? null,
                 tokensCachedPrompt: usage?.cachedPromptTokens ?? null,
                 tokensCacheWritePrompt: usage?.cacheWritePromptTokens ?? null,
                 durationMs,

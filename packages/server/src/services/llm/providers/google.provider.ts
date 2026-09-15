@@ -55,6 +55,7 @@ interface GeminiUsageMetadata {
   candidatesTokenCount: number;
   totalTokenCount: number;
   thoughtsTokenCount?: number;
+  cachedContentTokenCount?: number;
 }
 
 interface GeminiResponsePayload {
@@ -568,6 +569,7 @@ function geminiUsage(usage?: GeminiUsageMetadata): LLMUsage | undefined {
     completionTokens: usage.candidatesTokenCount,
     totalTokens: usage.totalTokenCount,
     completionReasoningTokens: usage.thoughtsTokenCount,
+    cachedPromptTokens: usage.cachedContentTokenCount,
   };
 }
 
@@ -1021,10 +1023,7 @@ export class GoogleProvider extends BaseLLMProvider {
       }
       if (json.usageMetadata) {
         return {
-          promptTokens: json.usageMetadata.promptTokenCount,
-          completionTokens: json.usageMetadata.candidatesTokenCount,
-          totalTokens: json.usageMetadata.totalTokenCount,
-          completionReasoningTokens: json.usageMetadata.thoughtsTokenCount,
+          ...geminiUsage(json.usageMetadata)!,
           finishReason: normalizeGeminiFinishReason(candidate?.finishReason),
         };
       }
@@ -1085,12 +1084,7 @@ export class GoogleProvider extends BaseLLMProvider {
           if (blockReason) throw new Error(`Gemini blocked the prompt (${blockReason})`);
 
           if (parsed.usageMetadata) {
-            streamUsage = {
-              promptTokens: parsed.usageMetadata.promptTokenCount,
-              completionTokens: parsed.usageMetadata.candidatesTokenCount,
-              totalTokens: parsed.usageMetadata.totalTokenCount,
-              completionReasoningTokens: parsed.usageMetadata.thoughtsTokenCount,
-            };
+            streamUsage = geminiUsage(parsed.usageMetadata);
           }
           const candidate = parsed.candidates?.[0];
           const parts: GeminiPart[] = candidate?.content?.parts ?? [];

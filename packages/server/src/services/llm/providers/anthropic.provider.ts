@@ -88,7 +88,7 @@ export function supportsAnthropicThinkingDisable(model: string): boolean {
   return /claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(model.toLowerCase());
 }
 
-type AnthropicRole = "user" | "assistant";
+type AnthropicRole = "user" | "assistant" | "system";
 type AnthropicContentBlock = Record<string, unknown> & {
   type: string;
   text?: string;
@@ -150,6 +150,45 @@ function formatAnthropicTools(tools: LLMToolDefinition[] | undefined): Array<Rec
     description: tool.function.description,
     input_schema: tool.function.parameters,
   }));
+}
+
+function splitAnthropicSystemMessages(messages: ChatMessage[], model: string) {
+  const firstHistoryIndex = messages.findIndex((message) => message.role !== "system");
+  const prefixEnd = firstHistoryIndex < 0 ? messages.length : firstHistoryIndex;
+  const systemMessages = messages.slice(0, prefixEnd).filter((message) => message.content?.trim());
+  const history = messages
+    .slice(prefixEnd)
+    .filter(
+      (message) =>
+        message.role === "tool" ||
+        message.content?.trim() ||
+        message.images?.length ||
+        message.files?.length ||
+        message.tool_calls?.length,
+    );
+  // Only these documented models accept history-level system text. Other models
+  // retain its position as user context instead of moving it into the cache prefix.
+  // https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+  const supportsHistorySystem = [
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-fable-5-1",
+    "claude-mythos-5",
+    "claude-mythos-5-1",
+  ].includes(model.toLowerCase());
+  const chatMessages = history.map((message, index): ChatMessage => {
+    if (message.role !== "system") return message;
+    let start = index;
+    let end = index;
+    while (start > 0 && history[start - 1]?.role === "system") start--;
+    while (end + 1 < history.length && history[end + 1]?.role === "system") end++;
+    const previous = history[start - 1];
+    const next = history[end + 1];
+    const validSlot = (previous?.role === "user" || previous?.role === "tool") && (!next || next.role === "assistant");
+    return supportsHistorySystem && validSlot ? message : { ...message, role: "user" };
+  });
+  return { systemMessages, chatMessages };
 }
 
 export function applyAnthropicToolChoice(
@@ -239,8 +278,6 @@ function formatAnthropicPayloadMessages(messages: ChatMessage[]): AnthropicMessa
   const payload: AnthropicMessagePayload[] = [];
 
   for (const message of messages) {
-    if (message.role === "system") continue;
-
     if (message.role === "assistant" && message.tool_calls?.length) {
       const content: AnthropicContentBlock[] = [];
       if (message.content?.trim()) content.push({ type: "text", text: message.content });
@@ -274,10 +311,10 @@ function formatAnthropicPayloadMessages(messages: ChatMessage[]): AnthropicMessa
       continue;
     }
 
-    if (message.role === "user" || message.role === "assistant") {
+    if (message.role === "user" || message.role === "assistant" || message.role === "system") {
       const content = [...fileContentBlocks(message.files), ...imageContentBlocks(message.images)];
       if (message.content?.trim()) content.push({ type: "text", text: message.content });
-      payload.push({ role: message.role === "assistant" ? "assistant" : "user", content });
+      payload.push({ role: message.role, content });
     }
   }
 
@@ -366,7 +403,7 @@ export class AnthropicProvider extends BaseLLMProvider {
     // formula: a caller that sets `stream: true` without a sink (the agent tool loop) keeps
     // the buffered path it uses today.
     const useStream = !!options.onToken && options.stream !== false;
-    const systemMessages = messages.filter((m) => m.role === "system" && m.content?.trim());
+    const { systemMessages, chatMessages } = splitAnthropicSystemMessages(messages, options.model);
     const enableCaching = options.enableCaching ?? false;
     const cacheControl = buildAnthropicCacheControl(options);
     const systemField =
@@ -379,7 +416,7 @@ export class AnthropicProvider extends BaseLLMProvider {
             }))
           : systemMessages.map((m) => m.content).join("\n\n")
         : undefined;
-    const formattedMessages = formatAnthropicPayloadMessages(trimTrailingAssistantWhitespace(messages));
+    const formattedMessages = formatAnthropicPayloadMessages(trimTrailingAssistantWhitespace(chatMessages));
     const cacheControlMessageIndex = enableCaching
       ? resolveCacheControlMessageIndex(formattedMessages, normalizeCachingAtDepth(options.cachingAtDepth))
       : -1;
@@ -678,11 +715,7 @@ export class AnthropicProvider extends BaseLLMProvider {
 
     const url = `${this.baseUrl}/messages`;
 
-    // Claude requires system prompt separate from messages — filter out empty-content messages
-    const systemMessages = messages.filter((m) => m.role === "system" && m.content?.trim());
-    const chatMessages = messages.filter(
-      (m) => m.role !== "system" && (m.content?.trim() || m.images?.length || m.files?.length),
-    );
+    const { systemMessages, chatMessages } = splitAnthropicSystemMessages(messages, options.model);
 
     // Ensure alternating user/assistant pattern (Claude requirement), then
     // strip any trailing whitespace from the final assistant turn (Claude 400s

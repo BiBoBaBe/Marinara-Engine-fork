@@ -2248,8 +2248,8 @@ export function HomeBrowserHub({
               ref={mobileBookmarksTriggerRef}
               type="button"
               className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center self-end rounded-t-lg border border-b-0 border-transparent text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--marinara-app-accent-solid)] sm:hidden",
-                mobileBookmarksOpen && "bg-[var(--accent)] text-[var(--foreground)]",
+                "flex h-9 w-9 shrink-0 items-center justify-center self-end rounded-t-lg border border-b-0 border-transparent text-[var(--primary)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--marinara-app-accent-solid)] sm:hidden",
+                mobileBookmarksOpen && "bg-[var(--accent)]",
                 activeTab !== "home" && !showHomeBrowserMobileBookmarksOnOtherTabs && "hidden",
               )}
               aria-label={t("home.browser.bookmarksCompact")}

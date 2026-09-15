@@ -18,7 +18,9 @@ interface ChoiceSelectionModalProps {
   open: boolean;
   onClose: () => void;
   presetId: string | null;
-  chatId: string;
+  chatId?: string;
+  /** Draft setup has no chat yet; return choices without writing chat metadata. */
+  onConfirm?: (choices: Record<string, string | string[]>) => void;
   /** Existing selections to pre-populate (variableName → value or values) */
   existingChoices?: Record<string, string | string[]>;
   chatFloatingPanel?: boolean;
@@ -97,6 +99,7 @@ function ChatChoiceSelectionModal({
   onClose,
   presetId,
   chatId,
+  onConfirm,
   existingChoices = {},
   chatFloatingPanel = false,
 }: ChoiceSelectionModalProps) {
@@ -190,9 +193,10 @@ function ChatChoiceSelectionModal({
     if (!presetId || variables.length === 0) {
       // Closing can advance the setup wizard; do it only once, including StrictMode effects.
       autoClosedRef.current = true;
-      onClose();
+      if (onConfirm) onConfirm({});
+      else onClose();
     }
-  }, [open, isLoading, onClose, presetId, variables.length]);
+  }, [open, isLoading, onClose, onConfirm, presetId, variables.length]);
 
   // Merged view: base + user overrides
   const selections = useMemo(() => ({ ...baseSelections, ...overrides }), [baseSelections, overrides]);
@@ -201,12 +205,13 @@ function ChatChoiceSelectionModal({
 
   const handleConfirm = useCallback(() => {
     // Save selections to chat metadata
-    updateMetadata.mutate({ id: chatId, presetChoices: selections }, { onSuccess: () => onClose() });
+    if (onConfirm) onConfirm(selections);
+    else if (chatId) updateMetadata.mutate({ id: chatId, presetChoices: selections }, { onSuccess: () => onClose() });
     // Optionally save as default for this preset
     if (saveAsDefault && presetId) {
       updatePreset.mutate({ id: presetId, defaultChoices: selections });
     }
-  }, [chatId, presetId, selections, saveAsDefault, updateMetadata, updatePreset, onClose]);
+  }, [chatId, presetId, selections, saveAsDefault, updateMetadata, updatePreset, onClose, onConfirm]);
 
   // Toggle a single option in a multi-select variable
   const toggleMulti = useCallback(
@@ -438,7 +443,7 @@ function ChatChoiceSelectionModal({
             </div>
             <div className="flex gap-2">
               <button
-                onClick={onClose}
+                onClick={() => (onConfirm ? onConfirm(baseSelections) : onClose())}
                 disabled={updateMetadata.isPending}
                 className="rounded-xl px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
               >

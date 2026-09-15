@@ -21,13 +21,16 @@ async function prepare(page: import("@playwright/test").Page, theme: "light" | "
 }
 
 for (const theme of ["light", "dark"] as const) {
-  test(`Scene preset variables save before entering the scene (${theme})`, async ({ page, request }, testInfo) => {
+  test(`Scene preset variables are chosen before planning the scene (${theme})`, async ({
+    page,
+    request,
+  }, testInfo) => {
     const origin = await (
       await request.post("/api/chats", { data: { name: "Variable scene origin", mode: "conversation" } })
     ).json();
     const preset = await (await request.post("/api/prompts", { data: { name: "Variable scene preset" } })).json();
     const sceneIds: string[] = [];
-    let releaseSave = () => {};
+    const planningRequests: Array<{ promptPreferences: { presetChoices?: Record<string, string> } }> = [];
     try {
       expect(
         (
@@ -51,8 +54,9 @@ for (const theme of ["light", "dark"] as const) {
         ).ok(),
       ).toBeTruthy();
       await prepare(page, theme);
-      await page.route("**/api/scene/plan", (route) =>
-        route.fulfill({
+      await page.route("**/api/scene/plan", (route) => {
+        planningRequests.push(route.request().postDataJSON());
+        return route.fulfill({
           json: {
             plan: {
               name: "Scene: Variable laboratory",
@@ -67,8 +71,8 @@ for (const theme of ["light", "dark"] as const) {
               participationGuide: "Explore freely.",
             },
           },
-        }),
-      );
+        });
+      });
       await page.goto("/");
       const start = () =>
         page.evaluate(async (chatId) => {
@@ -99,93 +103,68 @@ for (const theme of ["light", "dark"] as const) {
         });
       const setup = page.getByRole("dialog", { name: "Scene Prompt Setup", exact: true });
       const choices = page.getByRole("dialog", { name: "Configure Preset Variables", exact: true });
-      const create = async () => {
-        const response = page.waitForResponse(
+      const nextCreated = () =>
+        page.waitForResponse(
           (value) => value.url().endsWith("/api/scene/create") && value.request().method() === "POST",
         );
-        await setup.getByRole("button", { name: "Plan Scene", exact: true }).click();
-        const created = await response;
-        expect(created.ok()).toBeTruthy();
-        const id: string = (await created.json()).chatId;
+      const rememberCreated = async (response: import("@playwright/test").Response) => {
+        expect(response.ok()).toBeTruthy();
+        const id: string = (await response.json()).chatId;
         sceneIds.push(id);
-        return id;
+        await expect.poll(activeChatId).toBe(id);
+        const scene = await (await request.get(`/api/chats/${id}`)).json();
+        return typeof scene.metadata === "string" ? JSON.parse(scene.metadata) : scene.metadata;
       };
 
       await start();
       await setup.getByRole("combobox", { name: "Prompt preset", exact: false }).selectOption(preset.id);
-      // Cancel must not create a scene or replace the previously remembered preset.
-      await setup.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(choices).toBeVisible();
+      expect(planningRequests).toHaveLength(0);
+      await page.keyboard.press("Escape");
+      await expect(choices).toBeHidden();
+      await expect.poll(activeChatId).toBe(origin.id);
+      expect(planningRequests).toHaveLength(0);
+      // Cancelling variable setup must not remember the draft preset or create an empty scene.
       await start();
       await expect(setup.getByRole("combobox", { name: "Prompt preset", exact: false })).toHaveValue("");
       await setup.getByRole("combobox", { name: "Prompt preset", exact: false }).selectOption(preset.id);
-      const firstId = await create();
-      await expect(choices).toBeVisible();
       await expect(choices.getByRole("button", { name: /^Detailed/ })).toHaveAttribute("aria-pressed", "true");
-      await expect.poll(activeChatId).toBe(origin.id);
       await choices.getByRole("button", { name: /^Brief/ }).click();
+      await expect(choices).toHaveCSS("opacity", "1");
       await page.screenshot({ path: testInfo.outputPath(`scene-preset-variables-${theme}.png`) });
-
-      const pendingSave = new Promise<void>((resolve) => {
-        releaseSave = resolve;
-      });
-      let saveAttempts = 0;
-      await page.route(`**/api/chats/${firstId}/metadata`, async (route) => {
-        if (++saveAttempts === 1) {
-          await route.fulfill({ status: 503, json: { error: "Synthetic unavailable save" } });
-          return;
-        }
-        await pendingSave;
-        await route.continue();
-      });
-      const failedSave = page.waitForResponse(
-        (value) => value.url().endsWith(`/api/chats/${firstId}/metadata`) && value.status() === 503,
-      );
+      expect(planningRequests).toHaveLength(0);
       await choices.getByRole("button", { name: "Confirm Choices", exact: true }).click();
-      await failedSave;
-      await expect(choices.getByRole("button", { name: "Confirm Choices", exact: true })).toBeEnabled();
-      await expect(choices.getByRole("button", { name: /^Brief/ })).toHaveAttribute("aria-pressed", "true");
-      await expect.poll(activeChatId).toBe(origin.id);
-      const saved = page.waitForResponse(
-        (value) => value.url().endsWith(`/api/chats/${firstId}/metadata`) && value.request().method() === "PATCH",
-      );
-      await choices.getByRole("button", { name: "Confirm Choices", exact: true }).click();
-      await expect(choices.getByRole("button", { name: /^Saving/ })).toBeDisabled();
-      await expect(choices.getByRole("button", { name: "Skip", exact: true })).toBeDisabled();
-      for (const control of await choices.locator("button, select, input").all()) {
-        await expect(control).toBeDisabled();
-      }
-      await page.keyboard.press("Escape");
-      await expect(choices).toBeVisible();
-      await expect.poll(activeChatId).toBe(origin.id);
-      releaseSave();
-      expect((await saved).ok()).toBeTruthy();
-      await expect(choices).toBeHidden();
-      await expect.poll(activeChatId).toBe(firstId);
-      const first = await (await request.get(`/api/chats/${firstId}`)).json();
-      const firstMeta = typeof first.metadata === "string" ? JSON.parse(first.metadata) : first.metadata;
+      await expect(setup).toBeVisible();
+      expect(planningRequests).toHaveLength(0);
+      const firstCreated = nextCreated();
+      await setup.getByRole("button", { name: "Plan Scene", exact: true }).click();
+      const firstMeta = await rememberCreated(await firstCreated);
+      expect(planningRequests[0]!.promptPreferences.presetChoices).toEqual({ length: "Write briefly." });
       expect(firstMeta.presetChoices).toEqual({ length: "Write briefly." });
+      await expect(choices).toBeHidden();
 
       await page.reload();
       await start();
       await expect(setup.getByRole("combobox", { name: "Prompt preset", exact: false })).toHaveValue(preset.id);
-      const secondId = await create();
+      await setup.getByRole("button", { name: "Plan Scene", exact: true }).click();
       await expect(choices).toBeVisible();
-      // A scene-local choice must not overwrite the preset's saved defaults.
+      expect(planningRequests).toHaveLength(1);
+      // Scene-local choices leave saved defaults intact; Skip confirms those defaults before planning.
       await expect(choices.getByRole("button", { name: /^Detailed/ })).toHaveAttribute("aria-pressed", "true");
+      const secondCreated = nextCreated();
       await choices.getByRole("button", { name: "Skip", exact: true }).click();
-      await expect.poll(activeChatId).toBe(secondId);
-      const second = await (await request.get(`/api/chats/${secondId}`)).json();
-      const secondMeta = typeof second.metadata === "string" ? JSON.parse(second.metadata) : second.metadata;
-      expect(secondMeta.presetChoices).toBeUndefined();
+      const secondMeta = await rememberCreated(await secondCreated);
+      expect(planningRequests[1]!.promptPreferences.presetChoices).toEqual({ length: "Write in detail." });
+      expect(secondMeta.presetChoices).toEqual({ length: "Write in detail." });
 
       for (const replacement of ["create-character", null] as const) {
         await start();
-        const abandonedId = await create();
+        await setup.getByRole("button", { name: "Plan Scene", exact: true }).click();
         await expect(choices).toBeVisible();
         await page.evaluate(async (replacement) => {
           const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
-          const onClose = useUIStore.getState().modal.props.onClose as () => void;
-          Object.assign(window, { abandonedSceneClose: onClose });
+          const onSubmit = useUIStore.getState().modal.props.onSubmit;
+          Object.assign(window, { abandonedSceneSubmit: onSubmit });
           if (replacement) useUIStore.getState().openModal(replacement);
           else useUIStore.getState().closeModal();
         }, replacement);
@@ -201,10 +180,15 @@ for (const theme of ["light", "dark"] as const) {
             ),
           )
           .toEqual({ settled: true, created: false, chatId: null });
-        // A late save callback must not close the replacement or enter the old scene.
-        await page.evaluate(() => (window as unknown as { abandonedSceneClose: () => void }).abandonedSceneClose());
+        await page.evaluate(() =>
+          (
+            window as unknown as {
+              abandonedSceneSubmit: (preferences: { pov: string; tense: string }) => void;
+            }
+          ).abandonedSceneSubmit({ pov: "first_person", tense: "past" }),
+        );
+        expect(planningRequests).toHaveLength(2);
         await expect.poll(activeChatId).toBe(origin.id);
-        expect((await request.get(`/api/chats/${abandonedId}`)).ok()).toBeTruthy();
         await expect
           .poll(() =>
             page.evaluate(async () => {
@@ -219,8 +203,6 @@ for (const theme of ["light", "dark"] as const) {
         });
       }
     } finally {
-      releaseSave();
-      await page.close();
       for (const id of sceneIds) await request.delete(`/api/chats/${id}?force=true`);
       await request.delete(`/api/chats/${origin.id}?force=true`);
       await request.delete(`/api/prompts/${preset.id}`);
