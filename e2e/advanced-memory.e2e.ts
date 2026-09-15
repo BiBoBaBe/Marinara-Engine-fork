@@ -292,7 +292,7 @@ test("Advanced Memory stays in Chat Settings with confirmed knowledge, resumable
     await expect(progress).toContainText("1 of 4 work units completed");
     const wheel = progress.locator(".mari-memory-wheel");
     await expect(wheel).toHaveCSS("animation-name", "mari-memory-wheel-run");
-    await expect(wheel).toHaveCSS("background-image", /professor-mari-memory-wheel\.png/);
+    await expect(wheel).toHaveCSS("background-image", /professor-mari-memory-wheel-v2\.png/);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await expect(wheel).toHaveCSS("animation-name", "none");
     await progress.scrollIntoViewIfNeeded();
