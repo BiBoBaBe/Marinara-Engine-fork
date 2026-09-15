@@ -3,7 +3,7 @@
 // Ties together storage, scanning, and injection.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
-import { LIMITS } from "@marinara-engine/shared";
+import { estimateTextTokens, LIMITS } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import type {
   CharacterData,
@@ -38,6 +38,7 @@ export interface LorebookScanResult {
   activatedEntryIds: string[];
   activatedEntries: Array<{
     id: string;
+    name?: string;
     content: string;
     matchedKeys: string[];
     activationSources: LorebookActivationSource[];
@@ -479,10 +480,8 @@ function lorebookInjectionOrder(a: ActivatedEntry, b: ActivatedEntry): number {
   return a.injectionOrder - b.injectionOrder;
 }
 
-// Lorebook budgets currently use the project-wide chars/4 approximation.
-// This can drift for CJK, emoji, and long-tail vocabulary until a canonical tokenizer is available here.
 function estimateLorebookTokens(content: string): number {
-  return Math.ceil(content.length / 4);
+  return estimateTextTokens(content);
 }
 
 type LorebookBudgetSelectionState = {
@@ -580,6 +579,8 @@ function getBudgetSkipReason(exceedsLorebookBudget: boolean, exceedsGlobalBudget
 }
 
 function normalizeLorebookEntryLimit(value: unknown): number {
+  // Exact selections supply an unbounded in-memory limit; persisted limits still normalize below.
+  if (value === Number.POSITIVE_INFINITY) return value;
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return LIMITS.LOREBOOK_ENTRY_LIMIT_DEFAULT;
   return Math.max(LIMITS.LOREBOOK_ENTRY_LIMIT_MIN, Math.min(LIMITS.LOREBOOK_ENTRY_LIMIT_MAX, Math.trunc(parsed)));
@@ -1013,6 +1014,22 @@ export async function processLorebooks(
     excludedSourceAgentIds?: string[];
     /** Entries explicitly attached to the exact current hierarchical location. */
     forcedEntryIds?: string[];
+    /** Assemble `forcedEntryIds` and NOTHING else: the ordinary scope-based scan is
+     *  not run at all, so no global book, no party/persona/chat-bound book and no
+     *  constant entry can join the result. For a caller whose ids are a person's own
+     *  selection rather than a turn's context — ambient additions there are content
+     *  nobody asked for. Exact player selections bypass automatic token/count
+     *  budgets; the caller must check the completed prompt against model context.
+     *  Omitted keeps the ordinary scan, so every existing caller is unchanged. */
+    forcedEntriesOnly?: boolean;
+    /** Token ceiling for the forced entries alone. Omitted keeps the 2,048-token
+     *  current-location default, which is sized for a location's own lore rather
+     *  than for a caller that hands over a deliberate, player-made selection. */
+    currentLocationTokenBudget?: number;
+    /** Let forced entries skip the probability roll. A caller that resolves ids
+     *  from the world (a location's attached lore) still wants the roll; a caller
+     *  passing a selection a person made by hand does not. Omitted keeps the roll. */
+    ignoreForcedEntryProbability?: boolean;
     tokenBudget?: number;
     enableRecursive?: boolean;
     /** Pre-computed embedding of the chat context for semantic matching. */
@@ -1057,13 +1074,20 @@ export async function processLorebooks(
       }
     : undefined;
 
+  // An exact selection admits its own entries by id and nothing by scope, so the
+  // scope-based book filter is skipped outright rather than narrowed. Narrowing it
+  // would not close the hole: filterRelevantLorebooks admits every global book
+  // BEFORE it consults activeLorebookIds, so an empty list is not a refusal.
+  const forcedEntriesOnly = options?.forcedEntriesOnly === true;
   const allLorebooks = (await storage.list()) as unknown as Lorebook[];
-  const requestedForcedEntryIds = uniqueStrings(options?.forcedEntryIds ?? []).slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
+  const forcedIds = uniqueStrings(options?.forcedEntryIds ?? []);
+  const requestedForcedEntryIds = forcedEntriesOnly ? forcedIds : forcedIds.slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
   let forcedEntries = (await storage.listEligibleEntriesByIds(requestedForcedEntryIds, {
+    unlimited: forcedEntriesOnly,
     excludedLorebookIds: options?.excludedLorebookIds,
     excludedSourceAgentIds: options?.excludedSourceAgentIds,
   })) as unknown as LorebookEntry[];
-  const relevantLorebooks = filterRelevantLorebooks(allLorebooks, filters);
+  const relevantLorebooks = forcedEntriesOnly ? [] : filterRelevantLorebooks(allLorebooks, filters);
   const forcedLorebookIds = new Set(forcedEntries.map((entry) => entry.lorebookId));
   const effectiveLorebooks = Array.from(
     new Map(
@@ -1073,10 +1097,20 @@ export async function processLorebooks(
       ]),
     ).values(),
   );
-  const relevantLorebooksById = new Map(effectiveLorebooks.map((lorebook) => [lorebook.id, lorebook]));
+  const relevantLorebooksById = new Map(
+    effectiveLorebooks.map((lorebook) => [
+      lorebook.id,
+      forcedEntriesOnly ? { ...lorebook, tokenBudget: 0, entryLimit: Number.POSITIVE_INFINITY } : lorebook,
+    ]),
+  );
 
-  // Forced entries bypass normal ownership scope, but share the same active-entry safeguards and budgets.
-  const normallyActiveEntries = (await storage.listActiveEntries(filters)) as unknown as LorebookEntry[];
+  // Forced entries bypass ownership scope while retaining active-entry safeguards.
+  // Under an exact selection there is no ordinary set to merge with: allEntries is
+  // the forced entries alone, which is what keeps unpicked content out of the
+  // keyword scan, out of the recursion pool and out of the budgets below.
+  const normallyActiveEntries = forcedEntriesOnly
+    ? []
+    : ((await storage.listActiveEntries(filters)) as unknown as LorebookEntry[]);
   let allEntries = applyLorebookDefaults(
     Array.from(new Map([...normallyActiveEntries, ...forcedEntries].map((entry) => [entry.id, entry])).values()),
     relevantLorebooksById,
@@ -1138,7 +1172,7 @@ export async function processLorebooks(
     resolveContent = (value) => originalResolver(value, lorebookEntryCounts);
   }
 
-  const tokenBudget = options?.tokenBudget ?? LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET;
+  const tokenBudget = forcedEntriesOnly ? 0 : (options?.tokenBudget ?? LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET);
   const timingStates = toTimingStateMap(options?.entryTimingStates);
   const currentMessageIndex = messages.length;
   const matchingContext = await buildLorebookMatchingContext(
@@ -1180,7 +1214,9 @@ export async function processLorebooks(
   // Determine recursion settings from relevant enabled lorebooks only.
   const recursiveLorebooks = effectiveLorebooks.filter((b: { recursiveScanning: boolean }) => b.recursiveScanning);
   const recursiveLorebookIds = new Set(recursiveLorebooks.map((b) => b.id));
-  const anyRecursive = options?.enableRecursive || recursiveLorebookIds.size > 0;
+  // Exact selections are already activated explicitly. Re-scanning them can
+  // reintroduce constant entries that the selection budget has just excluded.
+  const anyRecursive = !forcedEntriesOnly && (options?.enableRecursive || recursiveLorebookIds.size > 0);
   const maxRecursionDepth =
     recursiveLorebooks.length > 0
       ? recursiveLorebooks.reduce((max: number, b: { maxRecursionDepth?: number }) => {
@@ -1188,21 +1224,39 @@ export async function processLorebooks(
         }, 1)
       : 3;
 
+  // The one place `ignoreProbability` is ever set. It rides a copy of the scan
+  // options so it cannot reach `scanForActivatedEntries` below, and it is off
+  // unless the caller asked — every existing caller keeps its rolls.
+  const forcedEntryScanOpts: ScanOptions = {
+    ...scanOpts,
+    ...(options?.ignoreForcedEntryProbability ? { ignoreProbability: true } : {}),
+  };
   const forcedActivatedEntries: ActivatedEntry[] = forcedEntries
-    .filter((entry) => passesForcedEntryActivationGates(entry, scanOpts))
+    .filter((entry) => passesForcedEntryActivationGates(entry, forcedEntryScanOpts))
     .map((entry) => ({
       entry,
       matchedKeys: ["[current_location]"],
       activationSources: ["current_location"],
       injectionOrder: entry.order,
     }));
-  const locationBudgetResult = applyCurrentLocationLoreBudget(forcedActivatedEntries, relevantLorebooksById);
-  const ordinaryActivatedEntries = scanForActivatedEntries(messages, allEntries, scanOpts);
+  // Undefined keeps the parameter's own CURRENT_LOCATION_LORE_TOKEN_BUDGET default.
+  const locationBudgetResult = applyCurrentLocationLoreBudget(
+    forcedActivatedEntries,
+    relevantLorebooksById,
+    forcedEntriesOnly ? 0 : options?.currentLocationTokenBudget,
+  );
+  // Declined constants must not bypass the location reserve automatically.
+  // Nonconstant entries may still earn an independent ordinary activation.
+  const locationBudgetSkippedIds = new Set(locationBudgetResult.skipped.map((entry) => entry.id));
+  const scannableEntries = allEntries.filter((entry) => !entry.constant || !locationBudgetSkippedIds.has(entry.id));
+  const ordinaryActivatedEntries = forcedEntriesOnly
+    ? []
+    : scanForActivatedEntries(messages, scannableEntries, scanOpts);
   const initialActivatedEntries = mergeActivatedEntries(ordinaryActivatedEntries, locationBudgetResult.selected);
   const baseBudgetResult = anyRecursive
     ? resolveBudgetAndRecursivelyActivateLorebookEntriesWithDiagnostics(
         messages,
-        allEntries,
+        scannableEntries,
         scanOpts,
         maxRecursionDepth,
         relevantLorebooksById,
@@ -1221,7 +1275,12 @@ export async function processLorebooks(
       );
   const budgetResult = {
     ...baseBudgetResult,
-    budgetSkippedEntries: [...locationBudgetResult.skipped, ...baseBudgetResult.budgetSkippedEntries],
+    budgetSkippedEntries: [
+      ...locationBudgetResult.skipped.filter(
+        (entry) => !baseBudgetResult.selected.some((selected) => selected.entry.id === entry.id),
+      ),
+      ...baseBudgetResult.budgetSkippedEntries,
+    ],
   };
   const finalActivated = budgetResult.selected;
 
@@ -1281,6 +1340,7 @@ export async function processLorebooks(
       const semanticScore = readSemanticScore(a.matchedKeys);
       return {
         id: a.entry.id,
+        name: a.entry.name,
         content: a.entry.content,
         activationSources: a.activationSources,
         matchedKeys: a.matchedKeys,

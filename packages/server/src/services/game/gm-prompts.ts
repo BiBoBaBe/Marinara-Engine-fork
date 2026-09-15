@@ -13,6 +13,26 @@ import type {
 import { DEFAULT_GAME_SYSTEM_PROMPT, wrapGameInstructions } from "@marinara-engine/shared";
 import type { CharacterSpriteInfo } from "./sprite.service.js";
 
+/**
+ * The sheet names a one-request dice placeholder can actually resolve this turn (#6215).
+ *
+ * The prompt advertises `[[roll: 1d8+STR]]` only when this carries names, because a name the
+ * chat cannot resolve is refused rather than defaulted to zero: a placeholder's name is only a
+ * modifier source, and defaulting it would add a number nobody asked for to a sentence the
+ * player reads as fact. Advertising a form that fails in the default
+ * configuration, where no game-state snapshot exists and `skills` is therefore null, is
+ * worse than not offering it.
+ *
+ * Names are carried exactly as the sheet spells them, never re-cased, so every name the block
+ * prints is a name the resolver finds.
+ */
+export interface GameSkillModifierView {
+  /** Skill names, as the snapshot's `playerStats.skills` keys spell them. */
+  skills: string[];
+  /** Attribute names in the short sheet spelling: STR, DEX, CON, INT, WIS, CHA. */
+  attributes: string[];
+}
+
 export interface GmPromptContext {
   gameActiveState: GameActiveState;
   storyArc: string | null;
@@ -631,10 +651,34 @@ export function buildGmFormatReminder(
     playerDiceRollSubmitted?: boolean;
     /** Built-in systems an installed experience replaces with its own. Undeclared systems stay built-in. */
     experienceProvidedSystems?: { inventory?: boolean };
+    /** Rendered COMMANDS lines for the verbs an installed experience declares (#5798). They belong
+     *  in this reminder rather than in the system message because the reminder is what the engine
+     *  parses back out of the turn, and because the game system message is rebuilt wholesale by
+     *  `injectGameGmPromptRuntime` — anything spliced into it there would be overwritten. Empty or
+     *  absent (the normal case, and every case today) renders nothing at all. */
+    experienceGmVerbs?: string[];
+    /** One-request dice (#6215): the chat's "Finish rolled turns in one request"
+     *  switch. Off, absent, or anything but `true` renders today's block byte for byte. */
+    oneRequestDice?: boolean;
+    /** The sheet names the placeholder's `+NAME` form can resolve this turn. Without names the
+     *  sheet-modifier sentence is dropped and only flat modifiers are taught. */
+    skillModifiers?: GameSkillModifierView;
+    /** The sighted pool sub-option. Only read while `oneRequestDice` is on. */
+    dicePoolMode?: boolean;
+    /** The rendered pool block, appended after the DICE block while the sub-option is on. The
+     *  block's contents belong to the pool itself, so this builder only places it. */
+    dicePoolBlock?: string;
+    /** Whether `roll_dice` is in the resolved tool set for this turn. The prompt line and the
+     *  attachment are gated on the same fact, so the tool is never attached without being
+     *  described and never described without being attached. */
+    rollDiceToolAttached?: boolean;
   },
 ): string {
   const lines: string[] = [];
   const normalizedLanguage = normalizePromptLanguage(ctx.language);
+  // One-request dice (#6215). Everything this gates is additive: with the switch
+  // off every line below renders exactly the bytes it renders today.
+  const oneRequestDice = ctx.oneRequestDice === true;
 
   const partyNames = normalizePromptTextList(ctx.partyNames);
   const hasParty = partyNames.length > 0;
@@ -757,15 +801,35 @@ export function buildGmFormatReminder(
     `- [choices: "Option A"|"Option B"|"Option C"] - only for explicit player-facing options that require a selection.`,
   );
 
+  // The engine supplies numbers before the GM writes outcome narration.
   if (ctx.playerDiceRollSubmitted) {
     lines.push(
-      `- [skill_check: skill="Skill Name" dc="1-20" rolls="player's d20 result" modifier="situational or player-card modifier" total="roll + modifier" result="critical_success|success|failure|critical_failure" mode="normal" resolution="sum" dice="1d20"] - if the player presented you with a [dice: ...] roll, start the turn with the check tag, use the player's roll as the base, choose the DC fairly (5 trivial, 10 routine under pressure, 15 hard, 20 desperate), and narrate the consequences in the same turn. If using another die or a dice pool, include its exact notation in dice (for example dice="6d10"), set resolution="successes" when counting qualifying dice, and report the count as the total without pretending the pool was added.`,
+      `- [skill_check: skill="Skill Name" dc="1-20" rolls="the player's d20 result"] - use the player's exact die and choose a fair DC (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT write modifier, total or result: the engine applies their character-sheet modifiers.`,
     );
   } else {
     lines.push(
-      `- [skill_check: skill="Skill Name" dc="1-20" rolls="1-20" modifier="situational or player-card modifier" total="roll + modifier" result="critical_success|success|failure|critical_failure" mode="normal" resolution="sum" dice="1d20"] - only when uncertainty or the player's actions should be resolved mechanically. Abandon positivity bias: choose the DC fairly (5 trivial, 10 routine under pressure, 15 hard, 20 desperate), roll honestly, and narrate the consequence in the same turn. If using another die or a dice pool, include its exact notation in dice (for example dice="6d10"), set resolution="successes" when counting qualifying dice, and report the count as the total without pretending the pool was added.`,
+      `- [skill_check: skill="Skill Name" dc="1-20"] - request a d20 check only when uncertainty matters. Choose a fair DC (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT invent rolls, modifier, total or result: the engine supplies the die and character-sheet modifiers.${
+        oneRequestDice
+          ? ` When the outcome splits two ways, add branch="label" to this tag and write the branch block described under DICE.`
+          : ""
+      }`,
     );
   }
+  lines.push(
+    `- [dice: 3d8+2] - request any NdM roll with an optional flat modifier, even without a tools API. The engine rolls it, capped at 100 dice and 1000 sides per die. Never write the numbers yourself.${
+      oneRequestDice
+        ? ` When the number does not fork the prose, write a [[roll: 3d8+2]] placeholder in the sentence instead of this tag and keep writing.`
+        : ""
+    }`,
+    `- For other checks, declare the actual notation: [skill_check: skill="Endurance" dc="12" dice="3d6+2"]. These use the notation's modifier, not d20 character-sheet modifiers. For a pool, declare the per-die threshold and required successes: [skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]. Each die at or above threshold counts once; dc is the number of successes needed. Exploding dice, botches, or other special pool rules are not implemented. Never invent pool results or omit its threshold.`,
+    // The stop-at-the-attempt line is exactly the instruction the second request exists to
+    // serve, so it is dropped while the turn has to finish itself.
+    ...(oneRequestDice
+      ? []
+      : [
+          `- Place unresolved roll requests before any outcome that depends on them. Describe the attempt, then stop. The engine will send the real results back for you to finish this same turn; do not guess success or failure before receiving them.`,
+        ]),
+  );
 
   lines.push(
     ...(ctx.enableQuickTimeEvents === false
@@ -789,6 +853,79 @@ export function buildGmFormatReminder(
     `- [party_change: character="Exact Character Name" change="add|remove"] - only when someone truly joins or leaves the party. Use remove when a party member dies, permanently departs, or is no longer traveling with the player.`,
     `- [session_end: reason="goal achieved|good place to pause"] - only when the current session truly ends.`,
   );
+
+  // Game turns carry the roll_dice tool whether or not the chat has tool use switched on,
+  // so this block is unconditional. It is what stops the GM inventing numbers: without it
+  // the tool is attached and never called.
+  //
+  // With one-request dice on there is usually no tool to call, and the turn has to finish
+  // itself, so the whole block is replaced by the case-by-case rule: which form to write is
+  // a fact about the sentence the GM is about to write, which only the GM knows, so the
+  // choice is made here rather than by the engine.
+  if (oneRequestDice) {
+    const modifierNames = [...(ctx.skillModifiers?.skills ?? []), ...(ctx.skillModifiers?.attributes ?? [])]
+      .map((name) => normalizePromptText(name))
+      .filter((name) => name.length > 0);
+    const dicePoolBlock = normalizePromptText(ctx.dicePoolBlock);
+    const sightedPool = ctx.dicePoolMode === true;
+    lines.push(
+      ``,
+      `DICE:`,
+      `- When an outcome turns on chance, you have three ways to write it. Pick by what the outcome is, not by preference.`,
+      ``,
+      `- IF THE OUTCOME SPLITS TWO WAYS, WRITE A BRANCH BLOCK. Write the check without numbers, then write both halves. The engine rolls, keeps the half the roll selects, and deletes the other before anyone reads the turn. Neither half may contain a command.`,
+      `  [skill_check: skill="Stealth" dc="15" branch="crates"]`,
+      `  [branch: crates]`,
+      `  [on success] The guard's gaze slides over the crates and away. You are past him.`,
+      `  [on failure] A boot scuffs stone. He turns, and his hand is already moving.`,
+      `  [/branch]`,
+      ``,
+      `- IF THE OUTCOME IS ONLY A NUMBER, WRITE A PLACEHOLDER AND KEEP WRITING. Damage, healing, gold, a duration, a count, a distance. The engine rolls it and puts the number in its place, so the sentence reads the same either way.`,
+      `  The axe bites deep for [[roll: 2d6+3]] damage, and the wound burns for [[roll: 1d4]] rounds.`,
+      // Advertised only when the chat can resolve a name. With no game-state snapshot and no
+      // player card sheet there is nothing to resolve, and a form that fails by default is
+      // worse than one that is never offered.
+      ...(modifierNames.length > 0
+        ? [
+            `  To add a character-sheet modifier, write its name and let the engine add it: [[roll: 1d8+STR]]. Never write the modifier's value yourself and never write the die's result yourself. These are the only names that resolve: ${modifierNames.join(", ")}.`,
+          ]
+        : []),
+      `  One placeholder holds one NdM notation, at most one flat number, and at most one sheet name. For two different dice, write two placeholders. Never put a placeholder inside a code block or inside another tag's brackets.`,
+      ``,
+      sightedPool
+        ? `- ONLY IF THE NUMBER ITSELF HAS TO DECIDE BETWEEN THREE OR MORE DIFFERENT OUTCOMES, spend a pool value instead: write the value shown below into the check's rolls= and name its slot with pool=, then narrate what it meant in this same turn.`
+        : `- ONLY IF THE NUMBER ITSELF HAS TO DECIDE BETWEEN THREE OR MORE DIFFERENT OUTCOMES, ask for the value instead: write [skill_check: skill="Skill Name" dc="1-20"] or [dice: 3d8+2] and stop at the attempt. The engine rolls it and records it. Narrate what it meant at the start of your next turn.`,
+      ``,
+      `- A check you write in none of these forms is rolled by the engine and recorded, and this turn ends without its outcome; narrate what the number meant at the start of your next turn.`,
+      ``,
+      `- Never invent a die result, a modifier, a total, or an outcome. Never write both a branch block and a placeholder for the same check.`,
+      // Gated on the resolved tool set rather than on the chat's tool list, which is the fact
+      // that actually decides whether the tool is offered.
+      ...(ctx.rollDiceToolAttached
+        ? [
+            `- You also have roll_dice on this connection. Prefer the forms above: a tool call costs an extra round. Use the tool only for a roll none of them can serve.`,
+          ]
+        : []),
+      ...(sightedPool && dicePoolBlock ? [``, dicePoolBlock] : []),
+    );
+  } else {
+    lines.push(
+      ``,
+      `DICE:`,
+      `- roll_dice is a real die you can throw. Call it the moment you need an actual number before you can keep writing - an attack, a save, damage, a random outcome the scene then reacts to - passing the notation (for example "1d20+3") and a short reason.`,
+      `- Never invent a die result. Wait for the number the tool gives you, then narrate what it means, once, in this same turn.`,
+      `- If roll_dice has already returned a skill check's roll, override the sparse-check instructions above: write a complete [skill_check: skill="Skill Name" dc="chosen DC" rolls="actual tool rolls joined with |" modifier="tool modifier" total="tool total" result="critical_success|success|failure|critical_failure" resolution="sum" dice="tool notation"] record using that result. Do not request another engine roll or stop at the attempt; narrate its consequence in this same turn. Use the sparse form only when no roll result is available.`,
+      ctx.playerDiceRollSubmitted
+        ? `- The player already threw for this turn. Use their roll rather than calling the tool again for the same action.`
+        : `- A skill check is still written down with the [skill_check: ...] tag above. roll_dice is how you get a number your narration needs in hand; it does not replace that record.`,
+      `- If the tool is not available to you on this connection, work from the tag alone and say nothing about tools.`,
+    );
+  }
+
+  // The installed experience's own verbs, last in the block so the built-ins keep their order. Each
+  // line already arrives fully rendered from the verb runtime; nothing here inspects or reformats it.
+  const experienceGmVerbs = normalizePromptTextList(ctx.experienceGmVerbs);
+  if (experienceGmVerbs.length > 0) lines.push(...experienceGmVerbs);
 
   if (ctx.gameActiveState === "combat") {
     lines.push(

@@ -20,6 +20,11 @@ import {
   mergeNegativePrompt,
   mergePromptPrefix,
   inferImageSource,
+  isOpenAIGptImageModel,
+  isOpenAIGptImage2Model,
+  isOpenAIGptImage25Model,
+  supportsOpenAITransparentBackground,
+  resolveOpenAIImageQuality,
   type Automatic1111Defaults,
   type ComfyUiDefaults,
   type ImageGenerationDefaultsProfile,
@@ -27,6 +32,11 @@ import {
   type NovelAiDefaults,
   type SceneIllustrationCharacterPrompt,
 } from "@marinara-engine/shared";
+import {
+  isNativeNovelAiHost,
+  resolveNovelAiCharacterPromptLimit,
+  supportsNovelAiCharacterPrompts,
+} from "./character-prompts.js";
 import { isImageLocalUrlsEnabled } from "../../config/runtime-config.js";
 import { runMediaGenerationRequest } from "./image-generation-queue.js";
 import { generateRunPodComfyUI } from "./runpod-comfyui.service.js";
@@ -115,7 +125,7 @@ export interface ImageGenRequest {
   imageEndpointId?: string;
   /** Optional ComfyUI workflow JSON. Placeholders like %prompt%, %width%, %height%, %seed% will be replaced. */
   comfyWorkflow?: string;
-  /** Optional connection-scoped defaults for local Stable Diffusion backends. */
+  /** Optional connection-scoped generation defaults and API request parameters. */
   imageDefaults?: ImageGenerationDefaultsProfile | null;
   /** Allow this explicit image-generation connection to call local/private URLs. */
   allowLocalUrls?: boolean;
@@ -291,6 +301,13 @@ async function generateImageUncapped(
 ): Promise<ImageGenResult> {
   const resolvedSource = resolveImageBackend(source, baseUrl, serviceHint, request.model);
   const normalizedBaseUrl = normalizeImageUrl(baseUrl);
+  // Providers without native captions still need the identities and current outfits
+  // the prompt writer put there, including when a NovelAI request falls back.
+  const flattenedPrompt =
+    request.characterPrompts?.length &&
+    !(resolvedSource === "novelai" && supportsNovelAiCharacterPrompts({ baseUrl, model: request.model }))
+      ? [request.prompt, ...request.characterPrompts.map((entry) => `${entry.name}: ${entry.prompt}`)].join("\n\n")
+      : undefined;
   const generationTimeoutMs =
     resolvedSource === "comfyui" || resolvedSource === "swarmui" || resolvedSource === "runpod_comfyui"
       ? resolveComfyUiImageGenerationTimeoutMs()
@@ -310,6 +327,8 @@ async function generateImageUncapped(
           request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
         const scopedRequest = {
           ...request,
+          prompt: flattenedPrompt ?? request.prompt,
+          characterPrompts: flattenedPrompt ? undefined : request.characterPrompts,
           fallback: undefined,
           signal,
           allowLocalUrls,
@@ -377,7 +396,9 @@ async function generateImageUncapped(
       physicalRequest,
     );
     outcome = "completed";
-    return primaryResult;
+    return flattenedPrompt
+      ? { ...primaryResult, effectivePrompt: primaryResult.effectivePrompt ?? flattenedPrompt }
+      : primaryResult;
   } catch (error) {
     const fallback = request.fallback;
     if (!fallback || request.signal?.aborted || isConnectionAdmissionFailure(error)) throw error;
@@ -679,7 +700,12 @@ function imageFetch(url: string | URL, init?: RequestInit, options: ImageFetchOp
       allowedProtocols: ["https:", "http:"],
       flagName: "IMAGE_LOCAL_URLS_ENABLED",
     },
-    agentOptions: options.agentOptions,
+    // The request deadline must not be cut short by Undici's five-minute idle timeout.
+    agentOptions: {
+      headersTimeout: IMAGE_GEN_TIMEOUT,
+      bodyTimeout: IMAGE_GEN_TIMEOUT,
+      ...options.agentOptions,
+    },
     keepAliveInitialDelayMs: options.keepAliveInitialDelayMs,
     maxResponseBytes: MAX_IMAGE_RESPONSE_BYTES,
     decodeCompressedResponse: true,
@@ -691,26 +717,12 @@ function localImageBackendFetch(
   init?: RequestInit,
   options: { timeoutMs?: number; keepAliveInitialDelayMs?: number } = {},
 ) {
+  const timeoutMs = options.timeoutMs ?? resolveComfyUiImageGenerationTimeoutMs();
   return imageFetch(url, init, {
     allowLocal: true,
-    agentOptions: options.timeoutMs ? { bodyTimeout: options.timeoutMs, headersTimeout: options.timeoutMs } : undefined,
+    agentOptions: { bodyTimeout: timeoutMs, headersTimeout: timeoutMs },
     keepAliveInitialDelayMs: options.keepAliveInitialDelayMs,
   });
-}
-
-function isOpenAIGptImageModel(model?: string): boolean {
-  return !!model && /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(model.trim());
-}
-
-function isOpenAIGptImage2Model(model?: string): boolean {
-  return !!model && /^gpt-image-2(?:$|-)/i.test(model.trim());
-}
-
-function supportsOpenAITransparentBackground(model?: string): boolean {
-  const m = model?.trim().toLowerCase() ?? "";
-  // OpenAI documents transparent backgrounds for GPT Image output generally,
-  // but explicitly excludes GPT Image 2 from background: "transparent".
-  return /^gpt-image-(?:1|1\.5)(?:$|-)/i.test(m);
 }
 
 const OPENAI_GPT_IMAGE_2_MIN_PIXELS = 1024 * 1024;
@@ -730,6 +742,36 @@ function openAIGptImage2Size(width: number, height: number): string {
   return `${scaledWidth}x${scaledHeight}`;
 }
 
+function openAIGptImage25Size(width: number, height: number): string {
+  // https://developers.openai.com/api/docs/guides/image-generation#size-and-quality-options
+  const minPixels = 655_360;
+  const maxPixels = 8_294_400;
+  const maxEdge = 3840;
+  width = Number.isFinite(width) && width > 0 ? width : 1024;
+  height = Number.isFinite(height) && height > 0 ? height : 1024;
+  const ratio = Math.max(1 / 3, Math.min(3, width / height));
+  if (
+    width % 16 === 0 &&
+    height % 16 === 0 &&
+    width <= maxEdge &&
+    height <= maxEdge &&
+    width / height === ratio &&
+    width * height >= minPixels &&
+    width * height <= maxPixels
+  )
+    return `${width}x${height}`;
+
+  const pixels = Math.max(minPixels, Math.min(width * height, maxPixels, maxEdge ** 2 / Math.max(ratio, 1 / ratio)));
+  let outputWidth = Math.min(maxEdge, roundUpToMultiple(Math.sqrt(pixels * ratio), 16));
+  let outputHeight = Math.min(maxEdge, roundUpToMultiple(Math.sqrt(pixels / ratio), 16));
+  // Rounding up can cross the total-pixel ceiling by one row or column.
+  while (outputWidth * outputHeight > maxPixels) {
+    if (outputWidth >= outputHeight) outputWidth -= 16;
+    else outputHeight -= 16;
+  }
+  return `${outputWidth}x${outputHeight}`;
+}
+
 function openAIImageSize(request: ImageGenRequest): string {
   const width = request.width ?? 1024;
   const height = request.height ?? 1024;
@@ -747,9 +789,11 @@ function openAIImageSize(request: ImageGenRequest): string {
     return "1024x1024";
   }
 
+  if (isOpenAIGptImage25Model(model)) return openAIGptImage25Size(width, height);
   if (isOpenAIGptImage2Model(model)) {
     return openAIGptImage2Size(width, height);
   }
+  if (model && !isOpenAIGptImageModel(model)) return requested;
 
   // GPT Image models reject small custom dimensions such as 1024x576.
   // Use the closest supported canvas and let callers crop/resize if needed.
@@ -1105,6 +1149,107 @@ function openAITextPrompt(request: ImageGenRequest): string {
   return `${prompt}\n\nDo not include: ${negativePrompt}.`;
 }
 
+async function fetchImageWithSizeFallback(
+  url: string,
+  apiKey: string,
+  requestBody: string,
+  request: ImageGenRequest,
+): Promise<Response> {
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: requestBody,
+    signal: imageRequestSignal(request),
+  };
+  const policy = { allowLocal: request.allowLocalUrls };
+  const response = await imageFetch(url, init, policy);
+  if (response.status !== 400) return response;
+
+  const error = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as { message?: unknown; error?: { message?: unknown } } | null;
+  const message = error?.message ?? error?.error?.message;
+  // ponytail: only explicit FLUX.2 validation bounds are understood here. Extend this
+  // when another provider needs it; advertised NanoGPT limits can exceed its backend's.
+  if (typeof message !== "string" || !/validation errors? for Flux2/i.test(message)) return response;
+  const body = JSON.parse(requestBody) as Record<string, unknown>;
+  const size = typeof body.size === "string" ? /^(\d+)x(\d+)$/.exec(body.size) : null;
+  if (!size) return response;
+  const width = Number(size[1]);
+  const height = Number(size[2]);
+  let scale = 1;
+  for (const match of message.matchAll(
+    /\b(width|height)\s*\n\s*Input should be less than or equal to (\d+) \[type=less_than_equal/g,
+  )) {
+    scale = Math.min(scale, Number(match[2]) / (match[1] === "width" ? width : height));
+  }
+  if (!Number.isFinite(scale) || scale <= 0 || scale >= 1) return response;
+  // FLUX.2 accepts multiples of 16 with a minimum dimension of 64. Keep the shape.
+  const nextWidth = Math.floor((width * scale) / 16) * 16;
+  const nextHeight = Math.floor((height * scale) / 16) * 16;
+  if (nextWidth < 64 || nextHeight < 64) return response;
+  const nextSize = `${nextWidth}x${nextHeight}`;
+  logger.warn("[image-gen] Retrying rejected FLUX.2 size %s as %s", body.size, nextSize);
+  // One retry after a validation rejection, on the same endpoint and deadline.
+  return imageFetch(url, { ...init, body: JSON.stringify({ ...body, size: nextSize }) }, policy);
+}
+
+/** Format only the log copy; provider payloads and prompt text remain untouched. */
+function imagePayloadForLog(payload: unknown): string {
+  return JSON.stringify(
+    payload,
+    (key, value: unknown) => {
+      const normalizedKey = key.replace(/[_-]/g, "");
+      // Keep diagnostic token limits/counts, while hiding actual token credentials.
+      if (/(secret|password|apikey|authorization|cookie|credential|token$)/i.test(normalizedKey)) {
+        return "[REDACTED]";
+      }
+      if (value instanceof Blob) return `[file: ${value.type || "unknown"}, ${value.size} bytes]`;
+      if (typeof value !== "string" || /prompt|^(?:text|content)$/i.test(key)) return value;
+      const trimmed = value.trim();
+      const mediaType = /^data:([^;,]+)/i.exec(trimmed)?.[1] ?? detectImageMimeType(trimmed);
+      if (mediaType) return `[redacted ${mediaType}: ${trimmed.length} encoded characters]`;
+      // Form fields and ComfyUI workflows can contain serialized objects with the same secrets.
+      if (/^[{[]/.test(trimmed)) {
+        try {
+          return JSON.parse(trimmed) as unknown;
+        } catch {
+          // Ordinary non-JSON parameter text remains useful in diagnostics.
+        }
+      }
+      return value;
+    },
+    2,
+  );
+}
+
+function withImageCustomParameters(request: ImageGenRequest, body: Record<string, unknown>): Record<string, unknown> {
+  const custom = request.imageDefaults?.customParameters;
+  if (!custom || !Object.keys(custom).length) return body;
+  // Request-body fields only: never spread these into fetch options or headers.
+  const merged = { ...body, ...custom };
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image] final custom request payload:\n%s",
+    imagePayloadForLog(merged),
+  );
+  return merged;
+}
+
+function applyImageCustomFormParameters(request: ImageGenRequest, body: FormData): void {
+  const custom = request.imageDefaults?.customParameters;
+  if (!custom || !Object.keys(custom).length) return;
+  for (const [key, value] of Object.entries(custom)) {
+    body.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image] final custom form payload:\n%s",
+    imagePayloadForLog([...body.entries()].map(([key, value]) => ({ [key]: value }))),
+  );
+}
+
 async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const usesGptImageApi = isOpenAIGptImageModel(request.model);
   const references = openAIReferenceImages(request);
@@ -1116,7 +1261,7 @@ async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGen
     formData.append("n", "1");
     formData.append("size", openAIImageSize(request));
     formData.append("output_format", "png");
-    if (request.quality) formData.append("quality", request.quality);
+    if (request.quality) formData.append("quality", resolveOpenAIImageQuality(request.quality, request.model));
     if (request.transparentBackground && supportsOpenAITransparentBackground(request.model)) {
       formData.append("background", "transparent");
     }
@@ -1131,6 +1276,7 @@ async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGen
       );
     });
 
+    applyImageCustomFormParameters(request, formData);
     const resp = await imageFetch(
       openAIImagesUrl(baseUrl, "edits"),
       {
@@ -1158,7 +1304,7 @@ async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGen
     // GPT Image models return base64 image data from the Images API without the
     // legacy DALL-E `response_format` toggle. `output_format` controls PNG/JPEG/WebP.
     body.output_format = "png";
-    if (request.quality) body.quality = request.quality;
+    if (request.quality) body.quality = resolveOpenAIImageQuality(request.quality, request.model);
     if (request.transparentBackground && supportsOpenAITransparentBackground(request.model)) {
       body.background = "transparent";
     }
@@ -1166,18 +1312,11 @@ async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGen
     body.response_format = "b64_json";
   }
 
-  const resp = await imageFetch(
+  const resp = await fetchImageWithSizeFallback(
     url,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: imageRequestSignal(request),
-    },
-    { allowLocal: request.allowLocalUrls },
+    apiKey,
+    JSON.stringify(withImageCustomParameters(request, body)),
+    request,
   );
 
   return readOpenAIImageResult(resp, request, "generation");
@@ -1195,10 +1334,14 @@ function nanoGPTReferenceImages(request: ImageGenRequest): string[] {
   return openAIReferenceImages(request).slice(0, NANOGPT_REFERENCE_IMAGE_LIMIT);
 }
 
-function serializeNanoGPTImageRequest(body: Record<string, unknown>, references: string[]): string {
+function serializeNanoGPTImageRequest(
+  body: Record<string, unknown>,
+  references: string[],
+  customParameters?: Record<string, unknown>,
+): string {
   const dataUrls = references.map(imageDataUrlFromReference);
   const selected: string[] = [];
-  let serialized = JSON.stringify(body);
+  let serialized = JSON.stringify({ ...body, ...customParameters });
 
   for (const dataUrl of dataUrls) {
     const candidateReferences = [...selected, dataUrl];
@@ -1207,6 +1350,7 @@ function serializeNanoGPTImageRequest(body: Record<string, unknown>, references:
       ...(candidateReferences.length === 1
         ? { imageDataUrl: candidateReferences[0] }
         : { imageDataUrls: candidateReferences }),
+      ...customParameters,
     };
     const candidateSerialized = JSON.stringify(candidate);
     if (Buffer.byteLength(candidateSerialized, "utf8") > NANOGPT_MAX_REQUEST_BYTES) continue;
@@ -1265,7 +1409,7 @@ async function generateXAI(baseUrl: string, apiKey: string, request: ImageGenReq
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withImageCustomParameters(request, body)),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -1286,11 +1430,11 @@ async function generateXAI(baseUrl: string, apiKey: string, request: ImageGenReq
 }
 
 async function generateVenice(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
-  const body = buildVeniceImageRequest(request);
+  const body = withImageCustomParameters(request, buildVeniceImageRequest(request));
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/venice] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildVeniceApiUrl(baseUrl, "image/generate"),
@@ -1321,11 +1465,11 @@ async function generateVenice(baseUrl: string, apiKey: string, request: ImageGen
 }
 
 async function generateZai(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
-  const body = buildZaiImageRequest(request);
+  const body = withImageCustomParameters(request, buildZaiImageRequest(request));
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/zai] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildZaiImageUrl(baseUrl),
@@ -1361,17 +1505,20 @@ async function generateAtlasCloudImage(
   request: ImageGenRequest,
 ): Promise<ImageGenResult> {
   const reference = openAIReferenceImages(request)[0];
-  const body = buildAtlasCloudImageRequest({
-    model: request.model ?? "",
-    prompt: request.prompt,
-    width: request.width,
-    height: request.height,
-    referenceImageDataUrl: reference ? imageDataUrlFromReference(reference) : undefined,
-  });
+  const body = withImageCustomParameters(
+    request,
+    buildAtlasCloudImageRequest({
+      model: request.model ?? "",
+      prompt: request.prompt,
+      width: request.width,
+      height: request.height,
+      referenceImageDataUrl: reference ? imageDataUrlFromReference(reference) : undefined,
+    }),
+  );
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/atlas-cloud] final request payload:\n%s",
-    JSON.stringify(body, null, 2),
+    imagePayloadForLog(body),
   );
   const outputUrl = await runAtlasCloudPrediction({
     baseUrl,
@@ -1385,9 +1532,15 @@ async function generateAtlasCloudImage(
 
 async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const url = nanoGPTImagesUrl(baseUrl);
+  const width = request.width ?? 1024;
+  const height = request.height ?? 1024;
+  const model = request.model?.trim().toLowerCase() ?? "";
+  const isNanoBanana = model.includes("nano-banana");
   const size = isOpenAIGptImageModel(request.model)
     ? openAIImageSize(request)
-    : `${request.width ?? 1024}x${request.height ?? 1024}`;
+    : isNanoBanana && height > width
+      ? "768x1344"
+      : `${width}x${height}`;
   const body: Record<string, unknown> = {
     prompt: request.prompt,
     n: 1,
@@ -1401,21 +1554,14 @@ async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGe
   if (request.model?.toLowerCase().includes("flux-kontext")) {
     body.kontext_max_mode = true;
   }
-  const requestBody = serializeNanoGPTImageRequest(body, references);
-
-  const resp = await imageFetch(
-    url,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: requestBody,
-      signal: imageRequestSignal(request),
-    },
-    { allowLocal: request.allowLocalUrls },
+  const requestBody = serializeNanoGPTImageRequest(body, references, request.imageDefaults?.customParameters);
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/nanogpt] final request payload:\n%s",
+    imagePayloadForLog(requestBody),
   );
+
+  const resp = await fetchImageWithSizeFallback(url, apiKey, requestBody, request);
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "Unknown error");
@@ -1534,7 +1680,7 @@ async function generateHorde(baseUrl: string, apiKey: string, request: ImageGenR
     {
       method: "POST",
       headers: hordeHeaders(apiKey),
-      body: JSON.stringify(body),
+      body: JSON.stringify(withImageCustomParameters(request, body)),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -1726,6 +1872,7 @@ async function generateStability(baseUrl: string, apiKey: string, request: Image
     formData.append("mode", "image-to-image");
   }
   formData.append("output_format", "png");
+  applyImageCustomFormParameters(request, formData);
 
   const resp = await imageFetch(
     endpoint.url,
@@ -1776,7 +1923,7 @@ async function generateStabilityV1(baseUrl: string, apiKey: string, request: Ima
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withImageCustomParameters(request, body)),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -1814,7 +1961,7 @@ async function generateTogetherAI(baseUrl: string, apiKey: string, request: Imag
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withImageCustomParameters(request, body)),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -1882,12 +2029,12 @@ export function buildArliImageRequest(request: ImageGenRequest): Record<string, 
 
 async function generateArli(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   if (!apiKey.trim()) throw new Error("Arli.ai image generation requires an API key");
-  const body = buildArliImageRequest(request);
+  const body = withImageCustomParameters(request, buildArliImageRequest(request));
   const useImg2Img = Array.isArray(body.init_images);
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/arli] final request payload:\n%s",
-    JSON.stringify({ ...body, ...(useImg2Img ? { init_images: "[1 reference image]" } : {}) }, null, 2),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     buildArliImageUrl(baseUrl, useImg2Img ? "img2img" : "txt2img"),
@@ -1925,7 +2072,6 @@ const NOVELAI_SIZE_MULTIPLE = 64;
 const NOVELAI_MIN_DIMENSION = 64;
 const NOVELAI_MAX_DIMENSION = 2048;
 const NOVELAI_MAX_PIXELS = 1024 * 1024;
-const NOVELAI_MAX_CHARACTER_PROMPTS = 6;
 const NOVELAI_REFERENCE_MAX_INPUT_PIXELS = 32_000_000;
 const NOVELAI_DIRECTOR_REFERENCE_SIZES = [
   { width: 1024, height: 1536 },
@@ -2180,7 +2326,7 @@ function prepareNovelAiCharacterPrompts(
 ): PreparedNovelAiCharacterPrompt[] {
   const candidates = (prompts ?? [])
     .filter((entry) => entry && typeof entry.prompt === "string" && entry.prompt.trim().length > 0)
-    .slice(0, NOVELAI_MAX_CHARACTER_PROMPTS);
+    .slice(0, resolveNovelAiCharacterPromptLimit(model));
 
   return candidates
     .map((entry, index) => {
@@ -2227,11 +2373,15 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
   // Only use the native NovelAI API format when hitting the actual NovelAI domain.
   // Proxies (linkapi.ai, etc.) expose OpenAI-compatible chat completions that return
   // image URLs in markdown format (![image](url)).
-  const isNativeNovelAI = baseUrl.toLowerCase().includes("novelai.net");
+  const nativeUrl = new URL(baseUrl);
+  const isNativeNovelAI = isNativeNovelAiHost(nativeUrl.hostname);
   if (!isNativeNovelAI) {
     return generateViaChatCompletions(baseUrl, apiKey, request);
   }
 
+  if (nativeUrl.protocol !== "https:") {
+    throw new Error("Native NovelAI image connections require HTTPS.");
+  }
   const url = `${baseUrl.replace(/\/+$/, "")}/ai/generate-image`;
   const model = request.model || "nai-diffusion-4-5-full";
   const isV4 = isNovelAiV4Model(model);
@@ -2255,11 +2405,18 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
   const characterReferenceImages = collectNovelAiReferenceImages(request)
     .filter((reference) => reference !== styleReferenceImage)
     .slice(0, styleReferenceImage ? 15 : 16);
-  const referenceImages = styleReferenceImage
+  let referenceImages = styleReferenceImage
     ? [styleReferenceImage, ...characterReferenceImages]
     : characterReferenceImages;
   if (referenceImages.length > 0 && !isNovelAiPreciseReferenceModel(model)) {
-    throw new Error("NovelAI precise reference images require a V4.5 model such as nai-diffusion-4-5-full.");
+    // NovelAI only ships Precise Reference on V4.5; V5 support is still pending upstream.
+    // Render without the references rather than failing the whole illustration.
+    logger.warn(
+      "[novelai] Dropping %d reference image(s): precise reference requires a V4.5 model, got %s",
+      referenceImages.length,
+      model,
+    );
+    referenceImages = [];
   }
   const directorReferenceImages = await prepareNovelAiDirectorReferenceImages(referenceImages);
   const characterPromptPayload = buildNovelAiV4CharacterPromptPayload(request.characterPrompts, model);
@@ -2317,13 +2474,13 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
     );
   }
 
-  const body: Record<string, unknown> = {
+  const body = withImageCustomParameters(request, {
     input: prompt,
     model,
     action: "generate",
     parameters,
     use_new_shared_trial: true,
-  };
+  });
   const metadataBody = cloneNovelAiRequestForMetadata(body);
 
   const hasReferences = directorReferenceImages.length > 0;
@@ -2338,7 +2495,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
       body: hasReferences ? buildNovelAiReferenceFormData(body, directorReferenceImages) : JSON.stringify(body),
       signal: imageRequestSignal(request),
     },
-    { allowLocal: request.allowLocalUrls },
+    { allowLocal: request.allowLocalUrls, allowedOrigins: [nativeUrl.origin] },
   );
 
   if (!resp.ok) {
@@ -2608,23 +2765,50 @@ function openRouterAspectRatio(width?: number, height?: number): string | null {
   )[0];
 }
 
+function isOpenRouterNanoBananaModel(model: string): boolean {
+  const lower = model.trim().toLowerCase();
+  return lower.includes("nano-banana") || /^google\/gemini-(?:2\.5-flash-image|3(?:\.1)?-.*-image)/u.test(lower);
+}
+
+function isOpenRouterGptImageModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("openai/gpt-image-");
+}
+
+function openRouterImageAspectRatio(model: string | undefined, width?: number, height?: number): string | null {
+  const normalizedModel = model?.trim() ?? "";
+  if (isOpenRouterNanoBananaModel(normalizedModel) && (width ?? 1024) < (height ?? 1024)) return "9:16";
+  if (isOpenRouterGptImageModel(normalizedModel)) {
+    const resolvedWidth = width ?? 1024;
+    const resolvedHeight = height ?? 1024;
+    const ratio = resolvedWidth / Math.max(1, resolvedHeight);
+    return ratio >= 1.2 ? "3:2" : ratio <= 0.8 ? "2:3" : "1:1";
+  }
+  return openRouterAspectRatio(width, height);
+}
+
+/**
+ * OpenRouter only routes to endpoints that emit every requested modality, and
+ * most of its image models return image only. Default to image-only; opt in to
+ * text for the few families that also return it.
+ */
 export function openRouterModalities(model?: string): string[] {
   const lower = model?.trim().toLowerCase() ?? "";
-  if (
-    lower.startsWith("black-forest-labs/") ||
-    lower.startsWith("sourceful/") ||
-    lower.startsWith("recraft/") ||
-    lower.startsWith("krea/") ||
-    lower.startsWith("bytedance-seed/seedream-")
-  ) {
-    return ["image"];
-  }
-  return ["image", "text"];
+  const emitsText =
+    /^google\/gemini-.*-image/.test(lower) ||
+    /^openai\/gpt-5.*-image/.test(lower) ||
+    lower.startsWith("openrouter/auto");
+  return emitsText ? ["image", "text"] : ["image"];
 }
 
 export function usesOpenRouterImagesApi(model?: string): boolean {
-  const lower = model?.trim().toLowerCase() ?? "";
-  return lower.startsWith("krea/") || lower.startsWith("bytedance-seed/seedream-");
+  const lower = normalizeOpenRouterImagesApiModel(model)?.toLowerCase() ?? "";
+  return (
+    lower.startsWith("krea/") ||
+    lower.startsWith("bytedance-seed/seedream-") ||
+    lower.startsWith("openai/gpt-image-") ||
+    lower === "qwen/qwen-image-3" ||
+    lower === "meta/muse-image"
+  );
 }
 
 export function openRouterImagesUrl(baseUrl: string): string {
@@ -2646,24 +2830,43 @@ export function openRouterImagesUrl(baseUrl: string): string {
   }
 }
 
+function normalizeOpenRouterImagesApiModel(model?: string): string | undefined {
+  const trimmed = model?.trim();
+  if (!trimmed) return undefined;
+  return /^gpt-image-/i.test(trimmed) ? `openai/${trimmed.toLowerCase()}` : trimmed;
+}
+
 export function buildOpenRouterImagesRequest(request: ImageGenRequest): Record<string, unknown> {
   const prompt = request.negativePrompt
     ? `${request.prompt}\n\nAvoid in the image: ${request.negativePrompt}`
     : request.prompt;
+  const model = normalizeOpenRouterImagesApiModel(request.model) ?? "krea/krea-2-medium";
+  const isGptImage = isOpenRouterGptImageModel(model);
   const body: Record<string, unknown> = {
-    model: request.model || "krea/krea-2-medium",
+    model,
     prompt,
-    resolution: "1K",
+    ...(isGptImage ? {} : { resolution: "1K" }),
   };
-  const aspectRatio = openRouterAspectRatio(request.width, request.height);
+  if (isGptImage) {
+    if (request.quality) body.quality = resolveOpenAIImageQuality(request.quality, model);
+    if (request.transparentBackground) body.background = "transparent";
+  }
+  const aspectRatio = openRouterImageAspectRatio(model, request.width, request.height);
   if (aspectRatio) body.aspect_ratio = aspectRatio;
 
   const references = request.referenceImages ?? (request.referenceImage ? [request.referenceImage] : []);
   if (references.length > 0) {
-    body.input_references = references.slice(0, 1).map((reference) => ({
-      type: "image_url",
-      image_url: { url: imageDataUrlFromReference(reference) },
-    }));
+    const maxReferences = isGptImage ? 16 : 1;
+    const maxReferenceBytes = 64 * 1024 * 1024;
+    let referenceBytes = 0;
+    body.input_references = references.slice(0, maxReferences).flatMap((reference) => {
+      const trimmed = reference.trim();
+      const base64 = trimmed.startsWith("data:") ? trimmed.slice(trimmed.indexOf(",") + 1) : trimmed;
+      const decodedBytes = Buffer.byteLength(base64.replace(/\s+/g, ""), "base64");
+      if (referenceBytes + decodedBytes > maxReferenceBytes) return [];
+      referenceBytes += decodedBytes;
+      return [{ type: "image_url", image_url: { url: imageDataUrlFromReference(reference) } }];
+    });
   }
   return body;
 }
@@ -2673,20 +2876,11 @@ async function generateOpenRouterImageApi(
   apiKey: string,
   request: ImageGenRequest,
 ): Promise<ImageGenResult> {
-  const body = buildOpenRouterImagesRequest(request);
+  const body = withImageCustomParameters(request, buildOpenRouterImagesRequest(request));
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/openrouter-images] final request payload:\n%s",
-    JSON.stringify(
-      {
-        ...body,
-        ...(Array.isArray(body.input_references)
-          ? { input_references: `[${body.input_references.length} reference image(s)]` }
-          : {}),
-      },
-      null,
-      2,
-    ),
+    imagePayloadForLog(body),
   );
   const resp = await imageFetch(
     openRouterImagesUrl(baseUrl),
@@ -2725,13 +2919,14 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
     return generateOpenRouterImageApi(baseUrl, apiKey, request);
   }
 
+  const model = request.model?.trim() || "google/gemini-2.5-flash-image";
   const body: Record<string, unknown> = {
-    model: request.model || "google/gemini-2.5-flash-image",
+    model,
     messages: [{ role: "user", content: buildChatImageMessageContent(request) }],
-    modalities: openRouterModalities(request.model),
+    modalities: openRouterModalities(model),
     stream: false,
   };
-  const aspectRatio = openRouterAspectRatio(request.width, request.height);
+  const aspectRatio = openRouterImageAspectRatio(model, request.width, request.height);
   if (aspectRatio) body.image_config = { aspect_ratio: aspectRatio };
 
   const resp = await imageFetch(
@@ -2742,7 +2937,7 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withImageCustomParameters(request, body)),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -2750,6 +2945,14 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "Unknown error");
+    // Only retry an explicit endpoint rejection, never a generation/auth/rate-limit failure.
+    if (
+      (resp.status === 400 || resp.status === 404) &&
+      /image generation model.*cannot be used with.*chat\/completions/is.test(errText) &&
+      errText.includes("/api/v1/images")
+    ) {
+      return generateOpenRouterImageApi(baseUrl, apiKey, request);
+    }
     throw new Error(`OpenRouter image generation failed (${resp.status}): ${sanitizeErrorText(errText)}`);
   }
 
@@ -2841,12 +3044,14 @@ async function generateViaChatCompletions(
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: request.model || "nai-diffusion-4-5-full",
-        messages: [{ role: "user", content: messageContent }],
-        stream: false,
-        temperature: 0.7,
-      }),
+      body: JSON.stringify(
+        withImageCustomParameters(request, {
+          model: request.model || "nai-diffusion-4-5-full",
+          messages: [{ role: "user", content: messageContent }],
+          stream: false,
+          temperature: 0.7,
+        }),
+      ),
       signal: imageRequestSignal(request),
     },
     { allowLocal: request.allowLocalUrls },
@@ -3500,7 +3705,7 @@ async function generateSwarmUI(baseUrl: string, apiKey: string, request: ImageGe
   logDebugOverride(
     request.debugMode === true,
     "[debug/image/swarmui] final request payload:\n%s",
-    JSON.stringify(debugBody, null, 2),
+    imagePayloadForLog(debugBody),
   );
   const imageReference = await generateSwarmUiImageReference(base, apiKey, body, imageRequestSignal(request));
   if (imageReference.startsWith("data:")) return decodeImageDataUrl(imageReference);

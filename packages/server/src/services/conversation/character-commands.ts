@@ -214,6 +214,7 @@ export interface CreatePersonaCommand {
 export interface CreateCharacterCommand {
   type: "create_character";
   name: string;
+  summary?: string;
   description?: string;
   personality?: string;
   firstMessage?: string;
@@ -240,6 +241,7 @@ export interface CreateCharacterCommand {
 export interface UpdateCharacterCommand {
   type: "update_character";
   name: string;
+  summary?: string;
   description?: string;
   personality?: string;
   firstMessage?: string;
@@ -550,7 +552,7 @@ const QUOTE_PAIRS: Record<string, string> = {
   "\u2019": "\u2019",
 };
 
-function parseQuotedParam(params: string, key: string, allowEmpty = false): string | undefined {
+export function parseQuotedParam(params: string, key: string, allowEmpty = false): string | undefined {
   const match = params.match(new RegExp(`${key}\\s*=\\s*(["\u201c\u201d\u2018\u2019])`));
   if (!match || match.index === undefined) return undefined;
 
@@ -1087,6 +1089,7 @@ function applyCommonCharacterFields(
   };
 
   assignText("description", "description");
+  assignText("summary", "summary");
   assignText("personality", "personality");
   assignText("firstMessage", "first_message");
   assignText("scenario", "scenario");

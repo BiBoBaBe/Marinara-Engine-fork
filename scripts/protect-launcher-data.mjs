@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { chmod, cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { parseEnv } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const serverRoot = resolve(repositoryRoot, "packages/server");
 const defaultBackupRoot = resolve(repositoryRoot, "..", ".marinara-engine-update-backups");
 const retainedBackupCount = 2;
 
@@ -201,6 +200,7 @@ const SHARDED_TABLES = [
   "game_scene_videos",
   "game_turn_storyboards",
   "game_turn_storyboard_keyframes",
+  "game_dice_pools",
   "regex_scripts",
   "chat_images",
   "character_images",
@@ -212,6 +212,7 @@ const SHARDED_TABLES = [
   "ooc_influences",
   "conversation_notes",
   "memory_chunks",
+  "advanced_memory_records",
   "chat_folders",
   "api_connection_folders",
   "custom_themes",
@@ -532,6 +533,12 @@ export async function snapshotLauncherData({
   const backupDir = resolve(backupRoot, backupName);
   const capabilityRuntimeLink = resolve(dataDir, "capability-packages", "node_modules");
   const downloadableDataDirs = ["models", "sidecar-runtime"].map((name) => resolve(dataDir, name));
+  // The storage writer lease is per-process runtime state (owner record plus the
+  // live.sock liveness socket, #5389). A snapshot taken while the previous server
+  // is still up, or after it died without releasing the lease, would try to copy
+  // that socket and fail with EINVAL, aborting the whole update (#6046). Nothing
+  // in the lease is user data, so leave the directory out entirely.
+  const writerLeaseDir = resolve(dataDir, "storage", ".writer-lease");
 
   await rm(incompleteDir, { recursive: true, force: true });
   try {
@@ -540,14 +547,25 @@ export async function snapshotLauncherData({
       recursive: true,
       preserveTimestamps: true,
       errorOnExist: true,
-      filter: (source) => {
+      filter: async (source) => {
         const sourcePath = resolve(source);
-        return (
-          sourcePath !== capabilityRuntimeLink &&
-          downloadableDataDirs.every(
+        if (sourcePath === capabilityRuntimeLink || sourcePath === writerLeaseDir) return false;
+        if (
+          !downloadableDataDirs.every(
             (downloadableDir) => sourcePath !== downloadableDir && !sourcePath.startsWith(`${downloadableDir}${sep}`),
           )
-        );
+        ) {
+          return false;
+        }
+        // Sockets and FIFOs cannot be copied (fs.cp rejects them with EINVAL) and
+        // carry no data worth restoring, wherever they live under the data dir.
+        try {
+          const entry = await lstat(sourcePath);
+          if (entry.isSocket() || entry.isFIFO()) return false;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        return true;
       },
     });
     await writeFile(

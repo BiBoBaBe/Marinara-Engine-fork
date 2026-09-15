@@ -60,6 +60,9 @@ const ScenePromptPreferencesModal = lazy(() =>
     default: module.ScenePromptPreferencesModal,
   })),
 );
+const ChoiceSelectionModal = lazy(() =>
+  import("../presets/ChoiceSelectionModal").then((module) => ({ default: module.ChoiceSelectionModal })),
+);
 const StartCharacterChatModal = lazy(() =>
   import("../modals/StartCharacterChatModal").then((module) => ({
     default: module.StartCharacterChatModal,
@@ -163,6 +166,16 @@ export function ModalRenderer() {
           sourceLabel={(modal?.props?.sourceLabel as string | null) ?? null}
           onSubmit={modal?.props?.onSubmit as (preferences: ScenePromptPreferences) => void}
           onCancel={modal?.props?.onCancel as (() => void) | undefined}
+        />
+      );
+      break;
+    case "preset-choices":
+      content = (
+        <ChoiceSelectionModal
+          open
+          onClose={modal?.props?.onClose as () => void}
+          chatId={modal?.props?.chatId as string}
+          presetId={modal?.props?.presetId as string}
         />
       );
       break;

@@ -1,0 +1,73 @@
+name: Run one Playwright shard
+description: >-
+  Set up pnpm/Node, restore the Playwright browser cache, and run one shard of
+  one browser project. Each shard job runs on its own runner with its own app
+  servers, which is what makes sharding safe despite fullyParallel: false —
+  that setting guards test isolation within ONE run's shared servers, and
+  shards never share a run (#5622).
+inputs:
+  project:
+    description: Playwright project name (desktop-chromium, mobile-chromium, mobile-webkit)
+    required: true
+  browser:
+    description: Browser bundle to install (chromium, webkit)
+    required: true
+  shard:
+    description: 1-based shard index
+    required: true
+  total-shards:
+    description: Total shard count
+    required: true
+  server-project:
+    description: Which app-server pair the tests talk to (desktop or mobile) — the other pair is not booted (#5637)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        run_install: false
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Resolve Playwright version
+      id: playwright-version
+      shell: bash
+      run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Playwright browsers
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-${{ inputs.browser }}-${{ steps.playwright-version.outputs.version }}
+
+    - name: Install ${{ inputs.browser }}
+      # On a cache hit the download is a no-op; --with-deps still installs the
+      # OS packages, which are not cacheable.
+      shell: bash
+      run: pnpm exec playwright install --with-deps ${{ inputs.browser }}
+
+    - name: Run ${{ inputs.project }} shard ${{ inputs.shard }}/${{ inputs.total-shards }}
+      # --fully-parallel changes only the SHARDING granularity: with the
+      # config's fullyParallel:false the whole single-file suite is one
+      # indivisible group and every test lands in shard 1. Pairing it with
+      # --workers=1 keeps execution inside each shard strictly serial in file
+      # order, so tests never run concurrently against the shard's servers —
+      # the property fullyParallel:false exists to protect.
+      shell: bash
+      env:
+        PLAYWRIGHT_ONLY_PROJECT: ${{ inputs.server-project }}
+      run: >-
+        pnpm exec playwright test -c playwright.config.ts
+        --project=${{ inputs.project }}
+        --fully-parallel --workers=1
+        --shard=${{ inputs.shard }}/${{ inputs.total-shards }}

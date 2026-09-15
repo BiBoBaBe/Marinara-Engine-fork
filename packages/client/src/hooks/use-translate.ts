@@ -2,18 +2,72 @@
 // Hook: Translation — multi-provider message translation
 // ──────────────────────────────────────────────
 import { useCallback } from "react";
+import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import type { Message } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
-import { useTranslationStore } from "../stores/translation.store";
+import { parseMessageExtraRecord } from "../lib/chat-message-extra";
+import { parseChatMetadata } from "../lib/chat-display";
+import { useTranslationStore, type TranslationConfig } from "../stores/translation.store";
+import { chatKeys, replaceCachedMessage } from "./use-chats";
 
 const translationPersistenceQueues = new Map<string, Promise<void>>();
+const pendingTranslations = new Map<string, Promise<void>>();
 
-function enqueueTranslationPersistence(chatId: string, messageId: string, extra: Record<string, unknown>) {
+export function getChatTranslationConfig(chatId: string, metadata: unknown): TranslationConfig {
+  const chatMeta = parseChatMetadata(metadata);
+  const legacyTargetLanguage =
+    (typeof chatMeta.translationTargetLang === "string" ? chatMeta.translationTargetLang.trim() : "") || "en";
+  const legacySystemPrompt = typeof chatMeta.translationPrompt === "string" ? chatMeta.translationPrompt : undefined;
+  const inputSystemPrompt =
+    chatMeta.translationInputPrompt === undefined
+      ? legacySystemPrompt
+      : typeof chatMeta.translationInputPrompt === "string"
+        ? chatMeta.translationInputPrompt
+        : undefined;
+  const outputSystemPrompt =
+    chatMeta.translationOutputPrompt === undefined
+      ? legacySystemPrompt
+      : typeof chatMeta.translationOutputPrompt === "string"
+        ? chatMeta.translationOutputPrompt
+        : undefined;
+  return {
+    chatId,
+    provider: chatMeta.translationProvider ?? "google",
+    // Cleared fields retain the legacy/default language.
+    inputTargetLanguage:
+      (typeof chatMeta.translationInputTargetLang === "string" ? chatMeta.translationInputTargetLang.trim() : "") ||
+      legacyTargetLanguage,
+    outputTargetLanguage:
+      (typeof chatMeta.translationOutputTargetLang === "string" ? chatMeta.translationOutputTargetLang.trim() : "") ||
+      legacyTargetLanguage,
+    connectionId: chatMeta.translationConnectionId,
+    inputSystemPrompt,
+    outputSystemPrompt,
+    deeplApiKey: chatMeta.translationDeeplApiKey,
+    deeplxUrl: chatMeta.translationDeeplxUrl,
+  };
+}
+
+function enqueueTranslationPersistence(
+  queryClient: QueryClient,
+  chatId: string,
+  messageId: string,
+  extra: Record<string, unknown>,
+) {
   const queueKey = `${chatId}:${messageId}`;
   const previous = translationPersistenceQueues.get(queueKey) ?? Promise.resolve();
   const request = previous
     .catch(() => undefined)
-    .then(() => api.patch(`/chats/${chatId}/messages/${messageId}/extra`, extra));
+    .then(async () => {
+      await api.patch(`/chats/${chatId}/messages/${messageId}/extra`, extra);
+      queryClient.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) =>
+        replaceCachedMessage(old, messageId, (message) => ({
+          ...message,
+          extra: { ...parseMessageExtraRecord(message.extra), ...extra } as unknown as Message["extra"],
+        })),
+      );
+    });
   const settled = request.then(
     () => undefined,
     () => undefined,
@@ -27,8 +81,58 @@ function enqueueTranslationPersistence(chatId: string, messageId: string, extra:
   return request;
 }
 
+/** Shared by manual and automatic translation; navigation must not change the request's settings. */
+export function translateMessage(
+  queryClient: QueryClient,
+  messageId: string,
+  text: string,
+  config: TranslationConfig,
+  chatId?: string,
+): Promise<void> {
+  const requestChatId = chatId ?? config.chatId;
+  const key = `${requestChatId ?? ""}:${messageId}`;
+  const pending = pendingTranslations.get(key);
+  if (pending) return pending;
+  const store = useTranslationStore.getState();
+  const isCurrentChat = () => useTranslationStore.getState().config.chatId === requestChatId;
+  if (isCurrentChat()) store.setTranslating(messageId, true);
+  const request = (async () => {
+    let translatedText: string;
+    try {
+      const result = await api.post<{ translatedText: string }>("/translate", {
+        text,
+        provider: config.provider,
+        targetLanguage: config.outputTargetLanguage,
+        connectionId: config.connectionId,
+        systemPrompt: config.outputSystemPrompt,
+        deeplApiKey: config.deeplApiKey,
+        deeplxUrl: config.deeplxUrl,
+      });
+      translatedText = result.translatedText;
+      if (isCurrentChat()) store.setTranslation(messageId, translatedText, text);
+    } finally {
+      if (isCurrentChat()) store.setTranslating(messageId, false);
+    }
+    if (chatId) {
+      await enqueueTranslationPersistence(queryClient, chatId, messageId, {
+        translation: translatedText,
+        translationSource: text,
+        translationHidden: false,
+      }).catch(() => {});
+    }
+  })();
+  pendingTranslations.set(key, request);
+  void request
+    .finally(() => {
+      if (pendingTranslations.get(key) === request) pendingTranslations.delete(key);
+    })
+    .catch(() => {});
+  return request;
+}
+
 // ── Hook ──
 export function useTranslate() {
+  const queryClient = useQueryClient();
   const translations = useTranslationStore((s) => s.translations);
   const translationSources = useTranslationStore((s) => s.translationSources);
   const translating = useTranslationStore((s) => s.translating);
@@ -37,6 +141,8 @@ export function useTranslate() {
   const translate = useCallback(
     async (messageId: string, text: string, chatId?: string, currentSourceAliases: readonly string[] = []) => {
       const store = useTranslationStore.getState();
+      const requestChatId = chatId ?? store.config.chatId;
+      const isCurrentChat = () => useTranslationStore.getState().config.chatId === requestChatId;
       const storedSource = store.translationSources[messageId];
       const translationMatchesCurrentText = storedSource === text || currentSourceAliases.includes(storedSource);
 
@@ -44,42 +150,19 @@ export function useTranslate() {
       if (store.translations[messageId] && translationMatchesCurrentText) {
         store.removeTranslation(messageId);
         if (chatId) {
-          enqueueTranslationPersistence(chatId, messageId, { translationHidden: true }).catch(() => {});
+          enqueueTranslationPersistence(queryClient, chatId, messageId, { translationHidden: true }).catch(() => {});
         }
         return;
       }
 
-      // Skip if already in-flight
-      if (store.translating[messageId]) return;
-
-      store.setTranslating(messageId, true);
       try {
-        const result = await api.post<{ translatedText: string }>("/translate", {
-          text,
-          provider: store.config.provider,
-          targetLanguage: store.config.outputTargetLanguage,
-          connectionId: store.config.connectionId,
-          systemPrompt: store.config.outputSystemPrompt,
-          deeplApiKey: store.config.deeplApiKey,
-          deeplxUrl: store.config.deeplxUrl,
-        });
-        store.setTranslation(messageId, result.translatedText, text);
-        // Persist to message extra so translation survives refresh/chat switch
-        if (chatId) {
-          enqueueTranslationPersistence(chatId, messageId, {
-            translation: result.translatedText,
-            translationSource: text,
-            translationHidden: false,
-          }).catch(() => {});
-        }
+        await translateMessage(queryClient, messageId, text, store.config, chatId);
       } catch (err) {
         console.error("Translation failed:", err);
-        toast.error(err instanceof Error ? err.message : "Translation failed");
-      } finally {
-        store.setTranslating(messageId, false);
+        if (isCurrentChat()) toast.error(err instanceof Error ? err.message : "Translation failed");
       }
     },
-    [],
+    [queryClient],
   );
 
   return {

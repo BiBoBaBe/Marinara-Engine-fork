@@ -138,7 +138,11 @@ function formatInventoryTrackerLine(item: any): string | null {
   const name = asText(item?.name);
   if (!name) return null;
   const quantity = finiteNumberText(item?.qty);
-  return `- ${name}${quantity && Number(quantity) > 1 ? ` x${quantity}` : ""}`;
+  const details = [
+    formatNamedValueLine({ name: "description", value: item?.description }),
+    formatNamedValueLine({ name: "location", value: item?.location }),
+  ].filter(isNonEmptyLine);
+  return `- ${name}${quantity && Number(quantity) > 1 ? ` x${quantity}` : ""}${details.length ? ` (${details.join("; ")})` : ""}`;
 }
 
 export function buildCommittedTrackerContextBlock(args: {
@@ -277,7 +281,7 @@ export function buildCommittedTrackerContextBlock(args: {
   if (trackerParts.length === 0) return null;
 
   return args.wrapFormat === "none"
-    ? trackerParts.join("\n\n")
+    ? `Context:\n${trackerParts.join("\n\n")}`
     : args.wrapFormat === "xml"
       ? `<context>\n${trackerParts.map((part) => "    " + part.replace(/\n/g, "\n    ")).join("\n")}\n</context>`
       : `# Context\n*(Established state as of the last message. Do not re-describe — advance from here.)*\n${trackerParts.join("\n")}`;

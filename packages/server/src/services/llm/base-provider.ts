@@ -9,7 +9,12 @@ import {
   isProviderLocalUrlsEnabled,
 } from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
-import type { GenerationParameterSendKey, GenerationParameterSendMap } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+  type GenerationParameterSendKey,
+  type GenerationParameterSendMap,
+} from "@marinara-engine/shared";
 
 /**
  * Shared undici Agent settings. The headers timeout (time to first byte) follows
@@ -177,6 +182,8 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Total context window limit for prompt + completion tokens. */
   maxContext?: number;
+  /** Managed context must fail visibly instead of silently trimming scene history or instructions. */
+  preserveContext?: boolean;
   topP?: number;
   topK?: number;
   minP?: number;
@@ -291,9 +298,11 @@ export interface ContextFitResult {
   trimmed: boolean;
 }
 
-type ContextFitOptions = Pick<ChatOptions, "maxContext" | "maxTokens" | "tools" | "suppressModelParameters">;
+type ContextFitOptions = Pick<
+  ChatOptions,
+  "maxContext" | "maxTokens" | "tools" | "responseFormat" | "suppressModelParameters" | "preserveContext"
+>;
 
-const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const IMAGE_TOKEN_ESTIMATE = 256;
 const MIN_FILE_TOKEN_ESTIMATE = 1_500;
@@ -302,7 +311,6 @@ const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 const MIN_INPUT_BUDGET_TOKENS = 128;
 const MIN_OUTPUT_BUDGET_TOKENS = 128;
 const OUTPUT_BUDGET_REDUCTION_HEADROOM_TOKENS = 64;
-const MIN_CONTENT_CHARS = 48;
 const TRUNCATION_MARKER = "\n\n[Truncated to fit context window]";
 
 function normalizePositiveInteger(value: unknown): number | undefined {
@@ -326,9 +334,7 @@ function minDefined(...values: Array<number | undefined>): number | undefined {
   return result;
 }
 
-function estimateTextTokens(text: string): number {
-  return Math.ceil(Array.from(text).length / CHARS_PER_TOKEN);
-}
+export { estimateTextTokens };
 
 function estimateStructuredTokens(value: unknown): number {
   try {
@@ -365,13 +371,34 @@ function estimateMessageTokens(message: ChatMessage): number {
     total += message.media.reduce((sum, media) => sum + estimateFileTokens({ data: media.data }), 0);
   }
   if (message.providerMetadata) {
-    total += Math.min(estimateStructuredTokens(message.providerMetadata), 512);
+    const { reasoning_content, reasoning, reasoning_details, geminiParts, encryptedReasoning, ...opaqueMetadata } =
+      message.providerMetadata;
+    if (typeof reasoning_content === "string") total += estimateTextTokens(reasoning_content);
+    if (typeof reasoning === "string") total += estimateTextTokens(reasoning);
+    // Conservatively estimate serialized replay payloads, not their decrypted reasoning-token usage.
+    if (reasoning_details !== undefined) total += estimateStructuredTokens(reasoning_details);
+    if (geminiParts !== undefined) total += estimateStructuredTokens(geminiParts);
+    if (encryptedReasoning !== undefined) total += estimateStructuredTokens(encryptedReasoning);
+    total += Math.min(estimateStructuredTokens(opaqueMetadata), 512);
   }
   return total;
 }
 
-function estimateMessagesTokens(messages: ChatMessage[]): number {
+export function estimateMessagesTokens(messages: ChatMessage[]): number {
   return messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+}
+
+/** Same estimator and reserves as provider fitting, without mutating the request or reducing the reply. */
+export function measureContextBudget(messages: ChatMessage[], options: ContextFitOptions & { maxContext: number }) {
+  const maxContext = normalizePositiveInteger(options.maxContext) ?? 1;
+  const reservedTokens =
+    contextSafetyMargin(maxContext) +
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
+  const maxTokens = normalizePositiveInteger(options.maxTokens) ?? 0;
+  const inputBudget = Math.max(0, maxContext - reservedTokens - maxTokens);
+  const estimatedTokens = estimateMessagesTokens(messages);
+  return { maxContext, reservedTokens, maxTokens, inputBudget, estimatedTokens, fits: estimatedTokens <= inputBudget };
 }
 
 function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -388,23 +415,13 @@ function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 function truncateContent(content: string, targetTokens: number, preserveStartOnly: boolean): string {
-  const targetChars = Math.max(MIN_CONTENT_CHARS, Math.floor(targetTokens * CHARS_PER_TOKEN));
-  if (Array.from(content).length <= targetChars) return content;
-
-  if (targetChars <= TRUNCATION_MARKER.length + MIN_CONTENT_CHARS) {
-    return Array.from(content).slice(0, targetChars).join("");
-  }
-
-  const availableChars = targetChars - TRUNCATION_MARKER.length;
-  const chars = Array.from(content);
-
-  if (preserveStartOnly) {
-    return chars.slice(0, availableChars).join("") + TRUNCATION_MARKER;
-  }
-
-  const headChars = Math.ceil(availableChars * 0.65);
-  const tailChars = Math.floor(availableChars * 0.35);
-  return chars.slice(0, headChars).join("") + TRUNCATION_MARKER + chars.slice(-tailChars).join("");
+  if (estimateTextTokens(content) <= targetTokens) return content;
+  const availableTokens = Math.floor(targetTokens) - estimateTextTokens(TRUNCATION_MARKER);
+  if (availableTokens <= 0) return sliceTextToTokenBudget(content, targetTokens);
+  if (preserveStartOnly) return sliceTextToTokenBudget(content, availableTokens) + TRUNCATION_MARKER;
+  const head = sliceTextToTokenBudget(content, Math.ceil(availableTokens * 0.65));
+  const tail = sliceTextToTokenBudget(content, availableTokens - estimateTextTokens(head), true);
+  return head + TRUNCATION_MARKER + tail;
 }
 
 function findOldestRemovableConversationBlock(
@@ -471,20 +488,41 @@ export function fitMessagesToContext(
     normalizePositiveInteger(defaultMaxContext),
   );
   const estimatedTokensBefore = estimateMessagesTokens(messages);
-  const toolTokens = estimateToolDefinitionTokens(options.tools);
+  const definitionTokens =
+    estimateToolDefinitionTokens(options.tools) +
+    (options.responseFormat ? estimateStructuredTokens(options.responseFormat) : 0);
 
-  if (!maxContext) {
+  if (maxContext && options.preserveContext) {
+    const budget = measureContextBudget(messages, { ...options, maxContext });
+    if (!budget.fits) {
+      throw new Error(
+        "Advanced Memory: the complete request exceeds the context cap. Reduce fixed prompt content, attachments or the reply reserve, or increase the cap.",
+      );
+    }
     return {
       messages,
+      maxContext,
       maxTokens: requestedMaxTokens,
-      reservedTokens: toolTokens,
+      inputBudget: budget.inputBudget,
+      reservedTokens: budget.reservedTokens,
       estimatedTokensBefore,
       estimatedTokensAfter: estimatedTokensBefore,
       trimmed: false,
     };
   }
 
-  const reservedTokens = contextSafetyMargin(maxContext) + toolTokens;
+  if (!maxContext) {
+    return {
+      messages,
+      maxTokens: requestedMaxTokens,
+      reservedTokens: definitionTokens,
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimatedTokensBefore,
+      trimmed: false,
+    };
+  }
+
+  const reservedTokens = contextSafetyMargin(maxContext) + definitionTokens;
   const usableWindow = Math.max(1, maxContext - reservedTokens);
   const reservedInputFloor = Math.min(MIN_INPUT_BUDGET_TOKENS, Math.max(0, usableWindow - 1));
   let maxTokens =
@@ -681,6 +719,13 @@ export function sanitizeApiError(raw: string, maxLen = 300): string {
  * Every provider must implement the `chat` method as an async generator.
  */
 export abstract class BaseLLMProvider {
+  protected customRequestHeaders: Record<string, string> = {};
+
+  /** Bind validated connection options without exposing credentials through the facade. */
+  public setCustomRequestHeaders(headers: Record<string, string>): void {
+    this.customRequestHeaders = { ...headers };
+  }
+
   constructor(
     protected baseUrl: string,
     protected apiKey: string,
@@ -806,10 +851,7 @@ export abstract class BaseLLMProvider {
   async embed(texts: string[], model: string, signal?: AbortSignal): Promise<number[][]> {
     const timeoutMs = getEmbeddingRequestTimeoutMs();
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${this.apiKey}`,
-    };
+    const headers = this.embeddingHeaders();
     const res = await llmFetch(resolveEmbeddingEndpointUrl(this.baseUrl), {
       method: "POST",
       headers,
@@ -824,6 +866,14 @@ export abstract class BaseLLMProvider {
     }
     const json = await res.json();
     return parseEmbeddingResponse(json);
+  }
+
+  protected embeddingHeaders(): Record<string, string> {
+    return {
+      ...this.customRequestHeaders,
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.apiKey}`,
+    };
   }
 }
 

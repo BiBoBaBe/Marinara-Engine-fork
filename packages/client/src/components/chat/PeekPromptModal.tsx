@@ -11,6 +11,7 @@ import {
   NEUTRAL_PANEL_TITLE,
 } from "../ui/neutral-surface-styles";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { estimateTextTokens, type GameToolPlanningInfo } from "@marinara-engine/shared";
 
 const PROMPT_TAG_CLASS =
   "border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]";
@@ -18,7 +19,7 @@ const PROMPT_TAG_ACTIVE_CLASS =
   "border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]";
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function fmtTokens(n: number): string {
@@ -51,6 +52,7 @@ interface PeekPromptModalProps {
     source?: "cached" | "live_preview" | "raw_messages";
     exact?: boolean;
     generationInfo?: GenerationInfo | null;
+    gameToolPlanning?: GameToolPlanningInfo | null;
     agentNote?: string;
   };
   onClose: () => void;
@@ -508,6 +510,7 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
   const totalTokens = useMemo(() => estimateTokens(data.messages.map((m) => m.content).join("")), [data.messages]);
 
   const gen = data.generationInfo;
+  const planner = data.gameToolPlanning;
   const params = data.parameters as Record<string, unknown> | null;
 
   // Build parameter pills from generationInfo (cached) or assembled parameters
@@ -548,6 +551,7 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
 
   return (
     <div
+      data-chat-floating-panel
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 max-md:pt-[env(safe-area-inset-top)]"
       onClick={onClose}
     >
@@ -585,7 +589,7 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
         </div>
         <div className={cn(NEUTRAL_PANEL_SCROLL_AREA, "min-h-0 flex-1 overflow-y-auto p-4 space-y-2")}>
           {/* Generation info panel */}
-          {(gen || paramPills.length > 0) && (
+          {(gen || planner || paramPills.length > 0) && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 px-4 py-3 space-y-2">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.6875rem]">
                 {gen?.model && (
@@ -618,6 +622,21 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
                   )}
                 </span>
               </div>
+              {planner && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+                  <span>
+                    {localizeUi("ui.chat.peekpromptmodal.toolPlanner")}: {planner.provider} / {planner.model}
+                  </span>
+                  <span>
+                    {planner.usage?.promptTokens != null && planner.usage.completionTokens != null
+                      ? localizeUi("ui.chat.peekpromptmodal.plannerUsage", {
+                          input: fmtTokens(planner.usage.promptTokens),
+                          output: fmtTokens(planner.usage.completionTokens),
+                        })
+                      : localizeUi("ui.chat.peekpromptmodal.plannerUsageUnavailable")}
+                  </span>
+                </div>
+              )}
               {paramPills.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {paramPills.map((p) => (

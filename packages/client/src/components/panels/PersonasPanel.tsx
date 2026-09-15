@@ -8,7 +8,6 @@ import {
   flattenPersonaPages,
   usePersonaPages,
   useDeletePersona,
-  useActivatePersona,
   useUploadPersonaAvatar,
   usePersonaGroups,
   useCreatePersonaGroup,
@@ -56,7 +55,7 @@ import {
 } from "../../lib/card-library-search";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
-import type { Persona } from "@marinara-engine/shared";
+import { estimateTextTokens, type Persona } from "@marinara-engine/shared";
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string };
 type ParsedPersonaGroupRow = PersonaGroupRow & { memberIds: string[] };
@@ -82,7 +81,7 @@ function parseDroppedPersonaIds(payload: string): unknown {
 
 function estimateTokens(p: Persona): number {
   const text = [p.description, p.personality, p.scenario, p.backstory, p.appearance].join("");
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(text);
 }
 
 function getPersonaPreviewMetadata(p: Persona): string | null {
@@ -127,7 +126,6 @@ export function PersonasPanel() {
   const deletePersona = useDeletePersona();
   const duplicatePersona = useDuplicatePersona();
   const updatePersona = useUpdatePersona();
-  const activatePersona = useActivatePersona();
   const uploadAvatar = useUploadPersonaAvatar();
   const { data: personaGroupsRaw } = usePersonaGroups();
   const createPGroup = useCreatePersonaGroup();
@@ -142,13 +140,12 @@ export function PersonasPanel() {
   const [avatarTargetId, setAvatarTargetId] = useState<string | null>(null);
   const [sort, setSort] = useState<SortOption>("name-asc");
   const [search, setSearch] = useState("");
-  const [favFilter, setFavFilter] = useState<"all" | "active" | "inactive">("all");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [tagsExpanded, setTagsExpanded] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedPersonaIds, setSelectedPersonaIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
-  const clientOnlyPersonaFilterActive = favFilter !== "all" || activeTag !== null;
+  const clientOnlyPersonaFilterActive = activeTag !== null;
   const [completeFilteredPersonas, setCompleteFilteredPersonas] = useState<Persona[] | null>(null);
   const [completePersonasLoading, setCompletePersonasLoading] = useState(false);
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(search).text, [search]);
@@ -416,12 +413,6 @@ export function PersonasPanel() {
   const filteredList = useMemo(() => {
     let arr = personas;
     const query = parseCardLibrarySearchQuery(search);
-    // Filter by active status
-    if (favFilter === "active") {
-      arr = arr.filter((p) => p.isActive);
-    } else if (favFilter === "inactive") {
-      arr = arr.filter((p) => !p.isActive);
-    }
     arr = arr.filter((p) => {
       const tags = p.tags;
       return matchesCardLibrarySearch(
@@ -447,7 +438,7 @@ export function PersonasPanel() {
       arr = arr.filter((p) => p.tags.includes(activeTag));
     }
     return arr;
-  }, [personas, favFilter, search, activeTag]);
+  }, [personas, search, activeTag]);
 
   const list = useMemo(() => {
     const arr = [...filteredList];
@@ -472,7 +463,7 @@ export function PersonasPanel() {
     [list, folderedPersonaIds],
   );
   const visiblePersonaById = useMemo(() => new Map(list.map((persona) => [persona.id, persona])), [list]);
-  const folderFilterActive = search.trim().length > 0 || activeTag !== null || favFilter !== "all";
+  const folderFilterActive = search.trim().length > 0 || activeTag !== null;
 
   const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
@@ -672,24 +663,8 @@ export function PersonasPanel() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-1">
-        {(["all", "active", "inactive"] as const).map((opt) => (
-          <button
-            key={opt}
-            onClick={() => setFavFilter(opt)}
-            className={cn(
-              "mari-chrome-control mari-chrome-control--compact",
-              favFilter === opt && "mari-chrome-control--selected",
-            )}
-          >
-            {opt === "all"
-              ? localizeUi("ui.noodle.stageprofilesourcepicker.all")
-              : opt === "active"
-                ? localizeUi("ui.characters.lorebooktab.active")
-                : localizeUi("ui.chat.summaryentryeditor.inactive")}
-          </button>
-        ))}
-        {allTags.length > 0 && (
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
           <button
             onClick={() => setTagsExpanded(!tagsExpanded)}
             className={cn(
@@ -701,8 +676,8 @@ export function PersonasPanel() {
             {localizeUi("ui.panels.backgroundpicker.tagsValue1", { value1: allTags.length })}
             <ChevronDown size="0.625rem" className={cn("transition-transform", tagsExpanded && "rotate-180")} />
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {allTags.length > 0 && tagsExpanded && (
         <div className="flex flex-wrap gap-1">
@@ -1087,7 +1062,6 @@ export function PersonasPanel() {
 
       <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
         {visibleRootPersonas.map((persona) => {
-          const active = persona.isActive;
           const isBulkSelected = selectedPersonaIds.has(persona.id);
           const personaMetadata = getPersonaPreviewMetadata(persona);
 
@@ -1099,8 +1073,6 @@ export function PersonasPanel() {
                 "group relative flex touch-pan-y cursor-pointer items-center gap-3 rounded-xl p-2.5 transition-all hover:bg-[var(--sidebar-accent)]",
                 selectionMode &&
                   isBulkSelected &&
-                  "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
-                active &&
                   "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
                 draggedPersonaId === persona.id && "opacity-50",
                 touchSafePersonaDragMode && "select-none",
@@ -1187,8 +1159,7 @@ export function PersonasPanel() {
                     The wrapper provides both `position:relative` (so the absolute img
                     resolves here) and `overflow:hidden` (so the oversized img is clipped
                     to the rounded-xl shape). The wrapper can't be the button itself
-                    because the active-indicator star and the camera-hover overlay live
-                    outside the avatar bounds via negative offsets / absolute inset-0. */}
+                    so the camera-hover overlay stays above the cropped image. */}
                 <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl">
                   {persona.avatarPath ? (
                     <img
@@ -1205,11 +1176,6 @@ export function PersonasPanel() {
                 <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40 opacity-0 transition-opacity group-hover/avatar:opacity-100">
                   <Camera size="0.75rem" className="text-white" />
                 </div>
-                {active && (
-                  <div className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-md bg-emerald-400 shadow-sm">
-                    <Check size="0.5rem" className="text-white" />
-                  </div>
-                )}
               </button>
 
               {/* Info */}
@@ -1236,18 +1202,6 @@ export function PersonasPanel() {
                   <ChatResourceActionButton
                     payload={{ version: 1, kind: "persona", ids: [persona.id], label: persona.name }}
                   />
-                  {!active && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        activatePersona.mutate(persona.id);
-                      }}
-                      className="mari-chrome-control mari-chrome-control--small mari-chrome-control--selected p-1.5"
-                      title={localizeUi("ui.panels.personaspanel.setAsActive")}
-                    >
-                      <Check size="0.75rem" />
-                    </button>
-                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

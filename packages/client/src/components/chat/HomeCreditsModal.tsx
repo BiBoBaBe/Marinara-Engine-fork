@@ -6,7 +6,7 @@ const FONT_AWESOME_D20_SOURCE_URL = "https://github.com/FortAwesome/Font-Awesome
 const CC_BY_4_0_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/";
 
 const CONTRIBUTORS = [
-  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 3095 },
+  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 3097 },
   { login: "kolacheee", url: "https://github.com/kolacheee", contributions: 633 },
   { login: "Gunterlie", url: "https://github.com/Gunterlie", contributions: 380 },
   { login: "thetopham", url: "https://github.com/thetopham", contributions: 342 },

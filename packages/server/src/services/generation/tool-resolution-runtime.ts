@@ -14,6 +14,7 @@ import {
 } from "../tools/tool-executor.js";
 import { resolveSpotifyCredentials, spotifyHasScope } from "../spotify/spotify.service.js";
 import { logger } from "../../lib/logger.js";
+import { semanticShortlistLorebookEntries, type LorebookEmbeddingOptions } from "../lorebook/embeddings.js";
 import {
   agentWriteApprovalRequired,
   buildLorebookWriteApprovalProposal,
@@ -27,11 +28,14 @@ import {
   type SpotifyRuntimeAgent,
 } from "./spotify-agent-runtime.js";
 import { resolveSpotifyToolAvailabilityRequest } from "./spotify-tool-availability.js";
+import { shouldAttachSummariesToAgents } from "./roleplay-summary-retrieval.js";
 import {
   formatZonedConversationTime,
   getZonedDateParts,
   resolveConversationTimeZone,
 } from "../conversation/timezone.js";
+
+const LORE_SEARCH_MIN_SIMILARITY = 0.25;
 
 type CustomToolsStore = {
   listEnabled(): Promise<
@@ -78,6 +82,7 @@ export type ResolveGenerationToolsArgs = {
   resolvedAgents: ResolvedAgent[];
   enabledConfigs: any[];
   promptCharacterIds: string[];
+  lorebookCharacterIds?: string[];
   personaId: string | null;
   activeLorebookIds: string[];
   excludedLorebookIds: string[];
@@ -86,6 +91,15 @@ export type ResolveGenerationToolsArgs = {
   gameSpotifyMusicEnabled: boolean;
   agentContext: AgentContext;
   emitMetadataPatch(patch: Record<string, unknown>): void;
+  /**
+   * Tools the mode itself needs, attached regardless of the chat's "Enable Tool Use"
+   * toggle. Deliberately separate from `enableChatTools`: flipping that on would also
+   * arm every other default-on tool, the Spotify credential lookup, and the
+   * local-endpoint `<available_functions>` prompt injection.
+   */
+  autoAttachToolNames?: readonly string[];
+  nativeToolsAvailable?: boolean;
+  lorebookEmbeddingOptions?: LorebookEmbeddingOptions;
 };
 
 export type ResolveAgentGenerationToolsArgs = ResolveGenerationToolsArgs & {
@@ -94,11 +108,24 @@ export type ResolveAgentGenerationToolsArgs = ResolveGenerationToolsArgs & {
 
 export type ResolvedGenerationTools = {
   enableChatTools: boolean;
+  /**
+   * Whether this turn sends tools to the model at all — true when the chat toggle is on
+   * *or* when the mode auto-attached something. The tool loop branches on this;
+   * everything that must stay tied to the user's toggle keeps reading `enableChatTools`.
+   */
+  toolsAttached: boolean;
   chatResolvedToolNames: Set<string>;
   toolDefs: LLMToolDefinition[] | undefined;
   baseToolExecutionContext: ToolExecutionContext;
   updateChatMetadataForTools: (patchOrUpdater: MetadataPatchInput) => Promise<MetadataPatch>;
 };
+
+export function resolveToolLorebookCharacterIds(
+  promptCharacterIds: string[],
+  lorebookCharacterIds?: string[],
+): string[] {
+  return lorebookCharacterIds ?? promptCharacterIds;
+}
 
 const AGENT_ONLY_TOOL_NAMES = new Set([
   "save_lorebook_entry",
@@ -119,6 +146,75 @@ const DEFAULT_OFF_TOOL_NAMES = new Set(["update_about_me", ...(DEFAULT_AGENT_TOO
 
 export function isChatToolEnabledByDefault(toolName: string): boolean {
   return !AGENT_ONLY_TOOL_NAMES.has(toolName) && !DEFAULT_OFF_TOOL_NAMES.has(toolName);
+}
+
+/**
+ * Game Mode rolls real dice instead of letting the GM invent numbers, so the dice tool
+ * rides along on every game turn. Only this one — the rest of the tool set still waits
+ * for the user to turn "Enable Tool Use" on.
+ */
+export const GAME_MODE_AUTO_ATTACH_TOOL_NAMES: readonly string[] = ["roll_dice"];
+
+/**
+ * Decide which tool definitions this chat turn sends to the model.
+ *
+ * - toggle off, nothing auto-attached → `undefined`, exactly as before this channel existed
+ * - toggle off, auto-attach names     → only those names
+ * - toggle on                         → the chat's set, plus any auto-attached name it missed
+ */
+export function resolveChatToolDefs(args: {
+  allToolDefs: LLMToolDefinition[];
+  enableChatTools: boolean;
+  activeToolIds: string[];
+  autoAttachToolNames: readonly string[];
+}): LLMToolDefinition[] | undefined {
+  const autoAttachNames = new Set(args.autoAttachToolNames.filter((name) => !AGENT_ONLY_TOOL_NAMES.has(name)));
+  if (!args.enableChatTools && autoAttachNames.size === 0) return undefined;
+
+  return args.allToolDefs.filter((toolDef) => isChatToolResolved(toolDef.function.name, args));
+}
+
+/**
+ * Whether one named built-in tool survives the filter above.
+ *
+ * Split out of `resolveChatToolDefs` so a caller that has to know the answer BEFORE the
+ * tool set is built can ask the same question instead of restating its three rules. The
+ * one caller today is the Game format reminder (#6215): the prompt line that
+ * describes `roll_dice` and the attachment itself are gated on this one fact, so the tool
+ * is never attached without being described and never described without being attached.
+ *
+ * Deliberately only meaningful for a built-in name. A custom tool can be missing from the
+ * loaded definitions for reasons this cannot see (disabled, renamed, an invalid schema),
+ * so the answer for one is an upper bound rather than a fact.
+ */
+export function isChatToolResolved(
+  name: string,
+  args: { enableChatTools: boolean; activeToolIds: readonly string[]; autoAttachToolNames: readonly string[] },
+): boolean {
+  if (AGENT_ONLY_TOOL_NAMES.has(name)) return false;
+  if (args.autoAttachToolNames.includes(name)) return true;
+  if (!args.enableChatTools) return false;
+  return args.activeToolIds.length > 0 ? args.activeToolIds.includes(name) : isChatToolEnabledByDefault(name);
+}
+
+/** The chat's tool filter, or an empty list when it has none. Empty means "no filter". */
+export function readChatActiveToolIds(chatMetadata: Record<string, unknown>): string[] {
+  return Array.isArray(chatMetadata.activeToolIds) ? (chatMetadata.activeToolIds as string[]) : [];
+}
+
+/**
+ * The chat's "Enable Tool Use" answer for a main generation turn: the request's own
+ * override first, then the stored toggle, and nothing at all on a connection without a
+ * tools API. Shared with callers that need it before `resolveGenerationTools` runs.
+ */
+export function resolveChatToolsEnabled(args: {
+  requestBody: Record<string, unknown>;
+  chatMetadata: Record<string, unknown>;
+  nativeToolsAvailable: boolean;
+}): boolean {
+  if (!args.nativeToolsAvailable) return false;
+  if (args.requestBody.enableTools === true) return true;
+  return !booleanFalseText(args.chatMetadata.enableTools) && booleanText(args.chatMetadata.enableTools);
 }
 
 function parseExtra(extra: unknown): Record<string, unknown> {
@@ -151,11 +247,20 @@ function booleanFalseText(value: unknown): boolean {
   return value === false || value === "false" || value === "0" || value === 0;
 }
 
-export function resolveMainGenerationToolChoice(
-  chatMetadata: Record<string, unknown>,
-  round: number,
-): "auto" | "required" {
-  return round === 0 && booleanText(chatMetadata.forceToolCall) ? "required" : "auto";
+/**
+ * Force To Call is a Function Calling panel setting, and the panel hides it whenever
+ * "Enable Tool Use" is off — so a chat can hold a stale `forceToolCall` the user can
+ * neither see nor clear. It only means anything while that toggle is on: a tool the
+ * engine attached by itself (Game Mode's dice) must never be forced by it, or every
+ * game turn would open with a roll the scene did not ask for.
+ */
+export function resolveMainGenerationToolChoice(args: {
+  chatMetadata: Record<string, unknown>;
+  enableChatTools: boolean;
+  round: number;
+}): "auto" | "required" {
+  const forced = args.round === 0 && args.enableChatTools && booleanText(args.chatMetadata.forceToolCall);
+  return forced ? "required" : "auto";
 }
 
 function isSpotifyMusicAgent(agent: ResolvedAgent): boolean {
@@ -352,6 +457,7 @@ async function loadToolDefinitions(args: {
   resolveTools: boolean;
   enableChatTools: boolean;
   activeToolIds: string[];
+  autoAttachToolNames: readonly string[];
 }): Promise<{
   toolDefs: LLMToolDefinition[] | undefined;
   allToolDefs: LLMToolDefinition[];
@@ -432,15 +538,12 @@ async function loadToolDefinitions(args: {
     }
   }
 
-  if (args.enableChatTools) {
-    const hasToolFilter = args.activeToolIds.length > 0;
-    toolDefs = hasToolFilter
-      ? allToolDefs.filter(
-          (toolDef) =>
-            args.activeToolIds.includes(toolDef.function.name) && !AGENT_ONLY_TOOL_NAMES.has(toolDef.function.name),
-        )
-      : allToolDefs.filter((toolDef) => isChatToolEnabledByDefault(toolDef.function.name));
-  }
+  toolDefs = resolveChatToolDefs({
+    allToolDefs,
+    enableChatTools: args.enableChatTools,
+    activeToolIds: args.activeToolIds,
+    autoAttachToolNames: args.autoAttachToolNames,
+  });
 
   return { toolDefs, allToolDefs, customToolDefs };
 }
@@ -647,6 +750,7 @@ async function resolveToolRuntime(
     resolvedAgents,
     enabledConfigs,
     promptCharacterIds,
+    lorebookCharacterIds,
     personaId,
     activeLorebookIds,
     excludedLorebookIds,
@@ -656,14 +760,16 @@ async function resolveToolRuntime(
     agentContext,
     emitMetadataPatch,
     observeSpotifyPlaybackBeforePlay,
+    lorebookEmbeddingOptions,
   }: ResolveAgentGenerationToolsArgs,
   options: {
     enableChatTools: boolean;
+    autoAttachToolNames: readonly string[];
     preloadSpotifyPlayback: boolean;
     restoreSpotifyAgentDefaultTools: boolean;
   },
 ): Promise<ResolvedGenerationTools> {
-  const { enableChatTools } = options;
+  const { autoAttachToolNames, enableChatTools } = options;
   const spotifyToolNames = new Set(DEFAULT_AGENT_TOOLS.spotify ?? []);
   for (const agent of resolvedAgents) {
     const agentSettings = parseSettings(agent.settings);
@@ -681,14 +787,13 @@ async function resolveToolRuntime(
     const agentSettings = parseSettings(agent.settings);
     return Array.isArray(agentSettings.enabledTools) && agentSettings.enabledTools.length > 0;
   });
-  const activeToolIds: string[] = Array.isArray(chatMetadata.activeToolIds)
-    ? (chatMetadata.activeToolIds as string[])
-    : [];
+  const activeToolIds = readChatActiveToolIds(chatMetadata);
   const { allToolDefs, customToolDefs, ...loadedTools } = await loadToolDefinitions({
     customToolsStore,
-    resolveTools: enableChatTools || enableAgentTools,
+    resolveTools: enableChatTools || enableAgentTools || autoAttachToolNames.length > 0,
     enableChatTools,
     activeToolIds,
+    autoAttachToolNames,
   });
   let toolDefs = loadedTools.toolDefs;
 
@@ -696,6 +801,9 @@ async function resolveToolRuntime(
   // update_about_me's Conversation-only scope (the UI filter is cosmetic).
   if (toolDefs && agentContext.chatMode !== "conversation") {
     toolDefs = toolDefs.filter((toolDef) => !CONVERSATION_ONLY_TOOL_NAMES.has(toolDef.function.name));
+  }
+  if (toolDefs && agentContext.chatMode === "game" && !booleanText(chatMetadata.gameLorebookSearch)) {
+    toolDefs = toolDefs.filter((toolDef) => toolDef.function.name !== "search_lorebook");
   }
 
   const resolvedToolNames = new Set(allToolDefs.map((toolDef) => toolDef.function.name));
@@ -740,33 +848,70 @@ async function resolveToolRuntime(
     }
   }
 
-  const searchLorebookForTools = async (query: string, category?: string | null) => {
+  const searchLorebookForTools = async (query: string, category?: string | null, requireVectors = false) => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return [];
     const entries = await lorebooksStore.listActiveEntries({
       chatId,
-      characterIds: promptCharacterIds,
+      characterIds: resolveToolLorebookCharacterIds(promptCharacterIds, lorebookCharacterIds),
       personaId,
       activeLorebookIds,
       excludedLorebookIds,
       excludedSourceAgentIds,
     });
-    const normalizedQuery = query.toLowerCase();
-    return entries
-      .filter((entry: any) => {
-        const nameMatch = typeof entry.name === "string" && entry.name.toLowerCase().includes(normalizedQuery);
-        const contentMatch = typeof entry.content === "string" && entry.content.toLowerCase().includes(normalizedQuery);
-        const keyMatch =
-          Array.isArray(entry.keys) &&
-          entry.keys.some((key: unknown) => typeof key === "string" && key.toLowerCase().includes(normalizedQuery));
-        const categoryMatch = !category || entry.tag === category;
-        return categoryMatch && (nameMatch || contentMatch || keyMatch);
-      })
-      .slice(0, 20)
-      .map((entry: any) => ({
-        name: entry.name,
-        content: entry.content,
-        tag: entry.tag,
-        keys: entry.keys as string[],
-      }));
+    const eligible = entries.filter(
+      (entry: any) =>
+        (!category || entry.tag === category) &&
+        (chatMetadata.entryStateOverrides as Record<string, { enabled?: boolean }> | undefined)?.[entry.id]?.enabled !==
+          false,
+    );
+    const vectorized = eligible.filter(
+      (entry: any) => !entry.excludeFromVectorization && Array.isArray(entry.embedding) && entry.embedding.length > 0,
+    );
+    const toResult = (entry: any, similarity?: number) => ({
+      name: entry.name,
+      content: entry.content,
+      tag: entry.tag,
+      keys: entry.keys as string[],
+      ...(similarity === undefined ? {} : { similarity }),
+    });
+    // Literal hits remain searchable while vectors are missing, stale, or deliberately excluded.
+    const results = new Map(
+      eligible
+        .filter((entry: any) =>
+          [entry.name, entry.content, ...(Array.isArray(entry.keys) ? entry.keys : [])].some(
+            (value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery),
+          ),
+        )
+        .map((entry: any) => [entry.id, toResult(entry)]),
+    );
+    if (vectorized.length) {
+      try {
+        const matches = await semanticShortlistLorebookEntries(vectorized, query, {
+          ...lorebookEmbeddingOptions,
+          topK: 20,
+        });
+        if (matches) {
+          // A low calibrated floor rejects noise without inheriting automatic-activation limits.
+          for (const { entry, similarity } of matches) {
+            if (similarity >= LORE_SEARCH_MIN_SIMILARITY) results.set(entry.id, toResult(entry, similarity));
+          }
+          return [...results.values()].slice(0, 20);
+        }
+        if (requireVectors)
+          throw new Error(
+            "Lore search embeddings are unavailable or incompatible. Check the embedding connection and re-vectorize the lorebook.",
+          );
+      } catch (err) {
+        if (requireVectors) throw err;
+        logger.warn(err, "[lore-search] Semantic search unavailable; using text matches");
+      }
+    } else if (requireVectors) {
+      throw new Error(
+        "No vectorized lore entries are available. Vectorize an enabled lorebook before using Game lore search.",
+      );
+    }
+    return [...results.values()].slice(0, 20);
   };
 
   const updateChatMetadataForTools = async (patchOrUpdater: MetadataPatchInput): Promise<MetadataPatch> => {
@@ -787,7 +932,11 @@ async function resolveToolRuntime(
     }
     Object.assign(chatMetadata, updatedMeta);
     agentContext.chatSummary =
-      typeof chatMetadata.summary === "string" && chatMetadata.summary.trim() ? chatMetadata.summary.trim() : null;
+      shouldAttachSummariesToAgents(agentContext.chatMode, chatMetadata) &&
+      typeof chatMetadata.summary === "string" &&
+      chatMetadata.summary.trim()
+        ? chatMetadata.summary.trim()
+        : null;
     emitMetadataPatch(emittedPatch);
     return updatedMeta;
   };
@@ -827,7 +976,7 @@ async function resolveToolRuntime(
     customTools: customToolDefs,
     spotify: spotifyCreds,
     spotifyRepeatAfterPlay: gameSpotifyMusicEnabled ? "track" : undefined,
-    searchLorebook: searchLorebookForTools,
+    searchLorebook: (query, category) => searchLorebookForTools(query, category, agentContext.chatMode === "game"),
     chatMeta: chatMetadata,
     onUpdateMetadata: updateChatMetadataForTools,
   };
@@ -882,6 +1031,8 @@ async function resolveToolRuntime(
         }
         const executionContext = {
           ...baseToolExecutionContext,
+          // Existing Agent tools keep their text fallback when no vectors are available.
+          searchLorebook: searchLorebookForTools,
           saveLorebookEntry,
           replaceChatMessageContent: replaceChatMessageContentForAgent,
         };
@@ -945,6 +1096,9 @@ async function resolveToolRuntime(
 
   return {
     enableChatTools,
+    // An auto-attach name that resolved to nothing (retired tool, typo) leaves the turn
+    // exactly as it was before — no tool loop, no allowlist.
+    toolsAttached: enableChatTools || (toolDefs?.length ?? 0) > 0,
     chatResolvedToolNames,
     toolDefs,
     baseToolExecutionContext,
@@ -957,18 +1111,33 @@ export async function resolveAgentGenerationTools(
 ): Promise<ResolvedGenerationTools> {
   return resolveToolRuntime(args, {
     enableChatTools: false,
+    // Agent retries resolve their own tools from agent settings; mode auto-attach is a
+    // main-generation concern and never rides along here.
+    autoAttachToolNames: [],
     preloadSpotifyPlayback: false,
     restoreSpotifyAgentDefaultTools: args.gameSpotifyMusicEnabled,
   });
 }
 
 export async function resolveGenerationTools(args: ResolveGenerationToolsArgs): Promise<ResolvedGenerationTools> {
-  const chatToolsExplicitlyDisabled = booleanFalseText(args.chatMetadata.enableTools);
-  const enableChatTools =
-    args.requestBody.enableTools === true ||
-    (!chatToolsExplicitlyDisabled && booleanText(args.chatMetadata.enableTools));
+  const available = args.nativeToolsAvailable !== false;
+  const enableChatTools = resolveChatToolsEnabled({
+    requestBody: args.requestBody,
+    chatMetadata: args.chatMetadata,
+    nativeToolsAvailable: available,
+  });
   return resolveToolRuntime(args, {
     enableChatTools,
+    autoAttachToolNames: available
+      ? [
+          ...(args.autoAttachToolNames ?? []),
+          ...(args.agentContext.chatMode === "game" && booleanText(args.chatMetadata.gameLorebookSearch)
+            ? ["search_lorebook"]
+            : []),
+        ]
+      : args.agentContext.chatMode === "roleplay"
+        ? (args.autoAttachToolNames ?? []).filter((name) => name === "roll_dice")
+        : [],
     preloadSpotifyPlayback: true,
     restoreSpotifyAgentDefaultTools: true,
   });

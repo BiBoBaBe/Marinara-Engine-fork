@@ -2,11 +2,12 @@
 // Routes: Character Sprite Upload, List & Serving
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
+import { isOpenAIGptImageModel, isOpenAIGptImage2Model, supportsOpenAIImageCustomSize } from "@marinara-engine/shared";
 import AdmZip from "adm-zip";
 import { execFile } from "child_process";
 import { existsSync, mkdirSync, readdirSync, unlinkSync, statSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { writeFile, mkdir, unlink, copyFile, rm, readFile, mkdtemp } from "fs/promises";
+import { writeFile, mkdir, unlink, copyFile, rm, readFile, mkdtemp, rename } from "fs/promises";
 import { tmpdir } from "os";
 import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -26,6 +27,26 @@ import {
 import { pixelizeImage, PixelizeInputError } from "../services/image/pixelize.service.js";
 import { clampByte, clampUnit, getSharp, type RgbColor } from "../services/image/sharp-runtime.js";
 import { logger } from "../lib/logger.js";
+import { SPRITE_RENAME_RATE_LIMIT } from "../middleware/rate-limit.js";
+
+const spriteRenameQueues = new Map<string, Promise<void>>();
+
+async function withSpriteRenameLock<T>(characterId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = spriteRenameQueues.get(characterId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queuedTail = previous.then(() => current);
+  spriteRenameQueues.set(characterId, queuedTail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (spriteRenameQueues.get(characterId) === queuedTail) spriteRenameQueues.delete(characterId);
+  }
+}
 
 async function getSpriteCapabilities() {
   try {
@@ -258,14 +279,6 @@ function ensureDir(dir: string) {
   }
 }
 
-function isOpenAIGptImageModel(model?: string): boolean {
-  return !!model && /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(model.trim());
-}
-
-function isOpenAIGptImage2Model(model?: string): boolean {
-  return !!model && /^gpt-image-2(?:$|-)/i.test(model.trim());
-}
-
 export function resolveSpriteNativeTransparency(model: string | undefined, requested: boolean): boolean {
   return requested && !isOpenAIGptImage2Model(model);
 }
@@ -287,7 +300,7 @@ export function resolveSpriteSheetCanvas({
   const requestedSheetWidth = cols * preferredCellWidth;
   const requestedSheetHeight = rows * preferredCellHeight;
 
-  if (!isOpenAIGptImageModel(model) || (spriteType !== "full-body" && isOpenAIGptImage2Model(model))) {
+  if (!isOpenAIGptImageModel(model) || (spriteType !== "full-body" && supportsOpenAIImageCustomSize(model))) {
     return {
       sheetWidth: requestedSheetWidth,
       sheetHeight: requestedSheetHeight,
@@ -1179,7 +1192,7 @@ async function buildSpritePromptPlan(
     body.spriteType !== "full-body" &&
     !singlePortrait &&
     isOpenAIGptImageModel(imgModel) &&
-    !isOpenAIGptImage2Model(imgModel);
+    !supportsOpenAIImageCustomSize(imgModel);
   if (generateExpressionsIndividually && expressions.length > MAX_INDIVIDUAL_SPRITE_EXPRESSIONS) {
     expressions = expressions.slice(0, MAX_INDIVIDUAL_SPRITE_EXPRESSIONS);
   }
@@ -1336,8 +1349,11 @@ export async function spritesRoutes(app: FastifyInstance) {
    * GET /api/sprites/:characterId
    * List all sprite expressions for a character.
    */
-  app.get<{ Params: { characterId: string } }>("/:characterId", async (req) => {
+  app.get<{ Params: { characterId: string } }>("/:characterId", async (req, reply) => {
     const { characterId } = req.params;
+    if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
+      return reply.status(400).send({ error: "Invalid character ID" });
+    }
     return listSpriteInfos(characterId);
   });
 
@@ -1686,6 +1702,64 @@ export async function spritesRoutes(app: FastifyInstance) {
 
     return payload;
   });
+
+  /**
+   * PATCH /api/sprites/:characterId/:expression
+   * Rename a saved sprite without replacing its image.
+   * Body: { expression: string }
+   */
+  app.patch<{ Params: { characterId: string; expression: string } }>(
+    "/:characterId/:expression",
+    { config: { rateLimit: SPRITE_RENAME_RATE_LIMIT } },
+    async (req, reply) =>
+      withSpriteRenameLock(req.params.characterId, async () => {
+        const { characterId, expression } = req.params;
+        if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
+          return reply.status(400).send({ error: "Invalid character ID" });
+        }
+
+        const body = req.body;
+        const nextExpression =
+          body &&
+          typeof body === "object" &&
+          !Array.isArray(body) &&
+          typeof (body as { expression?: unknown }).expression === "string"
+            ? normalizeSpriteExpression((body as { expression: string }).expression)
+            : "";
+        if (!nextExpression) {
+          return reply.status(400).send({ error: "Expression label must include at least one letter or number" });
+        }
+
+        const dir = join(SPRITES_ROOT, characterId);
+        if (!existsSync(dir)) return reply.status(404).send({ error: "No sprites found" });
+
+        const files = readdirSync(dir);
+        const source = files.find((filename) => {
+          const ext = extname(filename);
+          return SPRITE_FILE_RE.test(filename) && filename.slice(0, -ext.length) === expression;
+        });
+        if (!source) return reply.status(404).send({ error: "Expression not found" });
+
+        const extension = extname(source);
+        const target = `${nextExpression}${extension}`;
+        const hasNameCollision = files.some((filename) => {
+          if (!SPRITE_FILE_RE.test(filename)) return false;
+          const filenameExpression = filename.slice(0, -extname(filename).length);
+          return filename !== source && filenameExpression.toLowerCase() === nextExpression.toLowerCase();
+        });
+        if (hasNameCollision) {
+          return reply.status(409).send({ error: "An expression with that name already exists" });
+        }
+
+        if (target !== source) await rename(join(dir, source), join(dir, target));
+        const mtime = statSync(join(dir, target)).mtimeMs;
+        return {
+          expression: nextExpression,
+          filename: target,
+          url: `/api/sprites/${characterId}/file/${encodeURIComponent(target)}?v=${Math.floor(mtime)}`,
+        };
+      }),
+  );
 
   /**
    * DELETE /api/sprites/:characterId/:expression

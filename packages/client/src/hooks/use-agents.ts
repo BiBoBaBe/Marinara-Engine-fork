@@ -30,6 +30,7 @@ export interface AgentConfigRow {
 }
 
 export interface AgentRunRow {
+  hideOutput?: boolean;
   id: string;
   agentConfigId: string;
   agentType: string;
@@ -196,8 +197,10 @@ export function useAgentSuiteRewrite() {
 export function useUpdateAgentRunData() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, resultData }: { id: string; chatId: string; resultData: unknown }) =>
-      api.patch(`/agents/runs/${id}`, { resultData }),
+    mutationFn: ({ id, chatId, resultData }: { id: string; chatId: string; resultData: unknown }) =>
+      // chatId is the run's owning chat — the server uses it to scope the
+      // run lookup to one chat's storage instead of loading every chat's (#5615).
+      api.patch(`/agents/runs/${id}`, { resultData, chatId }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: agentKeys.customRuns(variables.chatId) });
     },

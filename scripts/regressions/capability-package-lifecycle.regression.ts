@@ -104,7 +104,7 @@ try {
   const legacyManifest = capabilityPackageManifestSchema.parse(installedPackage("legacy", ["agent"]).manifest);
   assert.equal(legacyManifest.schemaVersion, 1, "Existing manifest v1 packages must remain readable");
   assert.equal(getCapabilityApiCompatibilityIssue(legacyManifest), null);
-  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 14 });
+  assert.deepEqual(supportedCapabilityApi, { major: 1, minor: 18 });
 
   const manifestV2 = capabilityPackageManifestSchema.parse({
     ...legacyManifest,
@@ -140,20 +140,76 @@ try {
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMajorManifest) ?? "",
-    /requires capability API 2\.0; this Engine supports 1\.14/,
+    /requires capability API 2\.0; this Engine supports 1\.18/,
   );
   const currentMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 14 },
+    capabilityApi: { major: 1, minor: 18 },
   });
   assert.equal(getCapabilityApiCompatibilityIssue(currentMinorManifest), null);
   const unsupportedMinorManifest = capabilityPackageManifestSchema.parse({
     ...manifestV2,
-    capabilityApi: { major: 1, minor: 15 },
+    capabilityApi: { major: 1, minor: 19 },
   });
   assert.match(
     getCapabilityApiCompatibilityIssue(unsupportedMinorManifest) ?? "",
-    /requires capability API 1\.15; this Engine supports 1\.14/,
+    /requires capability API 1\.19; this Engine supports 1\.18/,
+  );
+  const startupManifest = {
+    ...currentMinorManifest,
+    contributions: { slots: ["game-surface"], gameSurface: { prepareBeforeStart: true } },
+  };
+  assert.equal(
+    capabilityPackageManifestSchema.parse(startupManifest).contributions?.gameSurface?.prepareBeforeStart,
+    true,
+  );
+  assert.throws(
+    () => capabilityPackageManifestSchema.parse({ ...startupManifest, capabilityApi: { major: 1, minor: 16 } }),
+    /prepareBeforeStart requires schemaVersion 2 and capabilityApi 1\.17/,
+  );
+  assert.throws(
+    () =>
+      capabilityPackageManifestSchema.parse({
+        ...startupManifest,
+        contributions: { gameSurface: { prepareBeforeStart: true } },
+      }),
+    /prepareBeforeStart requires the .*game-surface.* slot/,
+  );
+
+  const inlineSetupManifest = {
+    ...startupManifest,
+    contributions: {
+      slots: ["game-surface"],
+      gameSurface: {
+        setup: {
+          seed: { key: "worldSeed" },
+          config: { generate: true },
+          requires: { enableCustomWidgets: false },
+        },
+      },
+    },
+  };
+  const inlineSetup = capabilityPackageManifestSchema.parse(inlineSetupManifest);
+  assert.equal(inlineSetup.contributions?.gameSurface?.setup?.seed?.key, "worldSeed");
+  assert.throws(
+    () => capabilityPackageManifestSchema.parse({ ...inlineSetupManifest, capabilityApi: { major: 1, minor: 17 } }),
+    /requires.*1\.18/,
+  );
+  assert.throws(
+    () =>
+      capabilityPackageManifestSchema.parse({
+        ...inlineSetupManifest,
+        contributions: {
+          slots: ["game-surface"],
+          gameSurface: {
+            setup: {
+              seed: { key: "worldSeed" },
+              config: { worldSeed: 7 },
+            },
+          },
+        },
+      }),
+    /cannot override.*seed/,
   );
 
   const forwardCompatibleCatalog = capabilityCatalogSchema.parse({
@@ -238,6 +294,94 @@ try {
     resolveCapabilityPackageIconUrl,
     validatePackageArchiveEntries,
   } = await import("../../packages/server/src/services/capability-packages/package-manager.service.js");
+  const validInstalled = installedPackage("conversation-calls", ["agent", "conversation-calls"]);
+  const futureInstalled = installedPackage("future-package", ["agent"]);
+  const unsupportedInstalledRecord = {
+    ...futureInstalled,
+    manifest: { ...futureInstalled.manifest, unknownFutureField: { preserve: ["exact", 42] } },
+  };
+  const futureRecord = installedPackage("future-record", ["agent"]);
+  const unsupportedTopLevelRecord = { ...futureRecord, unknownFutureField: { preserve: ["exact", 43] } };
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      packages: [validInstalled, unsupportedInstalledRecord, unsupportedTopLevelRecord],
+    }),
+  );
+  await capabilityPackageManager.markRuntimeReadiness(validInstalled.id, "ready");
+  const preservedRegistry = JSON.parse(readFileSync(registryPath, "utf8"));
+  assert.equal(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === validInstalled.id).readiness,
+    "ready",
+  );
+  assert.deepEqual(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === futureInstalled.id),
+    unsupportedInstalledRecord,
+    "A real readiness write must preserve the unsupported sibling, including unknown nested fields",
+  );
+  assert.deepEqual(
+    preservedRegistry.packages.find((item: { id: string }) => item.id === futureRecord.id),
+    unsupportedTopLevelRecord,
+    "A real readiness write must preserve an otherwise supported record with unknown top-level fields",
+  );
+  assert.deepEqual(
+    (await capabilityPackageManager.installed()).map((item) => item.id),
+    [validInstalled.id],
+    "Unsupported records must not prevent supported packages loading",
+  );
+  const registryGuardCatalog = capabilityPackageManager.catalog;
+  capabilityPackageManager.catalog = async () => ({
+    schemaVersion: 1,
+    generatedAt: "2026-09-14T00:00:00.000Z",
+    packages: [futureInstalled, futureRecord].map((item) => ({
+      manifest: capabilityPackageManifestSchema.parse({ ...item.manifest, version: "0.9.0" }),
+      artifact: { url: "https://invalid.example/never-download.zip", sha256: "0".repeat(64), bytes: 1 },
+    })),
+  });
+  try {
+    for (const item of [futureInstalled, futureRecord]) {
+      await assert.rejects(
+        () => capabilityPackageManager.install(item.id, "0.9.0", "0".repeat(64)),
+        /refusing to downgrade/,
+        "Unsupported records must not hide the installed version from the pre-download downgrade guard",
+      );
+    }
+    assert.deepEqual(JSON.parse(readFileSync(registryPath, "utf8")), preservedRegistry);
+  } finally {
+    capabilityPackageManager.catalog = registryGuardCatalog;
+  }
+  writeFileSync(
+    registryPath,
+    JSON.stringify({ schemaVersion: 1, packages: [validInstalled, futureInstalled, unsupportedInstalledRecord] }),
+  );
+  await capabilityPackageManager.markRuntimeReadiness(futureInstalled.id, "ready");
+  assert.equal(
+    JSON.parse(readFileSync(registryPath, "utf8")).packages.filter(
+      (item: { id: string }) => item.id === futureInstalled.id,
+    ).length,
+    1,
+    "A now-valid replacement must not duplicate its old unsupported record",
+  );
+  for (const invalidRegistry of [
+    "",
+    "{",
+    "null",
+    "{}",
+    '{"schemaVersion":2,"packages":[]}',
+    '{"schemaVersion":1,"packages":{}}',
+  ]) {
+    writeFileSync(registryPath, invalidRegistry);
+    await assert.rejects(() => capabilityPackageManager.installed(), "Malformed outer registries remain strict");
+    await assert.rejects(() => capabilityPackageManager.markRuntimeReadiness(validInstalled.id, "ready"));
+    assert.equal(readFileSync(registryPath, "utf8"), invalidRegistry, "Rejected files must not be rewritten");
+  }
+  writeRegistry([]);
+  assert.deepEqual(await capabilityPackageManager.installed(), [], "An empty registry remains supported");
+  rmSync(registryPath);
+  assert.deepEqual(await capabilityPackageManager.installed(), [], "A missing registry remains a fresh installation");
+  writeRegistry([validInstalled]);
+
   const directoryFloodArchive = {
     getEntries: () => Array.from({ length: 8_193 }, (_, index) => ({ isDirectory: true, entryName: `dir-${index}/` })),
   } as unknown as Parameters<typeof validatePackageArchiveEntries>[0];
@@ -407,6 +551,7 @@ try {
   const routeApp = {
     server: routeServer,
     hasRoute: () => false,
+    addContentTypeParser: () => routeApp,
     route: () => {
       registeredRoutes++;
     },
@@ -445,6 +590,7 @@ try {
   const rootRouteApp = {
     server: { listening: false },
     hasRoute: () => false,
+    addContentTypeParser: () => rootRouteApp,
     route: (definition: { url: string }) => assert.equal(definition.url, "/api/root-package"),
   } as Parameters<typeof registerCapabilityPrivilegedRoutes>[0];
   const rootRoutePackage = installedPackage("root-package", ["agent"]);
@@ -1057,11 +1203,7 @@ try {
       browserTabAsset?.file,
       join(packagesRoot, "versions", agentSuite.id, agentSuite.version, "suite-tab.png"),
     );
-    assert.equal(
-      browserTabAsset?.data?.toString("utf8"),
-      "x",
-      "Every serve must hand back the exact bytes it hashed",
-    );
+    assert.equal(browserTabAsset?.data?.toString("utf8"), "x", "Every serve must hand back the exact bytes it hashed");
     const repeatAsset = await capabilityPackageManager.packageAsset(agentSuite.id, "suite-tab.png");
     assert.deepEqual(repeatAsset, browserTabAsset, "Repeated resolution must be deterministic");
     assert.equal(
@@ -1176,6 +1318,8 @@ try {
   const blocked = installedPackage("hierarchical-maps", ["agent", "maps"]);
   const failing = installedPackage("readiness-failure", ["agent"]);
   const ready = installedPackage("readiness-success", ["agent"]);
+  failing.manifest.permissions.push("chat-read");
+  ready.manifest.permissions.push("chat-read");
   ready.manifest.files.push({ path: "runtime-dependency.mjs", sha256: "0".repeat(64), bytes: 1 });
   writeRegistry([blocked, failing, ready]);
   writeFileSync(
@@ -1221,6 +1365,9 @@ try {
       if (typeof api.runtime.getAgentConfig !== "function") {
         throw new Error("Capability API 1.5 agent config host is unavailable");
       }
+      if (typeof api.runtime.resolveEmbeddings !== "function") {
+        throw new Error("Capability API 1.15 embedding resolver is unavailable");
+      }
       if (typeof api.runtime.embeddings?.embed !== "function" || !api.runtime.embeddings.spaceId) {
         throw new Error("Capability embedding host is unavailable");
       }
@@ -1234,7 +1381,7 @@ try {
       await api.runtime.persistence.listExistingLorebookEntryIds([]);
       await api.runtime.resources.listCharacters([]);
       await api.runtime.resources.listEligibleLorebookEntries({ lorebookIds: [], entryIds: [] });
-      api.registerService("readiness:success", { active: true, debugAgentsEnabled });
+      api.registerService("readiness:success", { active: true, debugAgentsEnabled, runtime: api.runtime });
     }
     export async function selfCheck({ api }) {
       const dependency = await import("./runtime-dependency.mjs");
@@ -1270,12 +1417,16 @@ try {
   const db = await getDB();
   const { createConnectionsStorage } =
     await import("../../packages/server/src/services/storage/connections.storage.js");
-  const remoteEmbeddingConnection = await createConnectionsStorage(db).create({
+  const connections = createConnectionsStorage(db);
+  const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
+  const agents = createAgentsStorage(db);
+  const remoteEmbeddingConnection = await connections.create({
     name: "Capability remote embeddings",
     provider: "custom",
     baseUrl: "https://chat.example.invalid/v1",
     embeddingBaseUrl: "https://embeddings.example.invalid/v1",
     embeddingModel: "text-embedding-regression",
+    isDefault: true,
   });
   const configuredEmbeddingHost = await createConfiguredCapabilityEmbeddingHost(db, remoteEmbeddingConnection.id);
   assert.equal(configuredEmbeddingHost.label, "Capability remote embeddings (text-embedding-regression)");
@@ -1289,7 +1440,7 @@ try {
     repeatedConfiguredEmbeddingHost.spaceId,
     "the same configured embedding source must keep a stable space ID",
   );
-  const caseDistinctEmbeddingConnection = await createConnectionsStorage(db).create({
+  const caseDistinctEmbeddingConnection = await connections.create({
     name: "Capability case-distinct embeddings",
     provider: "custom",
     baseUrl: "https://chat.example.invalid/v1",
@@ -1703,6 +1854,46 @@ try {
     typeof getCapabilityService<{ active: boolean; debugAgentsEnabled: boolean }>("readiness:success")
       ?.debugAgentsEnabled,
     "boolean",
+  );
+  const liveEmbeddingRuntime = getCapabilityService<{
+    runtime: { embeddings: { label: string }; resolveEmbeddings(): Promise<{ label: string }> };
+  }>("readiness:success")?.runtime;
+  assert.ok(liveEmbeddingRuntime, "activated package must expose its capability runtime");
+  assert.equal(
+    liveEmbeddingRuntime.embeddings.label,
+    "Capability remote embeddings (text-embedding-regression)",
+    "legacy static embeddings must retain the activation-time source",
+  );
+  const replacementEmbeddingConnection = await connections.create({
+    name: "Capability replacement embeddings",
+    provider: "custom",
+    baseUrl: "https://chat.example.invalid/v1",
+    embeddingBaseUrl: "https://embeddings.example.invalid/v1",
+    embeddingModel: "text-embedding-replacement",
+  });
+  await connections.update(remoteEmbeddingConnection.id, { isDefault: false });
+  await connections.update(replacementEmbeddingConnection.id, { isDefault: true });
+  assert.equal(
+    (await liveEmbeddingRuntime.resolveEmbeddings()).label,
+    "Capability replacement embeddings (text-embedding-replacement)",
+    "live capability embeddings must follow a changed global default without reactivation",
+  );
+  const packageConfig = await agents.create({
+    type: "readiness-success",
+    name: "Readiness success",
+    phase: "parallel",
+    connectionId: remoteEmbeddingConnection.id,
+  });
+  assert.equal(
+    (await liveEmbeddingRuntime.resolveEmbeddings()).label,
+    "Capability remote embeddings (text-embedding-regression)",
+    "a package-specific connection must override the global embedding default",
+  );
+  await agents.update(packageConfig!.id, { connectionId: null });
+  assert.equal(
+    (await liveEmbeddingRuntime.resolveEmbeddings()).label,
+    "Capability replacement embeddings (text-embedding-replacement)",
+    "clearing a package override must resume the current global embedding default",
   );
   assert.equal(await capabilityPackageManager.clientEntrypoint("hierarchical-maps"), null);
   assert.equal(await capabilityPackageManager.clientEntrypoint("readiness-failure"), null);

@@ -28,6 +28,7 @@ import {
 import { collectEffectivelyDisabledFolderIds, collectFolderSubtreeIds } from "@marinara-engine/shared";
 import { normalizeTimestampOverrides, type TimestampOverrides } from "../import/import-timestamps.js";
 import { toPaginatedList } from "../../utils/list-pagination.js";
+import { createChatsStorage } from "./chats.storage.js";
 
 function normalizeLorebookEntryLimit(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -208,7 +209,15 @@ function parseEntryRow(row: Record<string, unknown>) {
     dynamicState: JSON.parse((row.dynamicState as string) || "{}"),
     activationConditions: JSON.parse((row.activationConditions as string) || "[]"),
     schedule: row.schedule ? JSON.parse(row.schedule as string) : null,
-    embedding: row.embedding ? JSON.parse(row.embedding as string) : null,
+    // Unprojected selects receive the original JSON string; a projected
+    // select would surface the store's packed Float64Array (#5592) — accept
+    // both so no read path depends on which shape it got.
+    embedding:
+      row.embedding instanceof Float64Array
+        ? Array.from(row.embedding)
+        : row.embedding
+          ? JSON.parse(row.embedding as string)
+          : null,
     embeddingSpaceId: (row.embeddingSpaceId as string | null | undefined) ?? null,
   };
 }
@@ -602,11 +611,16 @@ export function createLorebooksStorage(db: DB) {
     },
 
     async remove(id: string) {
-      await db.transaction(async (tx) => {
-        await tx.delete(lorebookCharacterLinks).where(eq(lorebookCharacterLinks.lorebookId, id));
-        await tx.delete(lorebookPersonaLinks).where(eq(lorebookPersonaLinks.lorebookId, id));
-        await tx.delete(lorebooks).where(eq(lorebooks.id, id));
-      });
+      await createChatsStorage(db).pruneLorebookChatMetadata(async () => {
+        const entries = await db
+          .select({ id: lorebookEntries.id })
+          .from(lorebookEntries)
+          .where(eq(lorebookEntries.lorebookId, id));
+        await db.delete(lorebookCharacterLinks).where(eq(lorebookCharacterLinks.lorebookId, id));
+        await db.delete(lorebookPersonaLinks).where(eq(lorebookPersonaLinks.lorebookId, id));
+        await db.delete(lorebooks).where(eq(lorebooks.id, id));
+        return entries.map((entry) => entry.id);
+      }, id);
     },
 
     // ── Entries ──
@@ -648,9 +662,10 @@ export function createLorebooksStorage(db: DB) {
      */
     async listEligibleEntriesByIds(
       entryIds: string[],
-      filters?: { excludedLorebookIds?: string[]; excludedSourceAgentIds?: string[] },
+      filters?: { excludedLorebookIds?: string[]; excludedSourceAgentIds?: string[]; unlimited?: boolean },
     ): Promise<LorebookEntry[]> {
-      const requestedIds = uniqueStrings(entryIds).slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
+      const ids = uniqueStrings(entryIds);
+      const requestedIds = filters?.unlimited ? ids : ids.slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
       if (requestedIds.length === 0) return [];
 
       const entryRows = await db
@@ -1118,7 +1133,10 @@ export function createLorebooksStorage(db: DB) {
     },
 
     async removeEntry(id: string) {
-      await db.delete(lorebookEntries).where(eq(lorebookEntries.id, id));
+      await createChatsStorage(db).pruneLorebookChatMetadata(async () => {
+        await db.delete(lorebookEntries).where(eq(lorebookEntries.id, id));
+        return [id];
+      });
     },
 
     // ── Folders ──
@@ -1213,16 +1231,26 @@ export function createLorebooksStorage(db: DB) {
       const ownerLorebookId = folder.lorebookId as string;
       // Cascade: delete the folder, every descendant folder, and all their entries.
       if (cascade) {
-        const subtreeIds = collectFolderSubtreeIds(
-          (await this.listFolders(ownerLorebookId)) as unknown as Array<{ id: string; parentFolderId: string | null }>,
-          folderId,
-        );
-        await db
-          .delete(lorebookEntries)
-          .where(and(eq(lorebookEntries.lorebookId, ownerLorebookId), inArray(lorebookEntries.folderId, subtreeIds)));
-        await db
-          .delete(lorebookFolders)
-          .where(and(eq(lorebookFolders.lorebookId, ownerLorebookId), inArray(lorebookFolders.id, subtreeIds)));
+        await createChatsStorage(db).pruneLorebookChatMetadata(async () => {
+          const subtreeIds = collectFolderSubtreeIds(
+            (await this.listFolders(ownerLorebookId)) as unknown as Array<{
+              id: string;
+              parentFolderId: string | null;
+            }>,
+            folderId,
+          );
+          const removedEntries = await db
+            .select({ id: lorebookEntries.id })
+            .from(lorebookEntries)
+            .where(and(eq(lorebookEntries.lorebookId, ownerLorebookId), inArray(lorebookEntries.folderId, subtreeIds)));
+          await db
+            .delete(lorebookEntries)
+            .where(and(eq(lorebookEntries.lorebookId, ownerLorebookId), inArray(lorebookEntries.folderId, subtreeIds)));
+          await db
+            .delete(lorebookFolders)
+            .where(and(eq(lorebookFolders.lorebookId, ownerLorebookId), inArray(lorebookFolders.id, subtreeIds)));
+          return removedEntries.map((entry) => entry.id);
+        });
         return;
       }
       // Entries in this folder fall back to root...
@@ -1349,13 +1377,16 @@ export function createLorebooksStorage(db: DB) {
 
     /** Search entries by keyword match in name/content/keys. */
     async searchEntries(query: string) {
-      const pattern = `%${query}%`;
-      const rows = await db
-        .select()
-        .from(lorebookEntries)
-        .where(like(lorebookEntries.name, pattern))
-        .orderBy(lorebookEntries.order);
-      return rows.map((r) => parseEntryRow(r as Record<string, unknown>));
+      const text = query.trim().toLowerCase();
+      if (!text) return [];
+      const rows = await db.select(lorebookEntries).from(lorebookEntries).orderBy(lorebookEntries.order);
+      return rows
+        .filter((row) =>
+          [row.name, row.content, ...parseStringArray(row.keys)].some(
+            (value) => typeof value === "string" && value.toLowerCase().includes(text),
+          ),
+        )
+        .map((row) => parseEntryRow(row as Record<string, unknown>));
     },
   };
 }

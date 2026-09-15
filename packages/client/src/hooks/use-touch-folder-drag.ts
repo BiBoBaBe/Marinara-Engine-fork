@@ -30,6 +30,7 @@ type TouchFolderDragState = {
 type TouchFolderDragOptions = {
   delayMs?: number;
   moveActivateThresholdPx?: number;
+  /** Set to zero to keep the surrounding panel still while dragging. */
   autoScrollEdgePx?: number;
   autoScrollMaxSpeedPx?: number;
   onActivate: (id: string) => void;
@@ -85,6 +86,7 @@ function createPreviewElement(drag: TouchFolderDragState) {
   drag.previewOffsetY = drag.startY - rect.top;
 
   clone.setAttribute("aria-hidden", "true");
+  clone.classList.add("mari-chrome-token-scope");
   clone.style.position = "fixed";
   clone.style.left = "0";
   clone.style.top = "0";
@@ -224,6 +226,7 @@ export function useTouchFolderDrag({
   const getAutoScrollDelta = useCallback((drag: TouchFolderDragState) => {
     const edgePx = optionsRef.current.autoScrollEdgePx;
     const maxSpeedPx = optionsRef.current.autoScrollMaxSpeedPx;
+    if (edgePx <= 0) return null;
 
     for (const target of drag.scrollTargets) {
       const { top, bottom } = target.getBounds();

@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
-import { inferImageSource, type ImagePromptKind } from "@marinara-engine/shared";
+import { inferImageSource, isOpenAIGptImageModel, type ImagePromptKind } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { flushDB } from "../../db/connection.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
@@ -241,10 +241,6 @@ function detectImageKind(target: ImageTarget | null, explicit?: string): ImagePr
     default:
       return "illustration";
   }
-}
-
-function isOpenAIGptImageModel(model?: string) {
-  return !!model && /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(model.trim());
 }
 
 function isStabilityV1Base(baseUrl: string) {
@@ -981,7 +977,7 @@ export class MariImagesService {
   }
 
   private async chatGalleryImageUrl(chatId: string, imageId: string) {
-    const image = await createGalleryStorage(this.db).getById(imageId);
+    const image = await createGalleryStorage(this.db).getById(imageId, chatId);
     if (!image || image.chatId !== chatId) throw new Error(`Chat gallery image not found: ${imageId}`);
     const filename = image.filePath.split("/").pop() ?? "";
     const ownerChatId = image.filePath.split("/").filter(Boolean).length > 1 ? image.filePath.split("/")[0]! : chatId;
@@ -1350,7 +1346,7 @@ export class MariImagesService {
 
   private async deleteChatGallery(chatId: string, imageId: string) {
     const store = createGalleryStorage(this.db);
-    const image = await store.getById(imageId);
+    const image = await store.getById(imageId, chatId);
     if (!image || image.chatId !== chatId) throw new Error(`Chat gallery image not found: ${imageId}`);
     const cleanup = await deleteChatGalleryImageEverywhere({ db: this.db, image });
     return { deleted: image, cleanup };

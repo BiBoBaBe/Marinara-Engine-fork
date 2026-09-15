@@ -21,14 +21,13 @@ import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import { useGameAssetStore } from "../../stores/game-asset.store";
-import { NewGameExperienceChooser } from "./NewGameExperienceChooser";
 import {
   gameAssetKeys,
   useGameAssetManifest,
   type GameAssetEntry,
   type GameAssetManifest,
 } from "../../hooks/use-game-assets";
-import { cleanNpcAvatarDisplayName, isSameNpcAvatarResource, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
+import { cleanNpcAvatarDisplayName, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -68,6 +67,7 @@ import {
 } from "../../hooks/use-game-storyboards";
 import {
   chatKeys,
+  guardServerChatSnapshot,
   useBranchChat,
   useCreateMessage,
   useDeleteChat,
@@ -77,8 +77,13 @@ import {
 } from "../../hooks/use-chats";
 import { useConnections } from "../../hooks/use-connections";
 import { useAgentConfigs } from "../../hooks/use-agents";
-import { selectGameExperiencePackages, useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
+import {
+  selectGameExperiencePackages,
+  useCapabilityClientModuleState,
+  useInstalledCapabilityPackages,
+} from "../../hooks/use-capability-packages";
 import { useGenerate } from "../../hooks/use-generate";
+import { isVisibleGameMessage } from "../../lib/chat-message-visibility";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { useGenerateSpatialMapDraft, useSpatialContext } from "../../hooks/use-spatial-context";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -164,6 +169,7 @@ import {
   musicAreaSlug,
   normalizeMusicEnemyTier,
   isContextMusicTag,
+  isEngineRollableSkillCheckTag,
   type MusicEnemyTier,
   scoreAmbient,
 } from "@marinara-engine/shared";
@@ -328,6 +334,7 @@ const GAME_MOBILE_FLOATING_PANEL =
   "fixed z-[9999] h-[min(42rem,calc(100dvh-4.75rem))] w-[min(42rem,calc(100vw-4.75rem))]";
 const GAME_MOBILE_FLOATING_MENU = "fixed z-[9999] max-h-[min(32rem,calc(100dvh-4.75rem))] overflow-y-auto";
 const EXPERIENCE_UNDERLAY_LAYER = "underlay" as const;
+const EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH = 8_000;
 const EMPTY_SPEAKER_AVATARS: ReadonlyMap<string, { url: string }> = new Map();
 /** Classic chrome an experience declares it replaces; anything left undeclared stays Classic. */
 type ExperienceChromeDeclaration = {
@@ -613,11 +620,6 @@ type SceneAssetPresentCharacter = {
   appearance?: string | null;
   avatarPath?: string | null;
   avatarCrop?: AvatarCrop | null;
-};
-
-type SpeakingLibraryCharacter = {
-  character: GameSurfaceProps["characters"][number];
-  aliases: string[];
 };
 
 type GamePartyMemberInfo = {
@@ -1203,22 +1205,6 @@ function extractGameDialogueSpeakerNames(content: string): string[] {
     while ((match = pattern.exec(content)) !== null) {
       const name = match[1]?.trim();
       if (name && !name.includes(":")) names.add(name);
-    }
-  }
-
-  return [...names];
-}
-
-function extractRecentGameDialogueSpeakerNames(messages: Message[], maxAssistantMessages = 30): string[] {
-  const names = new Set<string>();
-  let assistantMessagesSeen = 0;
-
-  for (let i = messages.length - 1; i >= 0 && assistantMessagesSeen < maxAssistantMessages; i--) {
-    const message = messages[i];
-    if (!message || (message.role !== "assistant" && message.role !== "narrator")) continue;
-    assistantMessagesSeen++;
-    for (const name of extractGameDialogueSpeakerNames(message.content)) {
-      names.add(name);
     }
   }
 
@@ -2285,7 +2271,7 @@ function GameSurfaceComponent({
   messages,
   isStreaming,
   characterMap,
-  characters,
+  characters: libraryCharacters,
   personaInfo,
   chatBackground,
   connectedChatName,
@@ -2306,10 +2292,11 @@ function GameSurfaceComponent({
   useRenderTimer("game-surface"); // [#3104 diagnostic]
   const backgroundIllustration = useChatStore((state) => state.backgroundIllustrationChatIds.has(activeChatId));
   const agentsProcessing = useAgentStore((state) => state.processingChatIds.includes(activeChatId));
+  const gameSequentialAgents = chatMeta.gameSequentialAgents === true;
   const gameInputGenerationBlocked = isGenerationSendBlocked({
     streamActive: isStreaming,
     agentsProcessing,
-    backgroundIllustration,
+    backgroundIllustration: backgroundIllustration && !gameSequentialAgents,
   });
   // Sync game metadata → store
   useSyncGameState(activeChatId, chatMeta);
@@ -2335,6 +2322,7 @@ function GameSurfaceComponent({
     return selectGameExperiencePackages(installedCapabilityPackages).find((pkg) => pkg.id === gameExperienceId) ?? null;
   }, [gameExperienceId, installedCapabilityPackages]);
   const experienceSurfaceId = experienceSurfacePackage?.id ?? null;
+  const experienceClientModule = useCapabilityClientModuleState(experienceSurfaceId ?? "");
   /** Class the manifest asks the host to stamp on the game area, so the package can restyle the shared
    *  chrome that renders outside its element. Declared rather than pushed, so it applies on first paint. */
   const experienceSurfaceClass = experienceSurfacePackage?.manifest.contributions?.gameSurface?.surfaceClass ?? null;
@@ -2391,7 +2379,7 @@ function GameSurfaceComponent({
       activeMapId: s.activeMapId,
       sessionNumber: s.sessionNumber,
       isSetupActive: s.isSetupActive,
-      diceRollResult: s.diceRollResult,
+      diceRollResult: s.diceRollResults[0] ?? null,
       npcs: s.npcs,
       hudWidgets: s.hudWidgets,
       blueprint: s.blueprint,
@@ -2402,7 +2390,7 @@ function GameSurfaceComponent({
 
   const closeCharacterSheet = useGameModeStore((s) => s.closeCharacterSheet);
   const applyWidgetUpdate = useGameModeStore((s) => s.applyWidgetUpdate);
-  const setDiceRollResult = useGameModeStore((s) => s.setDiceRollResult);
+  const dismissDiceRollResult = useGameModeStore((s) => s.dismissDiceRollResult);
   const weatherEffectsEnabled = useUIStore((s) => s.weatherEffects);
   const gameFullBodySpriteScale = useUIStore((s) => s.gameFullBodySpriteScale);
   const chatBackgroundBlur = useUIStore((s) => s.chatBackgroundBlur);
@@ -2415,6 +2403,17 @@ function GameSurfaceComponent({
   const chatCharacterIds = useMemo(
     () => getChatCharacterIds(chat.characterIds).filter((id) => id !== PROFESSOR_MARI_ID),
     [chat.characterIds],
+  );
+  const gameCharacterIds = useMemo(() => {
+    const config = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
+    const ids = new Set([...chatCharacterIds, ...getActivePartyIds(chatMeta)]);
+    if (typeof config?.gmCharacterId === "string") ids.add(config.gmCharacterId);
+    return [...ids].filter((id) => characterMap.has(id));
+  }, [characterMap, chatCharacterIds, chatMeta]);
+  // An unrelated library card with the same name is not a character in this game.
+  const characters = useMemo(
+    () => libraryCharacters.filter((character) => gameCharacterIds.includes(character.id)),
+    [gameCharacterIds, libraryCharacters],
   );
   const gameMusicDjEnabled =
     chatMeta.gameUseMusicDj === true ||
@@ -2633,6 +2632,46 @@ function GameSurfaceComponent({
       gameSurfaceMountedRef.current = false;
     };
   }, []);
+  const experiencePreparesBeforeStart =
+    experienceSurfacePackage?.manifest.contributions?.gameSurface?.prepareBeforeStart === true;
+  const experienceStartupScope = useMemo(
+    () => ({
+      chat: sceneRuntimeScopeKey,
+      packageId: experienceSurfaceId,
+      version: experienceSurfacePackage?.version,
+      attempt: experienceClientModule.attempt,
+    }),
+    [sceneRuntimeScopeKey, experienceSurfaceId, experienceSurfacePackage?.version, experienceClientModule.attempt],
+  );
+  const experienceStartupScopeRef = useRef(experienceStartupScope);
+  experienceStartupScopeRef.current = experienceStartupScope;
+  const [experienceStartup, setExperienceStartup] = useState<{
+    scope: typeof experienceStartupScope;
+    context: string | null;
+    invalid: boolean;
+  } | null>(null);
+  const setStartupReady = useCallback(
+    (context: string | null) => {
+      if (!gameSurfaceMountedRef.current || experienceStartupScopeRef.current !== experienceStartupScope) return;
+      const invalid =
+        context !== null && (typeof context !== "string" || context.length > EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH);
+      const nextContext = invalid ? null : context;
+      setExperienceStartup((previous) =>
+        previous?.scope === experienceStartupScope && previous.context === nextContext && previous.invalid === invalid
+          ? previous
+          : { scope: experienceStartupScope, context: nextContext, invalid },
+      );
+    },
+    [experienceStartupScope],
+  );
+  const handleStartupHostError = useCallback(() => setStartupReady(null), [setStartupReady]);
+  const startupContext = experienceStartup?.scope === experienceStartupScope ? experienceStartup.context : null;
+  const experienceStartupInvalid = experienceStartup?.scope === experienceStartupScope && experienceStartup.invalid;
+  const experienceStartupBlocked =
+    (gameExperienceId !== null && installedCapabilityPackagesPending) ||
+    (experiencePreparesBeforeStart && startupContext === null);
+  const experienceStartupRef = useRef({ blocked: experienceStartupBlocked, context: startupContext });
+  experienceStartupRef.current = { blocked: experienceStartupBlocked, context: startupContext };
   const currentBackground = useGameAssetStore((s) => s.currentBackground);
   const gameAssetExcludedFolders = useMemo(
     () => parseGameAssetExcludedFolders(chatMeta.gameAssetSelection),
@@ -2966,8 +3005,8 @@ function GameSurfaceComponent({
     statuses: CombatStatusTag[];
     messageId: string;
   } | null>(null);
-  const [pendingSkillCheck, setPendingSkillCheck] = useState<import("@marinara-engine/shared").SkillCheckResult | null>(
-    null,
+  const [pendingSkillChecks, setPendingSkillChecks] = useState<import("@marinara-engine/shared").SkillCheckResult[]>(
+    [],
   );
   const [pendingReaction, setPendingReaction] = useState<{
     reaction: string;
@@ -3199,6 +3238,16 @@ function GameSurfaceComponent({
   const gameAssetsPanelRef = useRef<HTMLDivElement>(null);
   const mobileGameAssetsPanelRef = useRef<HTMLDivElement>(null);
   const hudSurfaceRef = useRef<HTMLDivElement>(null);
+  // The surface is also tracked in state so the widget-layout effect below can
+  // depend on it. GameSurface renders a messages-loading branch that mounts no
+  // surface at all, and the widget state hydrates from chat metadata while that
+  // branch is up — measuring then finds no element, attaches no ResizeObserver,
+  // and nothing re-measures once the real surface arrives.
+  const [hudSurfaceEl, setHudSurfaceEl] = useState<HTMLDivElement | null>(null);
+  const attachHudSurface = useCallback((node: HTMLDivElement | null) => {
+    hudSurfaceRef.current = node;
+    setHudSurfaceEl(node);
+  }, []);
   const compactHudWidgetsRef = useRef(compactHudWidgets);
   const compactHudReleaseWidthRef = useRef<number | null>(null);
   const lastProcessedMsgRef = useRef<string | null>(null);
@@ -3234,13 +3283,14 @@ function GameSurfaceComponent({
 
   const introPresentationStorageKey = `game-intro-presented:${activeChatId}`;
   const assistantTurnCount = useMemo(
-    () => messages.filter((m) => (m.role === "assistant" || m.role === "narrator") && !!m.content.trim()).length,
+    () => messages.filter((m) => (m.role === "assistant" || m.role === "narrator") && isVisibleGameMessage(m)).length,
     [messages],
   );
   const latestAssistantTurnForIntro = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]!;
-      if (message.role === "assistant" || message.role === "narrator") return message;
+      if ((message.role === "assistant" || message.role === "narrator") && isVisibleGameMessage(message))
+        return message;
     }
     return null;
   }, [messages]);
@@ -3493,7 +3543,6 @@ function GameSurfaceComponent({
   const handleSegmentEnter = useCallback(
     (segmentIndex: number) => {
       setActiveStoryboardSegmentIndex(Number.isFinite(segmentIndex) ? segmentIndex : null);
-      useGameModeStore.getState().setDiceRollResult(null);
       const sceneEffectsApplied = appliedSegmentsRef.current.has(segmentIndex);
       const inventoryApplied = appliedInventorySegmentsRef.current.has(segmentIndex);
       const effects = sceneEffectsApplied ? [] : pendingSegmentEffects.filter((e) => e.segment === segmentIndex);
@@ -3605,23 +3654,6 @@ function GameSurfaceComponent({
     }
   }, [assetManifest, chatMeta.gameSceneBackground, scopedAssetMap, useMusicDjPlayerMusic]);
 
-  const gameCharacterIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const id of chatCharacterIds) {
-      if (characterMap.has(id)) ids.add(id);
-    }
-
-    const config = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
-    const gmCharacterId = typeof config?.gmCharacterId === "string" ? config.gmCharacterId : null;
-    if (gmCharacterId && characterMap.has(gmCharacterId)) ids.add(gmCharacterId);
-
-    for (const id of getActivePartyIds(chatMeta)) {
-      if (characterMap.has(id)) ids.add(id);
-    }
-
-    return [...ids];
-  }, [characterMap, chatCharacterIds, chatMeta]);
-
   // Fetch sprites for active game characters only. The full library is deliberately
   // not used here because a same-named character card can masquerade as the player.
   const characterIds = gameCharacterIds;
@@ -3642,21 +3674,12 @@ function GameSurfaceComponent({
     })),
   });
 
-  const spriteSpeakerMessages = replayActive ? replaySpriteMessages : messages;
-  const recentSpriteSpeakerNames = useMemo(
-    () => extractRecentGameDialogueSpeakerNames(spriteSpeakerMessages),
-    [spriteSpeakerMessages],
-  );
-
   useEffect(() => {
     const avatarPatches: Array<{ name: string; avatarUrl: string }> = [];
     for (const npc of npcs) {
       if (!npc.name) continue;
       const libraryCharacter = findNamedEntry(characters, npc.name, (character) => character.name);
-      if (
-        libraryCharacter?.avatarUrl &&
-        (!npc.avatarUrl || !isSameNpcAvatarResource(libraryCharacter.avatarUrl, npc.avatarUrl))
-      ) {
+      if (libraryCharacter?.avatarUrl && !npc.avatarUrl) {
         avatarPatches.push({ name: npc.name, avatarUrl: libraryCharacter.avatarUrl });
       }
     }
@@ -3664,52 +3687,6 @@ function GameSurfaceComponent({
       useGameModeStore.getState().patchNpcAvatars(avatarPatches);
     }
   }, [characters, npcs]);
-
-  const speakingLibraryCharacters = useMemo(() => {
-    const speakerNames = new Set<string>();
-    if (activeSpeaker?.name) speakerNames.add(activeSpeaker.name);
-    for (const name of recentSpriteSpeakerNames) {
-      speakerNames.add(name);
-    }
-    for (const line of partyDialogue) {
-      if (line.character.trim()) speakerNames.add(line.character.trim());
-    }
-
-    const inGameCharacterIds = new Set(characterIds);
-    const matched = new Map<string, SpeakingLibraryCharacter>();
-    const playerSpeakerName = personaInfo?.name ? normalizeSceneAssetName(personaInfo.name) : "";
-    for (const speakerName of speakerNames) {
-      if (playerSpeakerName && normalizeSceneAssetName(speakerName) === playerSpeakerName) continue;
-      const character = findNamedEntry(characters, speakerName, (entry) => entry.name);
-      if (!character || inGameCharacterIds.has(character.id) || character.id === personaSpriteId) continue;
-      const existing = matched.get(character.id);
-      if (existing) {
-        if (!existing.aliases.some((alias) => characterNamesMatch(alias, speakerName))) {
-          existing.aliases.push(speakerName);
-        }
-        continue;
-      }
-      matched.set(character.id, { character, aliases: [speakerName] });
-    }
-    return [...matched.values()];
-  }, [
-    activeSpeaker?.name,
-    characterIds,
-    characters,
-    partyDialogue,
-    personaInfo?.name,
-    personaSpriteId,
-    recentSpriteSpeakerNames,
-  ]);
-
-  const librarySpriteQueries = useQueries({
-    queries: speakingLibraryCharacters.map((entry) => ({
-      queryKey: spriteKeys.list(entry.character.id),
-      queryFn: () => api.get<SpriteInfo[]>(`/sprites/${entry.character.id}`),
-      enabled: !!entry.character.id,
-      staleTime: 5 * 60 * 1000,
-    })),
-  });
 
   const personaSpriteQuery = useQuery({
     queryKey: spriteKeys.list(personaSpriteId ?? ""),
@@ -3728,29 +3705,12 @@ function GameSurfaceComponent({
         map.set(normalizeTextForMatch(charInfo.name), data);
       }
     });
-    speakingLibraryCharacters.forEach((entry, i) => {
-      const data = librarySpriteQueries[i]?.data;
-      if (data?.length) {
-        map.set(normalizeTextForMatch(entry.character.name), data);
-        for (const alias of entry.aliases) {
-          map.set(normalizeTextForMatch(alias), data);
-        }
-      }
-    });
     // Add persona sprites if available
     if (personaInfo?.name && personaSpriteQuery.data?.length) {
       map.set(normalizeTextForMatch(personaInfo.name), personaSpriteQuery.data);
     }
     return map;
-  }, [
-    characterIds,
-    characterMap,
-    librarySpriteQueries,
-    personaInfo,
-    speakingLibraryCharacters,
-    personaSpriteQuery.data,
-    spriteQueries,
-  ]);
+  }, [characterIds, characterMap, personaInfo, personaSpriteQuery.data, spriteQueries]);
 
   // Speaker-avatar seam: an experience whose cast has no engine character cards pushes a name→url map
   // here, so its speakers still get an avatar in the narration.
@@ -3818,20 +3778,8 @@ function GameSurfaceComponent({
         dialogueColor?: string;
       }
     >();
-    for (const entry of speakingLibraryCharacters) {
-      const fromMap = characterMap.get(entry.character.id);
-      const avatarInfo = {
-        url: entry.character.avatarUrl ?? "",
-        crop: entry.character.avatarCrop,
-        nameColor: entry.character.nameColor ?? fromMap?.nameColor,
-        dialogueColor: entry.character.dialogueColor ?? fromMap?.dialogueColor,
-      };
-      map.set(normalizeTextForMatch(entry.character.name), avatarInfo);
-      for (const alias of entry.aliases) {
-        map.set(normalizeTextForMatch(alias), avatarInfo);
-      }
-    }
-    // Real library cards (added above) win; the player name is handled via personaInfo.
+    // Selected cards are resolved by characterIds; never borrow an unrelated card by name.
+    // Experiences can still supply their own cast portraits, excluding the player persona.
     const extra = activeExperienceAvatars?.speakerAvatars;
     if (extra?.size) {
       const playerKey = personaInfo?.name ? normalizeTextForMatch(personaInfo.name) : "";
@@ -3841,7 +3789,7 @@ function GameSurfaceComponent({
       }
     }
     return map;
-  }, [characterMap, speakingLibraryCharacters, activeExperienceAvatars, personaInfo?.name]);
+  }, [activeExperienceAvatars, personaInfo?.name]);
 
   // Fallback avatar for the player persona when it has none, so the player's dialogue shows one too.
   const effectivePersonaInfo = useMemo(() => {
@@ -3876,19 +3824,10 @@ function GameSurfaceComponent({
       return character ? ([[id, character]] as Array<[string, NonNullable<ReturnType<typeof characterMap.get>>]>) : [];
     });
     const entry = findNamedEntry(activeCharacterEntries, fullBodyTarget.name, ([, character]) => character.name);
-    const libraryEntry = entry
-      ? null
-      : findNamedEntry(speakingLibraryCharacters, fullBodyTarget.name, (candidate) =>
-          [candidate.character.name, ...candidate.aliases].join(" "),
-        );
-    const characterId = entry?.[0] ?? libraryEntry?.character.id;
+    const characterId = entry?.[0];
     if (!characterId) return null;
 
-    const characterIndex = entry ? characterIds.indexOf(entry[0]) : -1;
-    const libraryIndex = libraryEntry
-      ? speakingLibraryCharacters.findIndex((candidate) => candidate.character.id === libraryEntry.character.id)
-      : -1;
-    const sprites = entry ? spriteQueries[characterIndex]?.data : librarySpriteQueries[libraryIndex]?.data;
+    const sprites = spriteQueries[characterIds.indexOf(characterId)]?.data;
     const pose =
       fullBodyTarget.mode === "combat"
         ? resolveCombatFullBodyPose(fullBodyTarget.token, sprites)
@@ -3903,11 +3842,9 @@ function GameSurfaceComponent({
     characterIds,
     characterMap,
     fullBodyTarget,
-    librarySpriteQueries,
     personaInfo?.name,
     personaSpriteId,
     personaSpriteQuery.data,
-    speakingLibraryCharacters,
     spriteQueries,
   ]);
 
@@ -3952,7 +3889,9 @@ function GameSurfaceComponent({
   // Process GM tags from the latest assistant message
   const latestAssistantMsg = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]!.role === "assistant" || messages[i]!.role === "narrator") return messages[i];
+      const message = messages[i]!;
+      if ((message.role === "assistant" || message.role === "narrator") && isVisibleGameMessage(message))
+        return message;
     }
     return null;
   }, [messages]);
@@ -3972,6 +3911,13 @@ function GameSurfaceComponent({
   const previewTurnStoryboardPrompts = usePreviewGameTurnStoryboardPrompts();
   const storyboardGenerating = generateTurnStoryboard.isPending || previewTurnStoryboardPrompts.isPending;
   const latestTurnStoryboardRendering = isGameTurnStoryboardRendering(latestTurnStoryboard);
+  const sequentialGameMediaPending =
+    gameSequentialAgents &&
+    (storyboardGenerating ||
+      latestTurnStoryboardRendering ||
+      manualBackgroundGenerating ||
+      sceneVideoGenerating ||
+      (!!pendingAssetGeneration && !assetGenerationFailed));
 
   const latestAssistantDirectAddressMode = useMemo(() => {
     if (!latestAssistantMsg) return null;
@@ -4170,6 +4116,7 @@ function GameSurfaceComponent({
   const combatLogEntries = useMemo(
     () =>
       messages
+        .filter(isVisibleGameMessage)
         .map((message) => ({
           id: message.id,
           role: message.role,
@@ -4483,6 +4430,7 @@ function GameSurfaceComponent({
     sceneReadyMsgIdRef.current = undefined;
     weatherMsgRef.current = null;
     lastProcessedMsgRef.current = null;
+    setPendingSkillChecks([]);
   }, [sceneRuntimeScopeKey]);
 
   if (sceneReadyMsgIdRef.current === undefined && !isMessagesLoading) {
@@ -5036,28 +4984,45 @@ function GameSurfaceComponent({
       }
     }
 
-    // Skill checks from GM — prefer inline resolved results, otherwise resolve server-side
-    if (tags.skillChecks.length > 0) {
-      const sc = tags.skillChecks[0]!;
-      if (sc.resolvedResult) {
-        setPendingSkillCheck(sc.resolvedResult);
-      } else {
-        skillCheck.mutate(
-          {
-            chatId: activeChatId,
-            skill: sc.skill,
-            dc: sc.dc,
-            advantage: sc.advantage,
-            disadvantage: sc.disadvantage,
-            preRolledD20: sc.preRolledD20,
-            messageId: msg.id,
-          },
-          {
-            onSuccess: (res) => setPendingSkillCheck(res.result),
-          },
-        );
+    // Preserve reading order, including the legacy endpoint fallback. A late
+    // fallback from another chat or swipe must never append to the new queue.
+    setPendingSkillChecks([]);
+    // ── One-request dice: the sighted pool's client gate (#6215) ──
+    // This fallback rolls a fresh d20 through POST /game/skill-check for every check tag
+    // a freshly read turn still owes, with no setting guard at all. That is right for
+    // every other mode and wrong for the pool: an overflowed check would be rolled live,
+    // the pool's ordering and never-reuse properties would be bypassed, the turn notice
+    // saying the check was left unrolled would become false, and overflowing the allotment
+    // would become a deliberate way for the Game Master to obtain a roll the pool did not
+    // contain. With the sub-option on the sparse tag is left exactly as it is, and the
+    // outcome is narrated at the start of the next turn. The endpoint is untouched and
+    // keeps serving the live path and the player's own composer.
+    const poolModeActive = chatMeta.gameOneRequestDice === true && chatMeta.gameDicePoolMode === true;
+    void (async () => {
+      for (const sc of tags.skillChecks) {
+        try {
+          const result =
+            sc.resolvedResult ??
+            (isEngineRollableSkillCheckTag(sc) && !poolModeActive
+              ? (
+                  await skillCheck.mutateAsync({
+                    chatId: activeChatId,
+                    skill: sc.skill,
+                    dc: sc.dc,
+                    advantage: sc.advantage,
+                    disadvantage: sc.disadvantage,
+                    preRolledD20: sc.preRolledD20,
+                    messageId: msg.id,
+                  })
+                ).result
+              : null);
+          if (lastProcessedMsgRef.current !== turnKey || useChatStore.getState().activeChatId !== activeChatId) return;
+          if (result) setPendingSkillChecks((pending) => [...pending, result]);
+        } catch (err) {
+          console.error("[game/skill-check] Could not resolve check", err);
+        }
       }
-    }
+    })();
 
     // Element attacks — show reaction popup for first element_attack tag
     if (tags.elementAttacks.length > 0) {
@@ -5229,6 +5194,7 @@ function GameSurfaceComponent({
       if (useSidecar) {
         sceneAnalysis.mutate(
           {
+            ownerChatId: activeChatId,
             narration: tags.cleanContent,
             context: analysisContext,
           },
@@ -6431,6 +6397,16 @@ function GameSurfaceComponent({
       return;
     }
     if (isStreaming || storyboardGenerating || latestTurnStoryboardRendering || manualStoryboardReviewActive) return;
+    if (
+      gameSequentialAgents &&
+      (scenePreparing ||
+        sceneAnalysis.isPending ||
+        agentsProcessing ||
+        manualBackgroundGenerating ||
+        sceneVideoGenerating ||
+        (!!pendingAssetGeneration && !assetGenerationFailed))
+    )
+      return;
     if (turnStoryboardsLoading || turnStoryboardsFetching) return;
     if (latestAssistantStoryboardSections.length === 0) return;
     if ((turnStoryboardRows?.length ?? 0) > 0) return;
@@ -6482,6 +6458,14 @@ function GameSurfaceComponent({
     gameStoryboardAutoGenerationEnabled,
     gameStoryboardKeyframeCount,
     generateTurnStoryboard,
+    gameSequentialAgents,
+    scenePreparing,
+    sceneAnalysis.isPending,
+    agentsProcessing,
+    manualBackgroundGenerating,
+    sceneVideoGenerating,
+    pendingAssetGeneration,
+    assetGenerationFailed,
     isStreaming,
     latestAssistantMsg?.content,
     latestAssistantMsg?.id,
@@ -6654,13 +6638,18 @@ function GameSurfaceComponent({
   }, [activeChatId, generate]);
 
   const generateInitialGameTurn = useCallback(() => {
+    if (experienceStartupScopeRef.current !== experienceStartupScope || experienceStartupRef.current.blocked) return;
+    const context = experienceStartupRef.current.context;
     generate({
       chatId: activeChatId,
       connectionId: null,
-      generationGuide: GAME_START_GENERATION_GUIDE,
+      generationGuide:
+        experiencePreparesBeforeStart && context
+          ? `${GAME_START_GENERATION_GUIDE}\n\nGround the opening in this prepared Experience world. Keep its established places and characters consistent:\n${context}`
+          : GAME_START_GENERATION_GUIDE,
       generationGuideSource: "game_start",
     });
-  }, [activeChatId, generate]);
+  }, [activeChatId, experiencePreparesBeforeStart, experienceStartupScope, generate]);
 
   const handleRetryTurn = useCallback(async () => {
     const msg = latestAssistantMsgRef.current;
@@ -6810,6 +6799,7 @@ function GameSurfaceComponent({
       let selectedTrack: SceneSpotifyTrackSelection | null = null;
       if (useSidecar) {
         const result = await sceneAnalysis.mutateAsync({
+          ownerChatId: activeChatId,
           narration: tags.cleanContent,
           context: { ...sceneContext, availableSpotifyTracks },
         });
@@ -7111,7 +7101,7 @@ function GameSurfaceComponent({
   );
 
   const handleStartGameNow = useCallback(() => {
-    if (startGame.isPending || startGameRequested || startGameGuardRef.current) return;
+    if (experienceStartupBlocked || startGame.isPending || startGameRequested || startGameGuardRef.current) return;
     startGameGuardRef.current = true;
     setStartGameRequested(true);
     startGame.mutate(
@@ -7137,7 +7127,7 @@ function GameSurfaceComponent({
         },
       },
     );
-  }, [activeChatId, generateInitialGameTurn, startGame, startGameRequested, localizeUi]);
+  }, [activeChatId, experienceStartupBlocked, generateInitialGameTurn, startGame, startGameRequested, localizeUi]);
 
   const handleJsonRepairError = useCallback((error: unknown) => {
     const request = getJsonRepairRequest(error);
@@ -7249,9 +7239,16 @@ function GameSurfaceComponent({
       const targetChatId = responseChat?.id ?? bodyChatId;
 
       if (responseChat) {
-        queryClient.setQueryData(chatKeys.detail(responseChat.id), responseChat);
+        // Version 0 = maximally conservative (#5641): this callback consumes
+        // a response whose request was issued by the shared JSON-repair flow,
+        // so there is no pre-request version snapshot to compare against.
+        // Locally-edited metadata fields keep their cached values here; the
+        // detail invalidation just below reconciles everything to server
+        // truth immediately after.
+        const guardedChat = guardServerChatSnapshot(queryClient, responseChat, 0);
+        queryClient.setQueryData(chatKeys.detail(responseChat.id), guardedChat);
         if (useChatStore.getState().activeChatId === responseChat.id) {
-          useChatStore.getState().setActiveChat(responseChat);
+          useChatStore.getState().setActiveChat(guardedChat);
         }
       }
       if (targetChatId) {
@@ -8920,6 +8917,8 @@ function GameSurfaceComponent({
         : {
             chatId: activeChatId,
             chatMeta,
+            startup: experiencePreparesBeforeStart && !introPresented,
+            setStartupReady: experiencePreparesBeforeStart ? setStartupReady : undefined,
             messages,
             latestAssistant: latestAssistantMsg,
             isStreaming,
@@ -8957,6 +8956,9 @@ function GameSurfaceComponent({
           },
     [
       experienceSurfaceActive,
+      experiencePreparesBeforeStart,
+      introPresented,
+      setStartupReady,
       activeChatId,
       chatMeta,
       messages,
@@ -9491,7 +9493,11 @@ function GameSurfaceComponent({
   // pipeline are finished. Query refreshes may expose the durable assistant row
   // before those later stages settle, which otherwise previews the next segment.
   const narrationUpdatesBlocked =
-    gameInputGenerationBlocked || scenePreparing || sceneAnalysis.isPending || assetGenerationBlocksScene;
+    gameInputGenerationBlocked ||
+    sequentialGameMediaPending ||
+    scenePreparing ||
+    sceneAnalysis.isPending ||
+    assetGenerationBlocksScene;
   const [settledNarrationSource, setSettledNarrationSource] = useState({ chatId: activeChatId, messages });
   useEffect(() => {
     if (narrationUpdatesBlocked) return;
@@ -9725,8 +9731,8 @@ function GameSurfaceComponent({
   );
 
   const handleDismissDice = useCallback(() => {
-    setDiceRollResult(null);
-  }, [setDiceRollResult]);
+    dismissDiceRollResult();
+  }, [dismissDiceRollResult]);
 
   const handleChoiceSelect = useCallback(
     (choice: string) => {
@@ -9938,7 +9944,6 @@ function GameSurfaceComponent({
         }
       }
       setActiveChoices(null);
-      setDiceRollResult(null);
       const succeeded = await sendMessage(message, attachments, options?.pendingSpatialTransition);
       if (succeeded !== false && options?.commitPendingMove && pendingMapMove) {
         setPendingMapMove(null);
@@ -9955,7 +9960,6 @@ function GameSurfaceComponent({
       pendingMapMove,
       sendMessage,
       sessionInteractive,
-      setDiceRollResult,
       updateMessage,
       localizeUi,
     ],
@@ -10459,7 +10463,7 @@ function GameSurfaceComponent({
       );
     } else {
       sceneAnalysis.mutate(
-        { narration: tags.cleanContent, context },
+        { ownerChatId: activeChatId, narration: tags.cleanContent, context },
         {
           onSuccess: (result) => {
             onSuccess(result);
@@ -10506,19 +10510,26 @@ function GameSurfaceComponent({
   }, [hudWidgets]);
 
   const handleStartGameRequest = useCallback(() => {
-    if (startGame.isPending || startGameRequested || startGameGuardRef.current) return;
+    if (experienceStartupBlocked || startGame.isPending || startGameRequested || startGameGuardRef.current) return;
     if (normalizedWidgets.length > 0) {
       setPrepareInitialWidgetsOpen(true);
       return;
     }
     handleStartGameNow();
-  }, [handleStartGameNow, normalizedWidgets.length, startGame.isPending, startGameRequested]);
+  }, [experienceStartupBlocked, handleStartGameNow, normalizedWidgets.length, startGame.isPending, startGameRequested]);
 
   useEffect(() => {
     if (combatUiActive || normalizedWidgets.length === 0) {
-      compactHudWidgetsRef.current = false;
+      // Reset to the same width heuristic the state initializes with, NOT a
+      // flat false: widgets arrive after the queries resolve, and a false
+      // reset here mounts the (CSS-hidden) desktop widget rail on mobile for
+      // the frames until updateWidgetLayout measures — long enough on a slow
+      // device for both the mobile and desktop copies of a widget to coexist
+      // in the DOM (#5618).
+      const compactByWidth = typeof window !== "undefined" && window.innerWidth < 768;
+      compactHudWidgetsRef.current = compactByWidth;
       compactHudReleaseWidthRef.current = null;
-      setCompactHudWidgets(false);
+      setCompactHudWidgets(compactByWidth);
       return;
     }
 
@@ -10592,7 +10603,13 @@ function GameSurfaceComponent({
       resizeObserver?.disconnect();
       window.removeEventListener("resize", scheduleWidgetLayoutUpdate);
     };
-  }, [combatUiActive, normalizedWidgets.length]);
+    // hudSurfaceEl is a dependency so the measurement and the ResizeObserver are
+    // re-established when the surface mounts. Without it, widgets that hydrate
+    // while the messages-loading branch is showing leave the layout unmeasured
+    // with no observer attached, so every compact decision that depends on the
+    // overlap estimate rather than the width shortcut above stays wrong until a
+    // window resize happens to run the measurement again (#5654).
+  }, [combatUiActive, hudSurfaceEl, normalizedWidgets.length]);
 
   const effectiveBackgroundTag = replayActive ? replayBackgroundTag : currentBackground;
 
@@ -10717,7 +10734,10 @@ function GameSurfaceComponent({
   if (isMessagesLoading && !needsCreation && sessionStatus !== "setup" && !isSetupActive) {
     return (
       <>
-        <div className="flex h-full items-center justify-center bg-[var(--background)] dark:bg-black/80">
+        <div
+          data-component="GameSurface.MessagesLoading"
+          className="flex h-full items-center justify-center bg-[var(--background)] dark:bg-black/80"
+        >
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--muted)]/40 border-t-[var(--foreground)]/70 dark:border-white/20 dark:border-t-white/70" />
         </div>
         {imagePromptReviewModal}
@@ -10752,8 +10772,7 @@ function GameSurfaceComponent({
       }
     };
 
-    /** Renders the built-in wizard with the given Experiences block injected into its first step. */
-    const classicSetup = (experiencesSlot: ReactNode) => (
+    const classicSetup = (
       <>
         <Suspense
           fallback={
@@ -10763,7 +10782,10 @@ function GameSurfaceComponent({
           }
         >
           <GameSetupWizard
-            experiencesSlot={experiencesSlot}
+            activeChatId={activeChatId}
+            isNewGame={needsCreation}
+            chatMetadata={chatMeta}
+            onSetupError={handleJsonRepairError}
             onComplete={(config, preferences, conns, wizardGameName, mapPlan) => {
               const queueSetupMapPlan = (chatId: string) => {
                 if (activeChatIdRef.current !== chatId) return false;
@@ -10876,7 +10898,7 @@ function GameSurfaceComponent({
             }
             isDraftingMap={generateSetupMapDraft.isPending}
             isLinkingSharedWorld={Boolean(activePendingSharedWorldSetupApply)}
-            characters={characters}
+            characters={libraryCharacters}
             initialPartyCharacterIds={initialSetupPartyCharacterIds}
           />
           {activePendingSharedWorldSetupApply ? (
@@ -10930,17 +10952,10 @@ function GameSurfaceComponent({
         {imagePromptReviewModal}
       </>
     );
-    // The chooser renders the built-in wizard until an experience is activated, then hands it the body.
     return (
       <>
-        <NewGameExperienceChooser
-          activeChatId={activeChatId}
-          onCancelSetup={dismissSetupWizard}
-          onSetupError={handleJsonRepairError}
-          renderClassicWizard={(experiencesSlot) => classicSetup(experiencesSlot)}
-        />
-        {/* Mounted OUTSIDE the chooser so it is reachable from both setup paths — an experience draws its
-            own wizard body, and a malformed-JSON opening has to stay repairable there too. */}
+        {classicSetup}
+        {/* Shared by the normal wizard and legacy Experience setup. */}
         <GameJsonRepairModal
           request={jsonRepairRequest}
           onClose={() => setJsonRepairRequest(null)}
@@ -10978,7 +10993,30 @@ function GameSurfaceComponent({
       "flex items-center gap-2 rounded-lg bg-[var(--muted)]/30 px-4 py-2 text-xs text-[var(--foreground)]/70 transition-colors hover:bg-[var(--muted)]/50 hover:text-[var(--foreground)] dark:bg-white/10 dark:text-white/70 dark:hover:bg-white/20 dark:hover:text-white";
     return (
       <>
-        <div className="flex h-full items-center justify-center overflow-hidden bg-[var(--background)] dark:bg-black/80 p-6">
+        <div className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--background)] dark:bg-black/80 p-6">
+          {experiencePreparesBeforeStart && experienceSurfaceId && (
+            // ponytail: reuse the package's idempotent mount when Continue opens the normal surface;
+            // a shared persistent slot is only needed if an Experience cannot retain its prepared world.
+            <div className={cn("absolute inset-0 z-30", !experienceStartupBlocked && "hidden")}>
+              <CapabilityElement
+                packageId={experienceSurfaceId}
+                view="surface"
+                capabilityProps={experienceSurfaceProps}
+                className={cn("block h-full w-full", experienceSurfaceClass)}
+                onHostError={handleStartupHostError}
+              />
+              {experienceStartupInvalid && (
+                <p
+                  role="alert"
+                  className="absolute inset-x-3 bottom-3 z-50 rounded-lg border border-[var(--destructive)] bg-[var(--card)] p-3 text-sm text-[var(--card-foreground)]"
+                >
+                  {localizeUi("game.experienceStartup.invalidContext", {
+                    count: EXPERIENCE_STARTUP_CONTEXT_MAX_LENGTH,
+                  })}
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex max-h-full max-w-lg flex-col items-center gap-6 text-center">
             {/* Genre / Setting tag */}
             {setupConfig && (
@@ -11000,6 +11038,11 @@ function GameSurfaceComponent({
 
             {/* Start button or generating indicator */}
             <div className="flex w-full flex-shrink-0 flex-col items-center gap-4">
+              {experienceStartupBlocked && (
+                <p role="status" className="text-sm text-[var(--foreground)]">
+                  {localizeUi("game.experienceStartup.preparing")}
+                </p>
+              )}
               <label className="flex w-full max-w-sm flex-col gap-1.5 text-left">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--muted-foreground)] dark:text-white/50">
                   <Plug size={12} />
@@ -11091,7 +11134,11 @@ function GameSurfaceComponent({
                   )}
                   {/* Show retry when generation stopped but no content arrived. */}
                   {!isStreaming && !hasEverHadPlayableContent && !startGame.isPending && (
-                    <button onClick={generateInitialGameTurn} className={SURFACE_BTN}>
+                    <button
+                      onClick={generateInitialGameTurn}
+                      disabled={experienceStartupBlocked}
+                      className={SURFACE_BTN}
+                    >
                       <RefreshCw size={14} />
                       {localizeUi("ui.game.gamesurfacecomponent.retry")}
                     </button>
@@ -11103,7 +11150,7 @@ function GameSurfaceComponent({
                     audioManager.unlock();
                     handleStartGameRequest();
                   }}
-                  disabled={startGame.isPending || startGameRequested}
+                  disabled={experienceStartupBlocked || startGame.isPending || startGameRequested}
                   className="group flex items-center gap-2 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-semibold text-zinc-100 ring-1 ring-zinc-700/80 transition-all hover:scale-105 hover:bg-zinc-800 hover:shadow-lg hover:shadow-black/25 disabled:opacity-50 disabled:hover:scale-100"
                 >
                   <Play size={18} className="transition-transform group-hover:scale-110" />
@@ -11123,7 +11170,7 @@ function GameSurfaceComponent({
             setPrepareInitialWidgetsOpen(false);
             handleStartGameNow();
           }}
-          isStartingSession={startGame.isPending || startGameRequested}
+          isStartingSession={experienceStartupBlocked || startGame.isPending || startGameRequested}
         />
         {imagePromptReviewModal}
         {widgetSessionPrepModal}
@@ -12130,7 +12177,7 @@ function GameSurfaceComponent({
 
               {/* Main content area */}
               <div
-                ref={hudSurfaceRef}
+                ref={attachHudSurface}
                 data-chat-resource-drop-surface
                 className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", experienceSurfaceClass)}
               >
@@ -12412,9 +12459,13 @@ function GameSurfaceComponent({
                       />
                     ) : undefined;
 
-                  const skillCheckSlot = pendingSkillCheck ? (
-                    <GameSkillCheckResult result={pendingSkillCheck} onDismiss={() => setPendingSkillCheck(null)} />
-                  ) : undefined;
+                  const skillCheckSlot =
+                    !diceRollResult && pendingSkillChecks[0] ? (
+                      <GameSkillCheckResult
+                        result={pendingSkillChecks[0]}
+                        onDismiss={() => setPendingSkillChecks((pending) => pending.slice(1))}
+                      />
+                    ) : undefined;
 
                   const diceResultSlot = diceRollResult ? (
                     <GameDiceResult result={diceRollResult} onDismiss={handleDismissDice} />
@@ -12551,6 +12602,7 @@ function GameSurfaceComponent({
                           onSkipScene={skipSceneAnalysis}
                           generationFailed={generationFailed}
                           onRetryGeneration={retryGeneration}
+                          onRetryTurn={handleRetryTurn}
                           hasStoredNarrationPosition={restoredNarrationState.hasStoredPosition}
                           restoredSegmentIndex={restoredSegmentIndex}
                           onSegmentChange={handleSegmentChange}
@@ -12606,7 +12658,9 @@ function GameSurfaceComponent({
                                 hasPartyMembers={partyMembers.length > 0}
                                 pendingMoveLabel={pendingMapMove?.label ?? null}
                                 onClearPendingMove={() => setPendingMapMove(null)}
-                                disabled={gameInputGenerationBlocked || !sessionInteractive}
+                                disabled={
+                                  gameInputGenerationBlocked || sequentialGameMediaPending || !sessionInteractive
+                                }
                                 draftDisabled={!sessionInteractive}
                                 isStreaming={gameInputGenerationBlocked}
                                 inline
@@ -12615,6 +12669,9 @@ function GameSurfaceComponent({
                                 onIllustrate={handleManualSceneIllustration}
                                 spatialCapabilityEnabled={hierarchicalMapsActive}
                                 interruptMode={pendingInterruptMode}
+                                sessionConcluded={!sessionInteractive}
+                                onStartNewSession={handleStartNewSession}
+                                startNewSessionPending={startSessionLocked}
                               />
                             )
                           }
@@ -12643,6 +12700,7 @@ function GameSurfaceComponent({
                       onSkipScene={skipSceneAnalysis}
                       generationFailed={generationFailed}
                       onRetryGeneration={retryGeneration}
+                      onRetryTurn={handleRetryTurn}
                       hasStoredNarrationPosition={restoredNarrationState.hasStoredPosition}
                       restoredSegmentIndex={restoredSegmentIndex}
                       onSegmentChange={handleSegmentChange}
@@ -12700,7 +12758,7 @@ function GameSurfaceComponent({
                             hasPartyMembers={partyMembers.length > 0}
                             pendingMoveLabel={pendingMapMove?.label ?? null}
                             onClearPendingMove={() => setPendingMapMove(null)}
-                            disabled={gameInputGenerationBlocked || !sessionInteractive}
+                            disabled={gameInputGenerationBlocked || sequentialGameMediaPending || !sessionInteractive}
                             draftDisabled={!sessionInteractive}
                             isStreaming={gameInputGenerationBlocked}
                             inline
@@ -12709,6 +12767,9 @@ function GameSurfaceComponent({
                             onIllustrate={handleManualSceneIllustration}
                             spatialCapabilityEnabled={hierarchicalMapsActive}
                             interruptMode={pendingInterruptMode}
+                            sessionConcluded={!sessionInteractive}
+                            onStartNewSession={handleStartNewSession}
+                            startNewSessionPending={startSessionLocked}
                           />
                         )
                       }

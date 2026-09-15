@@ -1,9 +1,9 @@
 // ──────────────────────────────────────────────
 // Storage: Agent Configs, Runs & Memory
 // ──────────────────────────────────────────────
-import { eq, ne, and, desc, notInArray } from "../../db/file-query.js";
+import { eq, ne, and, desc, lte, notInArray } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
-import { agentConfigs, agentRuns, agentMemory } from "../../db/schema/index.js";
+import { agentConfigs, agentRuns, agentMemory, messages } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import {
   BUILT_IN_AGENTS,
@@ -92,6 +92,7 @@ function serializeRunWithConfig(row: { agent_runs: AgentRunRow; agent_configs: A
     agentConfigId: row.agent_runs.agentConfigId,
     agentType: row.agent_configs.type,
     agentName: row.agent_configs.name,
+    hideOutput: parseAgentSettingsRecord(row.agent_configs.settings).hideOutput === true,
     chatId: row.agent_runs.chatId,
     messageId: row.agent_runs.messageId,
     resultType: row.agent_runs.resultType,
@@ -301,11 +302,17 @@ export function createAgentsStorage(db: DB) {
     }) {
       const agentConfigId = await resolveAgentConfigId(input.agentConfigId);
       const id = input.runId ?? newId();
+      const [message] = await db
+        .select({ activeSwipeIndex: messages.activeSwipeIndex })
+        .from(messages)
+        .where(and(eq(messages.id, input.messageId), eq(messages.chatId, input.chatId)))
+        .limit(1);
       const values = {
         id,
         agentConfigId,
         chatId: input.chatId,
         messageId: input.messageId,
+        swipeIndex: message?.activeSwipeIndex ?? null,
         resultType: input.result.type,
         resultData: JSON.stringify(input.result.data),
         tokensUsed: input.result.tokensUsed,
@@ -324,6 +331,41 @@ export function createAgentsStorage(db: DB) {
         await insert;
       }
       return id;
+    },
+
+    /** Follow visible message chronology, not the wall-clock order of manual retries. */
+    async getPreviousOutput(
+      agentConfigId: string,
+      chatId: string,
+      throughMessageId?: string,
+      excludeMessageId?: string,
+    ) {
+      let through: { createdAt: string } | undefined;
+      if (throughMessageId) {
+        [through] = await db
+          .select({ createdAt: messages.createdAt })
+          .from(messages)
+          .where(and(eq(messages.id, throughMessageId), eq(messages.chatId, chatId)))
+          .limit(1);
+        if (!through) return null;
+      }
+      const rows = await db
+        .select()
+        .from(agentRuns)
+        .innerJoin(messages, eq(agentRuns.messageId, messages.id))
+        .where(
+          and(
+            eq(agentRuns.agentConfigId, agentConfigId),
+            eq(agentRuns.chatId, chatId),
+            eq(messages.chatId, chatId),
+            eq(agentRuns.success, "true"),
+            through ? lte(messages.createdAt, through.createdAt) : undefined,
+            excludeMessageId ? ne(messages.id, excludeMessageId) : undefined,
+          ),
+        )
+        .orderBy(desc(messages.createdAt), desc(agentRuns.createdAt));
+      const run = rows.find((row) => (row.agent_runs.swipeIndex ?? 0) === row.messages.activeSwipeIndex)?.agent_runs;
+      return run ? parseRunData(run.resultData) : null;
     },
 
     /** Get the most recent successful run of an agent type in a given chat. */
@@ -392,10 +434,15 @@ export function createAgentsStorage(db: DB) {
       for (const row of rows) {
         try {
           const data = JSON.parse(row.resultData);
-          const reactions = data?.reactions ?? [];
+          const reactions = Array.isArray(data?.reactions) ? data.reactions : [];
           const ts = new Date(row.createdAt).getTime();
           for (const r of reactions) {
-            if (r.characterName && r.reaction) {
+            if (
+              typeof r?.characterName === "string" &&
+              r.characterName.trim() &&
+              typeof r.reaction === "string" &&
+              r.reaction.trim()
+            ) {
               messages.push({ characterName: r.characterName, reaction: r.reaction, timestamp: ts });
             }
           }
@@ -430,23 +477,51 @@ export function createAgentsStorage(db: DB) {
       return rows.map((row) => serializeRunWithConfig(row));
     },
 
-    async getRunWithConfig(id: string) {
+    /**
+     * The recent runs of one agent type in a chat, newest first.
+     *
+     * getLastSuccessfulRunByType answers "what is the state now"; this answers "what has
+     * this agent been doing", which is what a diagnostic panel needs. Failures are kept:
+     * a run that errored is the most interesting row on the list, and dropping it would
+     * make a broken agent look idle instead of broken.
+     */
+    async listRunsByTypeForChat(agentType: string, chatId: string, limit = 5) {
+      const finiteLimit = Number.isFinite(limit) ? limit : 5;
+      // 51, not 50. Callers that diff consecutive runs ask for one more than they intend
+      // to show, so the oldest row still has a predecessor to be compared against; a cap
+      // of exactly 50 silently removed that row and left the oldest run reporting no
+      // comparison at all.
+      const normalizedLimit = Math.max(1, Math.min(finiteLimit, 51));
       const rows = await db
         .select()
         .from(agentRuns)
         .innerJoin(agentConfigs, eq(agentRuns.agentConfigId, agentConfigs.id))
-        .where(eq(agentRuns.id, id))
+        .where(and(eq(agentRuns.chatId, chatId), eq(agentConfigs.type, agentType)))
+        .orderBy(desc(agentRuns.createdAt))
+        .limit(normalizedLimit);
+
+      return rows.map((row) => serializeRunWithConfig(row));
+    },
+
+    async getRunWithConfig(id: string, chatId?: string) {
+      const condition = chatId ? and(eq(agentRuns.chatId, chatId), eq(agentRuns.id, id)) : eq(agentRuns.id, id);
+      const rows = await db
+        .select()
+        .from(agentRuns)
+        .innerJoin(agentConfigs, eq(agentRuns.agentConfigId, agentConfigs.id))
+        .where(condition)
         .limit(1);
       const row = rows[0];
       return row ? serializeRunWithConfig(row) : null;
     },
 
-    async updateRunResultData(id: string, resultData: unknown) {
+    async updateRunResultData(id: string, resultData: unknown, chatId?: string) {
+      const condition = chatId ? and(eq(agentRuns.chatId, chatId), eq(agentRuns.id, id)) : eq(agentRuns.id, id);
       await db
         .update(agentRuns)
         .set({ resultData: JSON.stringify(resultData) })
-        .where(eq(agentRuns.id, id));
-      return this.getRunWithConfig(id);
+        .where(condition);
+      return this.getRunWithConfig(id, chatId);
     },
 
     // ── Agent Memory (persistent KV per agent per chat) ──
@@ -486,7 +561,7 @@ export function createAgentsStorage(db: DB) {
         await db
           .update(agentMemory)
           .set({ value: stringValue, updatedAt: now() })
-          .where(eq(agentMemory.id, existing[0]!.id));
+          .where(and(eq(agentMemory.chatId, chatId), eq(agentMemory.id, existing[0]!.id)));
       } else {
         await db.insert(agentMemory).values({
           id: newId(),
@@ -524,7 +599,7 @@ export function createAgentsStorage(db: DB) {
             await tx
               .update(agentMemory)
               .set({ value: entry.value, updatedAt: timestamp })
-              .where(eq(agentMemory.id, existing.id));
+              .where(and(eq(agentMemory.chatId, chatId), eq(agentMemory.id, existing.id)));
           } else {
             inserts.push({
               id: newId(),

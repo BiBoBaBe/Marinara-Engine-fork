@@ -1,6 +1,13 @@
-import type { CharacterBook, CharacterBookEntry, CharacterData, DepthPrompt } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  type CharacterBook,
+  type CharacterBookEntry,
+  type CharacterData,
+  type DepthPrompt,
+} from "@marinara-engine/shared";
+import type { TFunction } from "i18next";
 
-const CHARS_PER_TOKEN = 4;
+export { estimateTextTokens };
 
 type CharacterTokenData = Partial<Omit<CharacterData, "alternate_greetings" | "character_book" | "extensions">> & {
   alternate_greetings?: unknown;
@@ -19,10 +26,6 @@ const CARD_TEXT_FIELDS: Array<keyof CharacterData> = [
   "system_prompt",
   "post_history_instructions",
 ];
-
-export function estimateTextTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -86,6 +89,6 @@ export function estimateCharacterCardTokens(data: CharacterTokenData): number {
   return estimateTextTokens(textParts.join("\n"));
 }
 
-export function formatEstimatedTokens(tokens: number): string {
-  return `~${tokens.toLocaleString()} tokens`;
+export function formatEstimatedTokens(tokens: number, localizeUi: TFunction): string {
+  return localizeUi("chat.summary.tokenEstimate", { tokens: tokens.toLocaleString() });
 }

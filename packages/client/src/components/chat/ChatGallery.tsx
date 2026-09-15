@@ -33,14 +33,15 @@ import {
   type ChatAssetBrowserItem,
   type ChatImage,
 } from "../../hooks/use-gallery";
-import type { GeneratedSceneVideo } from "@marinara-engine/shared";
+import { BACKGROUND_THUMBNAIL_WIDTH, type GeneratedSceneVideo } from "@marinara-engine/shared";
+import { ChatImagePreview } from "./ChatImagePreview";
 import { useGalleryStore } from "../../stores/gallery.store";
 import { toast } from "sonner";
 import { ImageUploadDropzone } from "../ui/ImageUploadDropzone";
 import { buildCardAssetMarkdown, dispatchCardAssetInsert } from "../../lib/card-asset-links";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { cn, copyToClipboard } from "../../lib/utils";
-import { downloadUrlToDevice } from "../../lib/file-download";
+import { downloadUrlToDevice, shouldUseIosImageShare } from "../../lib/file-download";
 import {
   ChatImageLightbox,
   ChatVideoLightbox,
@@ -257,16 +258,37 @@ export function ChatGallery({
     unpinImage(id);
     setConfirmDeleteId(null);
     if (lightbox?.id === id) setLightbox(null);
-    remove.mutate(id, {
-      onSuccess: () => {
-        toast.success(localizeUi("ui.chat.chatgallery.imageDeleted"));
+    // The image's own chatId is the owner (a Game-mode gallery shows sibling
+    // sessions' images too); fall back to the open chat only if the row is
+    // somehow not in the list.
+    remove.mutate(
+      { imageId: id, chatId: image?.chatId ?? chatId },
+      {
+        onSuccess: () => {
+          toast.success(localizeUi("ui.chat.chatgallery.imageDeleted"));
+        },
+        onError: (error) => {
+          if (wasPinned && image) pinImage({ ...image, chatId });
+          toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.chatgallery.failedToDeleteImage"));
+        },
       },
-      onError: (error) => {
-        if (wasPinned && image) pinImage({ ...image, chatId });
-        toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.chatgallery.failedToDeleteImage"));
-      },
-    });
+    );
   };
+
+  const handleDownloadImage = useCallback(
+    async (image: ChatImage) => {
+      if (shouldUseIosImageShare()) {
+        setLightbox(image);
+        return;
+      }
+      try {
+        await downloadUrlToDevice(image.url, getChatImageDownloadName(image));
+      } catch {
+        toast.error(localizeUi("ui.chat.chatgallery.downloadFailed"));
+      }
+    },
+    [localizeUi],
+  );
 
   const handleBatchDownload = useCallback(async () => {
     if (selectedImages.length === 0 || batchOperationPendingRef.current) return;
@@ -331,7 +353,7 @@ export function ChatGallery({
         const wasPinned = useGalleryStore.getState().pinnedImages.some((item) => item.id === image.id);
         unpinImage(image.id);
         try {
-          await remove.mutateAsync(image.id);
+          await remove.mutateAsync({ imageId: image.id, chatId: image.chatId });
         } catch {
           failedDeletes += 1;
           if (wasPinned) pinImage({ ...image, chatId });
@@ -569,13 +591,13 @@ export function ChatGallery({
 
   return (
     <>
-      <div className="flex flex-col gap-3 p-4">
+      <div className="flex flex-col gap-3 p-4 max-md:p-3">
         {(canIllustrate ||
           onGenerateSelfie ||
           onGenerateStoryboard ||
           (sceneVideosEnabled && onGenerateVideo) ||
           onGenerateBackground) && (
-          <div className={actionGridClass}>
+          <div className={cn("mari-gallery-generation-actions", actionGridClass)}>
             {canIllustrate && (
               <div ref={illustrateMenuRef} className="relative min-w-0">
                 <button
@@ -601,7 +623,7 @@ export function ChatGallery({
                       : localizeUi("ui.chat.chatgallery.illustrate")}
                   </span>
                   {illustrateAgents.length > 0 && !isIllustrating ? (
-                    <ChevronDown size="0.875rem" className="shrink-0" />
+                    <ChevronDown size="0.875rem" className="shrink-0 max-md:absolute max-md:right-1 max-md:top-1" />
                   ) : null}
                 </button>
                 {illustrateMenuOpen && (
@@ -919,8 +941,9 @@ export function ChatGallery({
                           <Check size="0.9rem" />
                         </span>
                       ) : null}
-                      <img
+                      <ChatImagePreview
                         src={asset.url}
+                        mobileWidth={BACKGROUND_THUMBNAIL_WIDTH}
                         alt={asset.prompt || asset.name}
                         loading="lazy"
                         decoding="async"
@@ -1062,8 +1085,9 @@ export function ChatGallery({
                           : localizeUi("ui.chat.chatgallery.openGalleryImage")
                       }
                     >
-                      <img
+                      <ChatImagePreview
                         src={img.url}
+                        mobileWidth={BACKGROUND_THUMBNAIL_WIDTH}
                         alt={img.prompt || "Gallery image"}
                         loading="lazy"
                         decoding="async"
@@ -1073,8 +1097,8 @@ export function ChatGallery({
                     {/* Overlay */}
                     {!selectingImages && (
                       <div className="pointer-events-none absolute inset-0 flex items-end bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100">
-                        <div className="flex w-full items-center justify-between p-2">
-                          <div className="flex gap-1">
+                        <div className="mari-gallery-image-actions flex w-full items-center justify-between p-2">
+                          <div className="flex gap-1 max-md:contents">
                             <button
                               type="button"
                               onClick={() => handlePinImage(img)}
@@ -1084,15 +1108,15 @@ export function ChatGallery({
                             >
                               <Pin size="0.75rem" />
                             </button>
-                            <a
-                              href={img.url}
-                              download={getChatImageDownloadName(img)}
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadImage(img)}
                               aria-label={localizeUi("ui.chat.chatgallery.downloadGalleryImage")}
                               className="pointer-events-auto rounded-md bg-white/20 p-1.5 text-white transition-colors hover:bg-white/30"
                               title={localizeUi("ui.chat.chatgallery.downloadImage")}
                             >
                               <Download size="0.75rem" />
-                            </a>
+                            </button>
                             {sceneVideosEnabled && onAnimateImage && (
                               <button
                                 type="button"

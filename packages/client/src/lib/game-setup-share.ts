@@ -9,13 +9,19 @@ import {
   type GameInitialSetupLabels,
   type GameInitialSetupSnapshot,
   type GameSetupConfig,
+  type InstalledCapabilityPackage,
   type GenerationParameters,
 } from "@marinara-engine/shared";
+
+import { isExperienceSeed } from "./game-experience-setup";
+import { translate } from "../localization/i18n";
 
 export const GAME_SETUP_SHARE_FORMAT = "marinara-game-setup";
 export const GAME_SETUP_SHARE_VERSION = 1;
 
 export interface GameSetupShareLabels {
+  experienceName?: string;
+  experienceSeedKey?: string;
   characterNames?: Readonly<Record<string, string>>;
   connectionNames?: Readonly<Record<string, string>>;
   lorebookNames?: Readonly<Record<string, string>>;
@@ -60,6 +66,8 @@ export interface GameSetupImportConnection {
 }
 
 export interface GameSetupImportContext {
+  experiencePackages?: readonly InstalledCapabilityPackage[];
+  isNewGame?: boolean;
   characters: ReadonlyArray<{ id: string; name: string }>;
   connections: ReadonlyArray<GameSetupImportConnection>;
   lorebooks: ReadonlyArray<{ id: string; name: string }>;
@@ -121,6 +129,8 @@ function optionalStringRecord(value: unknown): Record<string, string> | undefine
 function parseShareLabels(value: unknown): GameInitialSetupLabels | undefined {
   if (!isRecord(value)) return undefined;
   const labels: GameInitialSetupLabels = {
+    experienceName: typeof value.experienceName === "string" ? value.experienceName.slice(0, 120) : undefined,
+    experienceSeedKey: typeof value.experienceSeedKey === "string" ? value.experienceSeedKey.slice(0, 120) : undefined,
     characterNames: optionalStringRecord(value.characterNames),
     lorebookNames: optionalStringRecord(value.lorebookNames),
     promptPresetNames: optionalStringRecord(value.promptPresetNames),
@@ -169,6 +179,7 @@ function parseShareConfig(value: unknown): GameSetupConfig {
   }
 
   const optionalStrings: Record<string, number> = {
+    gameExperienceId: 80,
     gmCharacterId: 1_000,
     personaId: 1_000,
     sceneConnectionId: 1_000,
@@ -275,6 +286,14 @@ function parseShareConfig(value: unknown): GameSetupConfig {
   ) {
     throw new Error("This file has invalid active lorebooks.");
   }
+  if (
+    value.activeLorebookEntryIds !== undefined &&
+    (!Array.isArray(value.activeLorebookEntryIds) ||
+      value.activeLorebookEntryIds.some((id) => typeof id !== "string") ||
+      value.activeLorebookEntryIds.length > 100)
+  ) {
+    throw new Error(translate("game.setupLore.invalidImport"));
+  }
   if (value.customHudWidgets !== undefined && !Array.isArray(value.customHudWidgets)) {
     throw new Error("This file has invalid HUD widgets.");
   }
@@ -321,6 +340,8 @@ export function buildGameSetupShareFile(
   const config = normalizeShareConfig(source.config);
   const labels: GameInitialSetupLabels | undefined = source.labels
     ? {
+        experienceName: source.labels.experienceName,
+        experienceSeedKey: source.labels.experienceSeedKey,
         characterNames: source.labels.characterNames ? { ...source.labels.characterNames } : undefined,
         lorebookNames: source.labels.lorebookNames ? { ...source.labels.lorebookNames } : undefined,
         promptPresetNames: source.labels.promptPresetNames ? { ...source.labels.promptPresetNames } : undefined,
@@ -463,6 +484,20 @@ export function resolveGameSetupImport(
 ): ResolvedGameSetupImport {
   const { config: sourceConfig, labels, connections: snapshots } = file.setup;
   const warnings: string[] = [];
+  // Restore installed selections, but import only declared seeds, never arbitrary package state.
+  const experience =
+    context.isNewGame !== false
+      ? context.experiencePackages?.find((item) => item.id === sourceConfig.gameExperienceId)
+      : undefined;
+  const setup = experience?.manifest.contributions?.gameSurface?.setup;
+  const seed = setup?.seed ? sourceConfig.experienceConfig?.[setup.seed.key] : undefined;
+  const experienceSelection = experience
+    ? {
+        gameExperienceId: experience.id,
+        experienceConfig: setup?.seed && isExperienceSeed(seed) ? { [setup.seed.key]: seed } : {},
+      }
+    : {};
+  const { gameExperienceId: _experienceId, experienceConfig: _experienceConfig, ...ordinaryConfig } = sourceConfig;
 
   const gmCharacterName = sourceConfig.gmCharacterId ? labels?.characterNames?.[sourceConfig.gmCharacterId] : null;
   const gmCharacterId = resolveNamedResourceId(sourceConfig.gmCharacterId, gmCharacterName, context.characters);
@@ -534,7 +569,8 @@ export function resolveGameSetupImport(
   return {
     gameName: file.gameName,
     config: {
-      ...sourceConfig,
+      ...ordinaryConfig,
+      ...experienceSelection,
       gmMode,
       gmCharacterId,
       partyCharacterIds: [...new Set(partyCharacterIds)],
@@ -688,6 +724,21 @@ export function buildGameSetupSummarySections(source: GameSetupShareSource): Gam
     {
       title: "Adventure",
       rows: [
+        ...(config.gameExperienceId
+          ? [
+              {
+                label: "Experience",
+                value: [
+                  labels?.experienceName || config.gameExperienceId,
+                  labels?.experienceSeedKey && typeof config.experienceConfig?.[labels.experienceSeedKey] === "number"
+                    ? String(config.experienceConfig[labels.experienceSeedKey])
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
+              },
+            ]
+          : []),
         { label: "Genre", value: config.genre },
         { label: "Setting", value: config.setting },
         { label: "Tone", value: config.tone },

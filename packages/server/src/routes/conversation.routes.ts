@@ -92,6 +92,17 @@ type AutonomousCandidateEvaluation =
   | { ok: true; intent: AutonomousIntentPayload }
   | { ok: false; reason: "daily_budget_exhausted" | "intent_cooldown" };
 
+/**
+ * Chats whose in-memory activity state has been seeded from the transcript
+ * this process (#5592 PR-B). Latched even when the transcript could not seed
+ * a state (e.g. no user messages yet) — live recordUserActivity covers those
+ * from the first real message — so a repeat autonomous check NEVER re-reads
+ * the transcript, keeping idle checks free of lazy-table queries.
+ */
+const seededAutonomousActivityChats = new Set<string>();
+/** In-flight transcript seeds, so concurrent checks share one read and a failed read is retried. */
+const autonomousActivitySeeds = new Map<string, Promise<void>>();
+
 function normalizeAutonomousUserStatus(value: unknown): AutonomousUserStatus {
   return value === "idle" || value === "dnd" ? value : "active";
 }
@@ -579,7 +590,7 @@ export async function conversationRoutes(app: FastifyInstance) {
   // ─────────────────────────────────────────────
   app.post<{
     Body: {
-      chatId: string;
+      chatId?: string;
       forceRefresh?: boolean;
       characterIds?: string[];
       scheduleGenerationPreferences?: string;
@@ -595,25 +606,25 @@ export async function conversationRoutes(app: FastifyInstance) {
     }
     const userSchedulePreferences = typeof rawPrefs === "string" ? rawPrefs.trim() : "";
 
-    const chat = await chats.getById(chatId);
-    if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    if (chat.mode !== "conversation") return reply.status(400).send({ error: "Not a conversation chat" });
+    const chat = chatId ? await chats.getById(chatId) : null;
+    if (chatId && !chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat && chat.mode !== "conversation") return reply.status(400).send({ error: "Not a conversation chat" });
     const requestedTimeZone = normalizePromptTimeZone(req.body.timeZone);
     if (req.body.timeZone != null && !requestedTimeZone) {
       return reply.status(400).send({ error: "timeZone must be a valid IANA timezone" });
     }
-    if (requestedTimeZone) await rememberConversationTimeZone(requestedTimeZone);
+    if (requestedTimeZone && chatId) await rememberConversationTimeZone(requestedTimeZone);
 
     // Resolve connection (need decrypted API key; "random" is a sentinel, not a persisted connection id)
     const { conn, error: connectionError } = await resolveConversationScheduleConnection(
       connections,
-      chat.connectionId,
+      chat?.connectionId ?? null,
     );
     if (!conn) return reply.status(400).send({ error: connectionError ?? "No connection configured" });
     const baseUrl = resolveBaseUrl(conn);
     if (!baseUrl) return reply.status(400).send({ error: "No base URL" });
 
-    const meta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
+    const meta = chat ? (typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {})) : {};
     if (requestedTimeZone) meta.conversationTimeZone = requestedTimeZone;
     const scheduleTimeZone = requestedTimeZone ?? resolveConversationTimeZone(meta);
     const nowInstant = new Date();
@@ -623,9 +634,9 @@ export async function conversationRoutes(app: FastifyInstance) {
     const characterIds: string[] =
       Array.isArray(req.body.characterIds) && req.body.characterIds.length > 0
         ? req.body.characterIds
-        : typeof chat.characterIds === "string"
+        : typeof chat?.characterIds === "string"
           ? JSON.parse(chat.characterIds)
-          : chat.characterIds;
+          : (chat?.characterIds ?? []);
 
     const provider = await createConversationAgentProvider(conn, baseUrl);
     const model = conn.model ?? "";
@@ -663,6 +674,11 @@ export async function conversationRoutes(app: FastifyInstance) {
       // The character owns its schedule; the chat map is only a cache, so a
       // legacy chat-only schedule still counts as existing.
       const existing = readCharacterSchedule(charData) ?? existingSchedules[charId];
+      if (existing && !forceRefresh && charData.extensions?.conversationScheduleAutoRenew === false) {
+        newSchedules[charId] = existing;
+        results[charId] = { status: "renewal_disabled" };
+        continue;
+      }
       if (existing && !forceRefresh && !scheduleNeedsRefresh(existing, scheduleNow)) {
         newSchedules[charId] = existing;
         results[charId] =
@@ -734,20 +750,21 @@ export async function conversationRoutes(app: FastifyInstance) {
         .filter(([, result]) => result.status === "generated" || result.status === "shared")
         .map(([id]) => id);
       if (changedCharIds.length > 0) {
-        await chats.patchMetadata(chatId, (current) => {
-          const currentSchedules: CharacterSchedules = hasSchedules(current.characterSchedules)
-            ? (current.characterSchedules as CharacterSchedules)
-            : {};
-          const mergedSchedules: CharacterSchedules = { ...currentSchedules };
-          for (const id of changedCharIds) {
-            mergedSchedules[id] = preserveTimingSettings(newSchedules[id]!, currentSchedules[id]);
-          }
-          return {
-            conversationSchedulesEnabled: true,
-            characterSchedules: mergedSchedules,
-            scheduleWeekStart: mondayStr,
-          };
-        });
+        if (chatId)
+          await chats.patchMetadata(chatId, (current) => {
+            const currentSchedules: CharacterSchedules = hasSchedules(current.characterSchedules)
+              ? (current.characterSchedules as CharacterSchedules)
+              : {};
+            const mergedSchedules: CharacterSchedules = { ...currentSchedules };
+            for (const id of changedCharIds) {
+              mergedSchedules[id] = preserveTimingSettings(newSchedules[id]!, currentSchedules[id]);
+            }
+            return {
+              conversationSchedulesEnabled: true,
+              characterSchedules: mergedSchedules,
+              scheduleWeekStart: mondayStr,
+            };
+          });
       }
       // Other chats pick the new schedule up on their next resolve, because it
       // now lives on the character card rather than in each chat's metadata.
@@ -780,8 +797,11 @@ export async function conversationRoutes(app: FastifyInstance) {
       string,
       { status: string; activity: string; schedule?: WeekSchedule; override?: object; lastContact?: string }
     > = {};
+    let needsRefresh = false;
 
     for (const charId of characterIds) {
+      const charRow = await chars.getById(charId);
+      const charData = charRow ? (JSON.parse(charRow.data as string) as CharacterData) : null;
       const schedule = schedules[charId];
       if (!schedule) {
         const { status, activity, override } = getEffectiveCurrentStatus(
@@ -791,14 +811,13 @@ export async function conversationRoutes(app: FastifyInstance) {
           "",
           scheduleNow,
         );
-        const charRow = await chars.getById(charId);
         if (charRow) {
-          const charData = JSON.parse(charRow.data as string) as CharacterData;
-          const currentExtensions = (charData.extensions as Record<string, unknown> | undefined) ?? {};
+          const currentData = charData!;
+          const currentExtensions = (currentData.extensions as Record<string, unknown> | undefined) ?? {};
           // The card's status is global. Only reset it when the character truly
           // has no schedule — if it has one and this chat simply has schedules
           // switched off, writing here would clear presence in every other chat.
-          const characterOwnsSchedule = !!readCharacterSchedule(charData);
+          const characterOwnsSchedule = !!readCharacterSchedule(currentData);
           if (
             !characterOwnsSchedule &&
             (currentExtensions.conversationStatus !== status || currentExtensions.conversationActivity !== activity)
@@ -823,17 +842,21 @@ export async function conversationRoutes(app: FastifyInstance) {
         "free time",
         scheduleNow,
       );
+      if (
+        scheduleNeedsRefresh(schedule, scheduleNow) &&
+        charData?.extensions?.conversationScheduleAutoRenew !== false
+      ) {
+        needsRefresh = true;
+      }
 
       // Sync the character's conversationStatus in the database
-      const charRow = await chars.getById(charId);
       if (charRow) {
-        const charData = JSON.parse(charRow.data as string) as CharacterData;
         if (
-          charData.extensions?.conversationStatus !== status ||
-          charData.extensions?.conversationActivity !== activity
+          charData!.extensions?.conversationStatus !== status ||
+          charData!.extensions?.conversationActivity !== activity
         ) {
           const extensions = {
-            ...(charData.extensions ?? {}),
+            ...(charData!.extensions ?? {}),
             conversationStatus: status,
             conversationActivity: activity,
           };
@@ -848,7 +871,7 @@ export async function conversationRoutes(app: FastifyInstance) {
 
     return reply.send({
       statuses,
-      needsRefresh: Object.values(schedules).some((schedule) => scheduleNeedsRefresh(schedule, scheduleNow)),
+      needsRefresh,
     });
   });
 
@@ -943,12 +966,38 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
     }
 
-    // Initialize activity state from DB if not already in memory (handles server restart / fresh load)
-    const messages = await chats.listMessages(chatId);
-    initializeActivityFromMessages(
-      chatId,
-      messages as Array<{ role: string; createdAt?: string; characterId?: string | null }>,
-    );
+    // Initialize activity state from DB once per process (handles server
+    // restart / fresh load). Gated so REPEAT idle checks make NO lazy-table
+    // queries (#5592 PR-B): an unconditional transcript read here would load
+    // and LRU-touch every scheduled chat's whole storage unit on every 30s
+    // poll, churning the Termux eviction cap and out-competing the chat the
+    // user is actually looking at. After the seed, the in-memory activity
+    // tracker answers everything this route needs, and an evicted unit stays
+    // on disk until a message is genuinely due.
+    if (!seededAutonomousActivityChats.has(chatId)) {
+      // One in-flight seed per chat: latching BEFORE the read would let a
+      // concurrent check proceed unseeded (and a rejected read would latch
+      // the chat with no state until restart). Concurrent checks await the
+      // same promise; the latch lands only after the seed succeeds.
+      let seeding = autonomousActivitySeeds.get(chatId);
+      if (!seeding) {
+        seeding = (async () => {
+          const seedMessages = await chats.listMessages(chatId);
+          initializeActivityFromMessages(
+            chatId,
+            seedMessages as Array<{ role: string; createdAt?: string; characterId?: string | null }>,
+          );
+          seededAutonomousActivityChats.add(chatId);
+        })();
+        autonomousActivitySeeds.set(chatId, seeding);
+        // The .finally chain is a DERIVED promise: when the seed rejects, it
+        // rejects too, and leaving it unhandled would trip the process-level
+        // unhandledRejection exit. The route still awaits (and surfaces) the
+        // original rejection below.
+        void seeding.finally(() => autonomousActivitySeeds.delete(chatId)).catch(() => undefined);
+      }
+      await seeding;
+    }
 
     // Filter out characters busy in an active scene
     const sceneBusyCharIds: string[] = meta.sceneBusyCharIds ?? [];
@@ -962,12 +1011,16 @@ export async function conversationRoutes(app: FastifyInstance) {
       return reply.send({ shouldTrigger: false, characterIds: [], reason: "scene_active", inactivityMs: 0 });
     }
 
-    // Skip autonomous while a turn-game (UNO, etc.) is active. The game's bot turns
-    // already drive generation; an autonomous message here would seize the chat's
-    // single generation lock and 409 the next bot-turn request, stalling the game.
-    if (await getActiveTurnGame(app.db, chatId)) {
-      return reply.send({ shouldTrigger: false, characterIds: [], reason: "turn_game_active", inactivityMs: 0 });
-    }
+    // Turn-game guard (UNO, etc.): an autonomous message would seize the
+    // chat's single generation lock and 409 the next bot-turn request,
+    // stalling the game. Checked LAZILY at the trigger points below instead
+    // of on every idle tick — the gameEngineState read loads the chat's
+    // storage unit, and an idle check must stay storage-free (#5592 PR-B).
+    // Only observable difference: an idle check during an active game now
+    // reports the ordinary not-due reason instead of "turn_game_active".
+    const turnGameBlocks = async () => Boolean(await getActiveTurnGame(app.db, chatId));
+    const turnGameActiveResponse = () =>
+      reply.send({ shouldTrigger: false, characterIds: [], reason: "turn_game_active", inactivityMs: 0 });
 
     const result = checkAutonomousMessaging(chatId, filteredSchedules, isGroup, {
       maxFollowups: req.body.maxFollowups,
@@ -978,6 +1031,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (result.reason === "generation_in_progress") return reply.send(result);
 
     if (result.shouldTrigger) {
+      if (await turnGameBlocks()) return turnGameActiveResponse();
       let blockedReason: "daily_budget_exhausted" | "intent_cooldown" | null = null;
       for (const characterId of result.characterIds) {
         const evaluation = evaluateAutonomousCandidate(
@@ -1007,6 +1061,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     );
     if (longAbsence) {
       if ("blockedReason" in longAbsence) return reply.send(blockedAutonomousResponse(longAbsence.blockedReason));
+      if (await turnGameBlocks()) return turnGameActiveResponse();
       const state = getActivityState(chatId);
       const generationStartedAt = markGenerationInProgress(chatId);
       return reply.send({
@@ -1036,10 +1091,14 @@ export async function conversationRoutes(app: FastifyInstance) {
         return status !== "offline";
       });
 
-      if (onlineCharIds.length > 0 && messages.length > 0) {
-        // Check if the last message (or consecutive last messages) are all from the user
-        const last = messages[messages.length - 1]!;
-        if (last.role === "user") {
+      // The tracker's lastMessageRole substitutes for reading the transcript
+      // (#5592 PR-B): seeded from the last message once, then kept live by
+      // the send paths. A trailing narrator/system message recorded only in
+      // the transcript can differ, but the catch-up reply is still sensible
+      // in that corner and the idle path stays storage-free.
+      if (onlineCharIds.length > 0) {
+        if (getActivityState(chatId)?.lastMessageRole === "user") {
+          if (await turnGameBlocks()) return turnGameActiveResponse();
           let blockedReason: "daily_budget_exhausted" | "intent_cooldown" | null = null;
           for (const catchUpCharacterId of onlineCharIds) {
             const evaluation = evaluateAutonomousCandidate(
