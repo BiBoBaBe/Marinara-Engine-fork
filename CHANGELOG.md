@@ -11,6 +11,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Container bases include the current Node.js security fixes, and Lite images build against the system libraries required by their Node package on both amd64 and arm64.
 - Sprite listings reject invalid character paths before reading or creating directories outside that character's sprite folder.
 - Platform checks now build and exercise full/Lite containers on both supported architectures, native desktop installs and update safeguards, the Windows installer, and Android APK compilation without publishing a release. Android build instructions state the required Gradle minimum, and macOS update tests use a socket path that fits the platform limit.
+- Noodle and Slurp chat controls appear only while their packages are active. Chats can optionally include Slurp activity, off by default, and package context follows the preset's formatting (#6235).
 
 - Scene preset variables are chosen before planning begins and apply to the opening message. Cancelling setup makes no generation request (#6214).
 - OpenRouter prompt caching honors the connection type when using a proxy, and Gemini reports cache-hit tokens in its usage figures (#6217, #6218).
