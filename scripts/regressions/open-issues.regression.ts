@@ -5510,6 +5510,30 @@ assert.equal(
   "legacy Professor Mari usage metadata should keep the context indicator available",
 );
 assert.equal(resolveProfessorMariContextBudget([], 128_000), null);
+for (const tokensContext of [230, 0, null, undefined]) {
+  assert.equal(
+    resolveProfessorMariContextBudget(
+      [
+        { role: "assistant", extra: { generationInfo: { tokensPrompt: 100, tokensCompletion: 20 } } },
+        {
+          role: "assistant",
+          extra: {
+            generationInfo: {
+              tokensPrompt: 300,
+              tokensCachedPrompt: 160,
+              tokensCompletion: 50,
+              requestCount: 2,
+              ...(tokensContext !== undefined ? { tokensContext } : {}),
+            },
+          },
+        },
+      ] as Message[],
+      1000,
+    )?.usedTokens ?? null,
+    tokensContext ?? null,
+    "latest request context wins over billed sums; missing usage must not resurrect an earlier context",
+  );
+}
 assert.equal(
   resolveChatContextBudget(
     [

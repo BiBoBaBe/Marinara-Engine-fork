@@ -4,7 +4,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
-- Fix reported inconsistencies in provider caching and context accounting, scene setup, and shared UI styling.
+- Scene preset variables are chosen before planning begins and apply to the opening message. Cancelling setup makes no generation request (#6214).
+- OpenRouter prompt caching honors the connection type when using a proxy, and Gemini reports cache-hit tokens in its usage figures (#6217, #6218).
+- Anthropic keeps depth-injected instructions at their position in chat history instead of moving them into the cached system prefix (#6219).
+- The context bar uses the latest request’s size instead of adding together every request in a turn. Tool and dice follow-ups consistently retain all reported token totals (#6220, #6221).
+- Tracker cards render reliably in WebKit with simpler neutral shading, including saved custom paints and brightness settings (#6223).
+- Conversation reactions stay next to their message when action controls appear or disappear (#6224).
+- Home, sidebar, editor, and Settings borders follow the selected accent, as does the mobile Home bookmark icon (#6229).
+- The Illustrator guide describes context-token estimates accurately; translated agent guides explain summary attachment and tappable token help (#6222, #6227).
 
 - The agent-token estimate’s help opens on tap and stays within the mobile screen (#6228).
 

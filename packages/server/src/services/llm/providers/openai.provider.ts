@@ -1040,7 +1040,11 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private shouldUseOpenRouterPromptCaching(options: ChatOptions): boolean {
-    return !this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai") && !!options.enableCaching;
+    return (
+      (this.providerKind === "openrouter" ||
+        (!this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai"))) &&
+      !!options.enableCaching
+    );
   }
 
   private applyOpenRouterPromptCaching(body: Record<string, unknown>, options: ChatOptions): void {

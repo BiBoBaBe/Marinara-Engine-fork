@@ -16,7 +16,7 @@ colors:
   plum-accent: "#2a1a3e"
   frost-text: "#f0e8ff"
   destructive: "var(--destructive)"
-  orchid-border: "#d4adfc33"
+  accent-border: "var(--border)"
   sidebar-night: "#08061a"
   light-blush-bg: "#faf8ff"
   light-ink: "#1a1025"
@@ -117,7 +117,7 @@ The palette is a nocturne of near-black violet, soft silver, logo-gradient accen
 
 ### Tertiary
 
-- **Muted Orchid** (`#d4adfc`): Secondary emphasis, borders, quiet metadata, and decorative highlights.
+- **Muted Orchid** (`#d4adfc`): Secondary emphasis, quiet metadata, and decorative highlights.
 - **SillyTavern Blue** (`#4a72b0`): Compatibility theme primary color only. Do not let it overtake the Marinara default identity.
 
 ### Neutral
@@ -128,7 +128,7 @@ The palette is a nocturne of near-black violet, soft silver, logo-gradient accen
 - **Sidebar Night** (`#08061a`): Persistent navigation and app frame.
 - **Light Blush Background** (`#faf8ff`): Light theme app background.
 - **Light Panel** (`#ffffffee`): Light theme panels and popovers.
-- **Orchid Border** (`#d4adfc33`): Default border and input stroke.
+- **Accent Border** (`var(--border)`): Default border and input stroke, tinted from the selected accent in dark and light mode.
 
 ### Named Rules
 
@@ -192,7 +192,7 @@ Marinara uses a hybrid of tonal layering, soft glow, and selective frosted surfa
 - **Corner Style:** 8px to 12px for most panels; keep repeated cards restrained.
 - **Background:** Use Ink Glass or tokenized card surfaces. Use stronger opacity for editors, logs, and settings.
 - **Shadow Strategy:** Flat by default, lifted only for popovers, modals, hoverable cards, and special game surfaces.
-- **Border:** Use tokenized borders such as Orchid Border. Avoid decorative side stripes.
+- **Border:** Use tokenized borders that follow the selected accent or an explicit custom-theme override. Avoid decorative side stripes.
 - **Internal Padding:** 12px to 20px depending on density.
 
 ### Inputs / Fields

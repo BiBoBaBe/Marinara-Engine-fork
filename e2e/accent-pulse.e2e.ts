@@ -301,3 +301,93 @@ for (const color of ["#a78bfa", "linear-gradient(90deg, #a78bfa, #ec4899, #22d3e
     });
   }
 }
+
+for (const theme of ["dark", "light"] as const) {
+  test(`shared shell borders and mobile bookmarks follow the selected accent (${theme})`, async ({ page }, info) => {
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: null } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chibiProfessorMariEnabled: false,
+      appAccentColor: "#3b82f6",
+      appAccentPulseMode: false,
+      theme,
+    });
+    await page.addInitScript((appVersion) => {
+      localStorage.removeItem("marinara-active-chat-id");
+      localStorage.setItem("marinara:whats-new:seen-version", appVersion);
+    }, version);
+    await page.goto("/");
+    const home = page.locator('[data-component="HomeBrowserHub"]');
+    await expect(home).toBeVisible();
+    await expect.poll(async () => (await readAccentPreferences(page)).ready).toBe(true);
+    await page.screenshot({ path: info.outputPath(`home-borders-${theme}.png`), animations: "disabled" });
+    const renderedColor = (expression: string) =>
+      page.evaluate((color) => {
+        const probe = document.createElement("span");
+        probe.style.color = color;
+        document.body.append(probe);
+        const value = getComputedStyle(probe).color;
+        probe.remove();
+        return value;
+      }, expression);
+    const borderMix = theme === "dark" ? 20 : 27;
+    for (const color of ["#3b82f6", "#14b8a6"]) {
+      await page.evaluate(async (accent) => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setAppAccentColor(accent);
+      }, color);
+      await expect.poll(async () => (await readAccentPreferences(page)).color).toBe(color);
+      const border = `color-mix(in srgb, ${color} ${borderMix}%, transparent)`;
+      await expect(home.locator(":scope > div")).toHaveCSS(
+        "border-top-color",
+        await renderedColor(`color-mix(in oklab, ${border} 75%, transparent)`),
+      );
+      const bookmark = page.locator('[data-component="HomeBrowserHub.MobileBookmarksTrigger"]');
+      if (info.project.name.includes("mobile")) {
+        await expect(bookmark).toHaveCSS("color", await renderedColor(color));
+        await bookmark.tap();
+        await expect(bookmark).toHaveAttribute("aria-expanded", "true");
+        await expect(bookmark).toHaveCSS("color", await renderedColor(color));
+        await bookmark.tap();
+      }
+      await page.locator('[data-tour="panel-settings"]').click();
+      await page.getByRole("tab", { name: "Appearance", exact: true }).click();
+      const settingsHeader = page.locator(".mari-right-panel-header:visible > div.absolute");
+      await expect(settingsHeader).toHaveCSS(
+        "background-color",
+        await renderedColor(`color-mix(in oklab, ${border} 30%, transparent)`),
+      );
+      const modes = page.getByRole("group", { name: "Appearance by chat mode", exact: true });
+      await expect(modes).toHaveCSS("border-top-color", await renderedColor(border));
+      await expect(modes.getByRole("button", { name: "App", exact: true })).toHaveCSS(
+        "border-right-color",
+        await renderedColor(border),
+      );
+      await expect(page.getByRole("tab", { name: "General", exact: true }).locator("span").first()).toHaveCSS(
+        "border-top-color",
+        await renderedColor(`color-mix(in oklab, ${border} 55%, transparent)`),
+      );
+      await expect(page.getByRole("button", { name: /^Quick Access/u }).locator("../..")).toHaveCSS(
+        "border-top-color",
+        await renderedColor(`color-mix(in oklab, ${border} 60%, transparent)`),
+      );
+      if (!info.project.name.includes("mobile")) {
+        const edgeColor = await renderedColor(`color-mix(in srgb, ${color} 14%, var(--background) 86%)`);
+        await expect
+          .poll(() =>
+            page
+              .locator(".mari-right-panel.mari-shell-panel-edge:visible")
+              .evaluate((element) => getComputedStyle(element, "::after").backgroundColor),
+          )
+          .toBe(edgeColor);
+      }
+      await page.screenshot({
+        path: info.outputPath(`settings-borders-${theme}-${color.slice(1)}.png`),
+        animations: "disabled",
+      });
+      await page.locator('[data-tour="panel-settings"]').click();
+    }
+  });
+}

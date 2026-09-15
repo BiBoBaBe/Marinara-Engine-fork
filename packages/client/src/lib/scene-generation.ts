@@ -31,6 +31,7 @@ export function requestScenePromptPreferences(sourceLabel?: string | null): Prom
       if (pendingScenePromptPreferencesSettle === settle) {
         pendingScenePromptPreferencesSettle = null;
       }
+      unsubscribe();
       resolve(preferences);
     };
 
@@ -38,20 +39,26 @@ export function requestScenePromptPreferences(sourceLabel?: string | null): Prom
     pendingScenePromptPreferencesSettle = settle;
 
     const ui = useUIStore.getState();
-    ui.openModal("scene-prompt-preferences", {
+    const modalProps = {
       sourceLabel: sourceLabel ?? null,
       initialPreferences: ui.scenePromptPreferences,
       onSubmit: (preferences: ScenePromptPreferences) => {
+        if (settled) return;
         const normalized = normalizeScenePromptPreferences(preferences);
         useUIStore.getState().setScenePromptPreferences(normalized);
+        settle({ ...normalized, ...(preferences.presetChoices ? { presetChoices: preferences.presetChoices } : {}) });
         useUIStore.getState().closeModal();
-        settle(normalized);
       },
       onCancel: () => {
-        useUIStore.getState().closeModal();
+        if (settled) return;
         settle(null);
+        useUIStore.getState().closeModal();
       },
+    };
+    const unsubscribe = useUIStore.subscribe((state) => {
+      if (state.modal?.props !== modalProps) settle(null);
     });
+    ui.openModal("scene-prompt-preferences", modalProps);
   });
 }
 
@@ -67,6 +74,7 @@ export async function startSceneWithPromptPreferences(options: StartSceneOptions
       .filter(Boolean)
       .join("\n\n");
     const planRes = await api.post<ScenePlanResponse>("/scene/plan", {
+      debugMode: useUIStore.getState().debugMode,
       chatId: options.chatId,
       prompt: planningPrompt,
       connectionId: options.connectionId ?? null,
@@ -94,40 +102,8 @@ export async function startSceneWithPromptPreferences(options: StartSceneOptions
       plan,
       connectionId: options.connectionId ?? null,
       promptPresetId: preferences.promptPresetId ?? null,
+      presetChoices: preferences.presetChoices,
     });
-
-    if (preferences.promptPresetId) {
-      // Use the same persisted choices as Roleplay setup before entering the scene.
-      toast.dismiss(toastId);
-      const completed = await new Promise<boolean>((resolve) => {
-        let settled = false;
-        const settle = (completed: boolean) => {
-          if (settled) return;
-          settled = true;
-          unsubscribe();
-          resolve(completed);
-        };
-        const modalProps = {
-          chatId: response.chatId,
-          presetId: preferences.promptPresetId,
-          onClose: () => {
-            if (settled) return;
-            if (useUIStore.getState().modal?.props !== modalProps) {
-              settle(false);
-              return;
-            }
-            // Unsubscribe before our own close; Skip and Confirm both enter the scene.
-            settle(true);
-            useUIStore.getState().closeModal();
-          },
-        };
-        const unsubscribe = useUIStore.subscribe((state) => {
-          if (state.modal?.props !== modalProps) settle(false);
-        });
-        useUIStore.getState().openModal("preset-choices", modalProps);
-      });
-      if (!completed) return null;
-    }
 
     useChatStore.getState().setActiveChatId(response.chatId);
     if (response.background) {

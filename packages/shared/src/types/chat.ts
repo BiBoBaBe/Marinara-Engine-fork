@@ -991,6 +991,11 @@ export interface GenerationInfo {
   temperature: number | null;
   tokensPrompt: number | null;
   tokensCompletion: number | null;
+  /** Occupied tokens in the latest completed model request, including cache and output; null when unreported. */
+  tokensContext?: number | null;
+  /** Completed main-model requests in this turn; agent and separate Game planner calls are excluded. */
+  requestCount?: number;
+  tokensAcceptedPrediction?: number | null;
   /** Provider-reported hidden reasoning-token usage, when available. */
   tokensReasoning?: number | null;
   tokensCachedPrompt?: number | null;

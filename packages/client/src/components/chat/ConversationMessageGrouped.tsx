@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Grouped multi-speaker message layout (merged group chat / Name: text format)
 // ──────────────────────────────────────────────
-import { Fragment, type RefObject } from "react";
+import { Fragment, type ReactNode, type RefObject } from "react";
 import { normalizeTextForMatch } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import {
@@ -28,9 +28,11 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 export function ConversationMessageGrouped({
   ctx,
   msgRef,
+  reactionRow,
 }: {
   ctx: MessageRenderContext;
   msgRef: RefObject<HTMLDivElement | null>;
+  reactionRow?: ReactNode;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const {
@@ -431,6 +433,8 @@ export function ConversationMessageGrouped({
       )}
 
       <ConversationMessageSwipes ctx={ctx} />
+
+      {reactionRow}
 
       {/* Action bar */}
       {(!hideActions || hasReasoning) && (

@@ -6758,7 +6758,7 @@ const CSS_TEMPLATE = `/* ══════════════════�
   /* ── Borders ── */
   /* --border: #27272a; */
   /* --sidebar-border: #27272a; */
-  /* --marinara-shell-edge-border: color-mix(in srgb, var(--foreground) 14%, var(--background) 86%); */
+  /* --marinara-shell-edge-border: color-mix(in srgb, var(--primary) 14%, var(--background) 86%); */
 
   /* ── Text ── */
   /* --muted-foreground: #71717a; */

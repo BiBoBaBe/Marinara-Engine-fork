@@ -3,6 +3,7 @@ import type { ScenePromptPreferences, ScenePromptPov, ScenePromptTense } from "@
 import { Modal } from "../ui/Modal";
 import { normalizeScenePromptPreferences } from "../../stores/ui.store";
 import { usePresets } from "../../hooks/use-presets";
+import { ChoiceSelectionModal } from "../presets/ChoiceSelectionModal";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface ScenePromptPreferencesModalProps {
@@ -50,6 +51,9 @@ export function ScenePromptPreferencesModal({
   const [tense, setTense] = useState<ScenePromptTense>(initial.tense);
   const [extraInstructions, setExtraInstructions] = useState(initial.extraInstructions ?? "");
   const [promptPresetId, setPromptPresetId] = useState(initial.promptPresetId ?? "");
+  const [configuringPresetId, setConfiguringPresetId] = useState<string | null>(null);
+  const [presetChoices, setPresetChoices] = useState<Record<string, string | string[]> | null>(null);
+  const [submitAfterChoices, setSubmitAfterChoices] = useState(false);
   const unavailablePreset =
     !!promptPresetId && !presetsUnverified && !presets.some((preset) => preset.id === promptPresetId);
 
@@ -59,6 +63,9 @@ export function ScenePromptPreferencesModal({
     setTense(next.tense);
     setExtraInstructions(next.extraInstructions ?? "");
     setPromptPresetId(next.promptPresetId ?? "");
+    setConfiguringPresetId(null);
+    setPresetChoices(null);
+    setSubmitAfterChoices(false);
   }, [initialPreferences]);
 
   const handleClose = () => {
@@ -66,16 +73,35 @@ export function ScenePromptPreferencesModal({
     onClose();
   };
 
-  const handleSubmit = () => {
-    onSubmit(
-      normalizeScenePromptPreferences({
-        pov,
-        tense,
-        extraInstructions,
-        promptPresetId: promptPresetId || null,
-      }),
-    );
+  const submitPreferences = (choices: Record<string, string | string[]> | null) => {
+    onSubmit({
+      ...normalizeScenePromptPreferences({ pov, tense, extraInstructions, promptPresetId: promptPresetId || null }),
+      ...(promptPresetId && choices ? { presetChoices: choices } : {}),
+    });
   };
+  const handleSubmit = () => {
+    if (promptPresetId && presetChoices === null) {
+      setSubmitAfterChoices(true);
+      setConfiguringPresetId(promptPresetId);
+      return;
+    }
+    submitPreferences(presetChoices);
+  };
+
+  if (configuringPresetId) {
+    return (
+      <ChoiceSelectionModal
+        open={open}
+        presetId={configuringPresetId}
+        onClose={handleClose}
+        onConfirm={(choices) => {
+          setPresetChoices(choices);
+          setConfiguringPresetId(null);
+          if (submitAfterChoices) submitPreferences(choices);
+        }}
+      />
+    );
+  }
 
   return (
     <Modal
@@ -103,7 +129,12 @@ export function ScenePromptPreferencesModal({
           <select
             value={promptPresetId}
             disabled={presetsLoading}
-            onChange={(event) => setPromptPresetId(event.target.value)}
+            onChange={(event) => {
+              setPromptPresetId(event.target.value);
+              setPresetChoices(null);
+              setSubmitAfterChoices(false);
+              setConfiguringPresetId(event.target.value || null);
+            }}
             className="mari-preset-native-select min-h-11 w-full rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)] disabled:opacity-50"
           >
             <option value="">{localizeUi("ui.game.gamesurfacecomponent.none")}</option>

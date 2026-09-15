@@ -7659,7 +7659,35 @@ test("Roleplay Tracker preserves named characters with missing or malformed card
     await page.addInitScript((id) => localStorage.setItem("marinara-active-chat-id", id), chatId);
     const renderErrors: string[] = [];
     page.on("pageerror", (error) => renderErrors.push(error.message));
-    for (let pass = 0; pass < 2; pass++) {
+    const paintCases = [
+      { name: "default", paint: null },
+      { name: "default-reloaded", paint: null },
+      {
+        name: "custom",
+        paint: { mode: "custom", nameColor: "#60a5fa", dialogueColor: "#f97316", boxColor: "#334155" },
+      },
+      ...[0, 100].map((materialBrightness) => ({
+        name: `custom-partial-brightness-${materialBrightness}`,
+        paint: {
+          mode: "custom",
+          nameColor: "#60a5fa",
+          dialogueColor: "#f97316",
+          boxColor: "#334155",
+          nameColorOpacity: 50,
+          dialogueColorOpacity: 35,
+          boxColorOpacity: 65,
+          materialBrightness,
+          contrastIntensity: 100,
+        },
+      })),
+    ];
+    for (const [pass, paintCase] of paintCases.entries()) {
+      if (paintCase.paint) {
+        const savedPaint = await request.patch(`/api/characters/${characterId}/tracker-card-colors`, {
+          data: { paint: paintCase.paint },
+        });
+        expect(savedPaint.ok(), await savedPaint.text()).toBeTruthy();
+      }
       if (pass === 0) await page.goto("/");
       else await page.reload();
       const toggle = page.locator('[data-tracker-panel-toggle="roleplay-hud"]:visible').first();
@@ -7676,9 +7704,30 @@ test("Roleplay Tracker preserves named characters with missing or malformed card
           .poll(() => avatar.evaluate((image) => (image as HTMLImageElement).naturalWidth))
           .toBeGreaterThan(0);
       }
+      if (paintCase.paint) {
+        const paintedCard = tracker
+          .getByRole("button", { name: "Named visitor", exact: true })
+          .locator("xpath=ancestor::article[1]");
+        await expect(paintedCard).toHaveAttribute("style", /--tracker-profile-accent-solid:[^;]*#f97316/i);
+        const nameColors = await tracker
+          .getByRole("button", { name: "Named visitor", exact: true })
+          .evaluate((button) => {
+            const probe = document.createElement("span");
+            probe.style.color = "var(--tracker-profile-nameplate-text)";
+            button.append(probe);
+            const expected = getComputedStyle(probe).color;
+            probe.remove();
+            const text = [...button.querySelectorAll("span")].find(
+              (span) =>
+                span.textContent === "Named visitor" && span.children.length === 0 && span.getClientRects().length > 0,
+            );
+            return { expected, actual: text ? getComputedStyle(text).color : null };
+          });
+        expect(nameColors.actual).toBe(nameColors.expected);
+      }
       expect(await readCharacters()).toEqual(originalCharacters);
       expect(renderErrors).toEqual([]);
-      if (pass === 1) await page.screenshot({ path: testInfo.outputPath("tracker-missing-card-ids.png") });
+      await page.screenshot({ path: testInfo.outputPath(`tracker-${paintCase.name}.png`), animations: "disabled" });
     }
   } catch (error) {
     await page.screenshot({ path: testInfo.outputPath("tracker-opening-failure.png") }).catch(() => undefined);

@@ -1146,3 +1146,107 @@ test("Notification position is selectable, moves errors, and survives reload", a
   await selector.selectOption("top");
   await expect(page.locator('[data-sonner-toaster][data-y-position="top"] [data-sonner-toast]')).toBeVisible();
 });
+
+test("Conversation reactions stay beside their message when actions reveal", async ({ page, request }, info) => {
+  let chatId = "";
+  let characterId = "";
+  try {
+    const character = await request.post("/api/characters", { data: { data: { name: "Visitor" } } });
+    expect(character.ok()).toBeTruthy();
+    characterId = (await character.json()).id;
+    const response = await request.post("/api/chats", {
+      data: { name: "Stable conversation reactions", mode: "conversation", characterIds: [characterId] },
+    });
+    expect(response.ok()).toBeTruthy();
+    chatId = (await response.json()).id;
+    const messages: { id: string; role: string; content: string; emoji: string }[] = [];
+    for (const [role, emoji] of [
+      ["user", "🧪"],
+      ["assistant", "📚"],
+    ] as const) {
+      const content = `A short ${role} message about the laboratory.`;
+      const created = await request.post(`/api/chats/${chatId}/messages`, {
+        data: { role, content, extra: { reactions: [{ emoji, by: ["user"] }] } },
+      });
+      expect(created.ok()).toBeTruthy();
+      messages.push({ id: (await created.json()).id, role, content, emoji });
+    }
+    const grouped = await request.post(`/api/chats/${chatId}/messages`, {
+      data: {
+        role: "assistant",
+        characterId,
+        content: '<speaker="Visitor">A grouped laboratory reply.</speaker>',
+        extra: { reactions: [{ emoji: "🔬", by: ["user"] }] },
+      },
+    });
+    expect(grouped.ok()).toBeTruthy();
+    messages.push({
+      id: (await grouped.json()).id,
+      role: "grouped",
+      content: "A grouped laboratory reply.",
+      emoji: "🔬",
+    });
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation"],
+      trackerPanelEnabled: false,
+      chibiProfessorMariEnabled: false,
+      appAccentPulseMode: false,
+      theme: info.project.name === "desktop-chromium" ? "light" : "dark",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chatId, version },
+    );
+    await page.goto("/");
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    for (const style of ["classic", "bubble"] as const) {
+      await page.evaluate(async (value) => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setConversationMessageStyle(value);
+      }, style);
+      for (const message of messages) {
+        const row = page.locator(`[data-message-id="${message.id}"]`).first();
+        const text = row.getByText(message.content, { exact: true });
+        const reactions = page.locator(".mari-message-reactions-row").filter({ hasText: message.emoji });
+        await text.scrollIntoViewIfNeeded();
+        await page.locator("textarea[data-chat-composer]").focus();
+        await page.mouse.move(1, 1);
+        const measure = () =>
+          reactions.evaluate((element, id) => {
+            const message = document.querySelector(`[data-message-id="${id}"]`)!;
+            const content =
+              message.querySelector('[data-component="ConversationMessage.Content"]') ??
+              message.querySelector("[data-card-css]")!;
+            const contentBox = content.getBoundingClientRect();
+            const swipes = message.querySelector(".mari-message-swipes")?.getBoundingClientRect();
+            const reactionBox = element.getBoundingClientRect();
+            return { gap: reactionBox.top - Math.max(contentBox.bottom, swipes?.bottom ?? 0), x: reactionBox.x };
+          }, message.id);
+        const before = await measure();
+        await page.screenshot({ path: info.outputPath(`reactions-${style}-${message.role}-hidden.png`) });
+        expect(before.gap).toBeLessThanOrEqual(12);
+        if (info.project.name === "desktop-chromium") await text.hover();
+        else await text.tap();
+        await expect(row.getByRole("button", { name: "Copy", exact: true })).toBeVisible();
+        await expect.poll(async () => Math.abs((await measure()).gap - before.gap)).toBeLessThanOrEqual(1);
+        expect(Math.abs((await measure()).x - before.x)).toBeLessThanOrEqual(1);
+        await page.screenshot({ path: info.outputPath(`reactions-${style}-${message.role}-shown.png`) });
+        if (info.project.name !== "desktop-chromium") {
+          await text.tap();
+          await page.locator("textarea[data-chat-composer]").tap();
+          await expect(row.getByRole("button", { name: "Copy", exact: true })).toBeHidden();
+        }
+      }
+    }
+  } finally {
+    if (chatId) await request.delete(`/api/chats/${chatId}`).catch(() => undefined);
+    if (characterId) await request.delete(`/api/characters/${characterId}`).catch(() => undefined);
+  }
+});
