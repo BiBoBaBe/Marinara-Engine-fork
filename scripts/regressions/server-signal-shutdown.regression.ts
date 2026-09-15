@@ -2,7 +2,7 @@
 // server even with a TTY, and duplicate terminal signals must not cut off close.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createConnection, createServer } from "node:net";
@@ -25,6 +25,7 @@ if (process.platform === "win32") {
       "powershell.exe",
       [
         "-NoProfile",
+        "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -40,6 +41,15 @@ if (process.platform === "win32") {
       ],
       { stdio: "inherit", timeout: 45_000 },
     );
+  } catch (error) {
+    for (const name of ["progress.log", "stdout.log", "stderr.log"]) {
+      try {
+        process.stderr.write(`Windows console fixture ${name}:\n${readFileSync(join(dir, name), "utf8")}\n`);
+      } catch {
+        // A failure before process creation may leave no redirected output.
+      }
+    }
+    throw error;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

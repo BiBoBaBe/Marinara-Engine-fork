@@ -116,7 +116,7 @@ try {
           variant,
           architecture,
         ],
-        { input: probe },
+        { input: probe, timeout: 180_000 },
       ),
     );
     docker(["stop", "--time", "20", name]);
