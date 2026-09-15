@@ -4,6 +4,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [2.4.6]
+
+- Prepared v2.4.6 across the Engine, Home version, PWA manifest, Windows installer, and Android bootstrap metadata. Android uses version code 47 so the APK can update existing installations; publication and the release announcement remain separate.
+
 - Scene preset variables are chosen before planning begins and apply to the opening message. Cancelling setup makes no generation request (#6214).
 - OpenRouter prompt caching honors the connection type when using a proxy, and Gemini reports cache-hit tokens in its usage figures (#6217, #6218).
 - Anthropic keeps depth-injected instructions at their position in chat history instead of moving them into the cached system prefix (#6219).
