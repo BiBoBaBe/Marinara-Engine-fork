@@ -3844,6 +3844,7 @@ export async function generateRoutes(app: FastifyInstance) {
             targetCharacterIds,
             personaId: selectedPersonaId,
             placedAgentTypes: [...runtimeAgentSectionTypes],
+            wrapFormat,
           });
           const placedPackageIds = new Set<string>();
           for (const block of promptContext.packageBlocks) {

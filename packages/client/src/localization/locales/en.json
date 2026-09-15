@@ -3464,6 +3464,8 @@
   "ui.chat.chatsettingsdrawer.allowCharacterDms": "Allow character DMs",
   "ui.chat.chatsettingsdrawer.allowModelsToInteractWithYouThroughInstalledCommands": "Allow models to interact with you through installed commands, including schedules, scenes, media, reactions, and games.",
   "ui.chat.chatsettingsdrawer.allowNoodleReferences": "Allow Noodle references",
+  "ui.chat.chatsettingsdrawer.allowSlurpActivity": "Include Slurp activity",
+  "ui.chat.chatsettingsdrawer.allowSlurpActivityDescription": "Characters in this chat remember their recent Slurp posts, messages, commissions and tips. Carryover must also be on for this chat mode in Slurp settings.",
   "ui.chat.chatsettingsdrawer.allowTheGameToRequestSceneImagesPortraitsAnd": "Allow the game to request scene images, portraits, and backgrounds from your image connection.",
   "ui.chat.chatsettingsdrawer.allScopedScriptsTransformEveryMessage": "All scoped scripts transform every message.",
   "ui.chat.chatsettingsdrawer.allUserMessagesInChat": "All user messages in this chat",

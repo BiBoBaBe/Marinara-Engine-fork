@@ -1290,6 +1290,12 @@ export async function chatsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "noodleTimelineContextEnabled must be a boolean" });
     }
     if (
+      Object.prototype.hasOwnProperty.call(incoming, "slurp2ActivityContextEnabled") &&
+      typeof incoming.slurp2ActivityContextEnabled !== "boolean"
+    ) {
+      return reply.status(400).send({ error: "slurp2ActivityContextEnabled must be a boolean" });
+    }
+    if (
       Object.prototype.hasOwnProperty.call(incoming, "hideSummarisedMessages") &&
       typeof incoming.hideSummarisedMessages === "boolean"
     ) {

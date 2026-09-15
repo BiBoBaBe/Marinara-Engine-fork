@@ -229,6 +229,7 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "selfie",
   "semantic",
   "show",
+  "slurp2",
   "spatial",
   "spotify",
   "sprite",
