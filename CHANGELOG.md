@@ -4,12 +4,12 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [2.4.6]
+
 - Added Professor Mari’s v2.4.6 What’s New story with release screenshots and demonstrations (#6240).
 - Professor Mari’s memory-processing animation alternates both legs, with a straightened rear-leg stride and rotating wheel spokes (#6240).
 
 - Characters keeps its pink gradient on the topbar underline, sidebar header icon, and New buttons when the Chroma accent changes (#6238).
-
-## [2.4.6]
 
 - Roleplay Visual Novel paragraph buttons and the paragraph counter follow the Chroma accent, including on hover (#6236).
 
