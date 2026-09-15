@@ -4,6 +4,139 @@ import { seedUIState } from "./ui-state-fixture";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+test("Roleplay agents can omit chat summaries without changing other modes", async ({ page, request }, info) => {
+  const resources: string[] = [];
+  const create = async (path: string, data: unknown) => {
+    const response = await request.post(path, { data });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const value = (await response.json()) as { id: string };
+    resources.unshift(`${path}/${value.id}`);
+    return value;
+  };
+  try {
+    await create("/api/agents", {
+      type: "summary-browser-fixture",
+      name: "Summary fixture agent",
+      phase: "parallel",
+      promptTemplate: "Return a short note.",
+      settings: { resultType: "context_injection", customCapabilities: {} },
+    });
+    const chat = await create("/api/chats", { name: "Agent summary setting", mode: "roleplay", characterIds: [] });
+    await create(`/api/chats/${chat.id}/messages`, { role: "assistant", content: "The laboratory is quiet." });
+    expect(
+      (await request.patch(`/api/chats/${chat.id}/metadata`, { data: { enableAgents: false } })).ok(),
+    ).toBeTruthy();
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation", "roleplay", "game"],
+      trackerPanelEnabled: false,
+      chibiProfessorMariEnabled: false,
+      appAccentPulseMode: false,
+      chatSettingsExpandedSections: { "roleplay-agents": true, "game-agents": true, "conversation-agents": true },
+      gameInstantTextReveal: true,
+      theme: info.project.name === "desktop-chromium" ? "light" : "dark",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chat.id, version },
+    );
+    const openSettings = async () => {
+      await page.evaluate(async () => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        useChatStore.getState().setShouldOpenSettings(true);
+      });
+    };
+    const savedSetting = async () => {
+      const saved = await (await request.get(`/api/chats/${chat.id}`)).json();
+      const metadata = typeof saved.metadata === "string" ? JSON.parse(saved.metadata) : saved.metadata;
+      return metadata.attachSummariesToAgents;
+    };
+    await page.goto("/");
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    await openSettings();
+    const section = page.locator('[data-chat-settings-section="roleplay-agents"]');
+    const toggle = section.getByLabel("Attach chat summaries", { exact: true });
+    await expect(toggle).not.toBeChecked();
+    const label = section.getByText("Attach chat summaries", { exact: true });
+    await label.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await expect(section.getByLabel("Enable Agents", { exact: true })).not.toBeChecked();
+    await page.screenshot({ path: info.outputPath("agent-summary-settings-off.png") });
+    await label.click();
+    await expect.poll(savedSetting).toBe(true);
+    await page.reload();
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    await openSettings();
+    await expect(toggle).toBeChecked();
+    await label.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await page.screenshot({ path: info.outputPath("agent-summary-settings-on.png") });
+    await label.click();
+    await expect.poll(savedSetting).toBe(false);
+    await page.reload();
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    await openSettings();
+    await expect(toggle).not.toBeChecked();
+
+    await section.getByText("Enable Agents", { exact: true }).click();
+    const cost = section.getByText(/tokens of agent instructions/u).locator("../..");
+    const helpButton = cost.getByRole("button", { name: "Show help", exact: true });
+    const toggleHelp = () => (info.project.name === "desktop-chromium" ? helpButton.click() : helpButton.tap());
+    await toggleHelp();
+    const help = page.getByText(/^Approximate\. Each call also carries chat context/u);
+    await expect(help).toBeVisible();
+    await expect(help).toContainText("Smaller models may slow down or fail past");
+    await expect(helpButton).toHaveAttribute("aria-expanded", "true");
+    const bounds = await help.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    if (info.project.name !== "desktop-chromium") {
+      const buttonBounds = await helpButton.boundingBox();
+      expect(buttonBounds!.width).toBeGreaterThanOrEqual(44);
+      expect(buttonBounds!.height).toBeGreaterThanOrEqual(44);
+    }
+    await page.screenshot({ path: info.outputPath("agent-cost-help.png") });
+    await toggleHelp();
+    await expect(help).toBeHidden();
+    await toggleHelp();
+    await expect(help).toBeVisible();
+    await section.getByText(/tokens of agent instructions/u).click();
+    await expect(help).toBeHidden();
+
+    for (const mode of ["conversation", "game"] as const) {
+      const other = await create("/api/chats", { name: `Summary control ${mode}`, mode, characterIds: [] });
+      if (mode === "game") {
+        expect(
+          (
+            await request.patch(`/api/chats/${other.id}/metadata`, {
+              data: { gameId: other.id, gameSessionStatus: "active", gameIntroPresented: true, enableAgents: false },
+            })
+          ).ok(),
+        ).toBeTruthy();
+      }
+      await create(`/api/chats/${other.id}/messages`, { role: "assistant", content: `Ready for ${mode} mode.` });
+      await page.evaluate(async (id) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        useChatStore.getState().setShouldOpenSettings(false);
+        useChatStore.getState().setActiveChatId(id);
+      }, other.id);
+      await expect(page.getByText(`Ready for ${mode} mode.`, { exact: true })).toBeVisible();
+      await openSettings();
+      const otherSection = page.locator(`[data-chat-settings-section="${mode}-agents"]`);
+      await expect(otherSection.locator('[role="button"][aria-expanded]').first()).toBeVisible();
+      await expect(page.getByLabel("Attach chat summaries", { exact: true })).toHaveCount(0);
+    }
+  } finally {
+    for (const path of resources) await request.delete(path).catch(() => undefined);
+  }
+});
+
 test("Personas are chosen per chat and Conversation names match that choice", async ({ page, request }, info) => {
   const resources: string[] = [];
   const create = async (path: string, data: unknown) => {

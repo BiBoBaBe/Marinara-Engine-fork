@@ -153,6 +153,7 @@ import {
   resolveRoleplayChatSummaryForPrompt,
   resolveVisibleGameStateAnchor,
 } from "./generate-route-utils.js";
+import { shouldAttachSummariesToAgents } from "../../services/generation/roleplay-summary-retrieval.js";
 import {
   buildHistoricalLorebookKeeperContext,
   CUSTOM_LOREBOOK_BACKFILL_CURSOR_KEY,
@@ -1059,13 +1060,15 @@ async function buildRetryAgentContext(args: {
       logger.warn(err, "[retry-agents] Failed to resolve custom-agent vector context");
     }
   }
-  const activeChatSummary = await resolveRoleplayChatSummaryForPrompt({
-    chatMode,
-    chatMetadata: chatMeta,
-    messages: resolvedAgentSlice,
-    vectorizerAvailable: summaryVectorizerAvailable,
-    embeddingOptions: { embeddingSource },
-  });
+  const activeChatSummary = shouldAttachSummariesToAgents(chatMode, chatMeta)
+    ? await resolveRoleplayChatSummaryForPrompt({
+        chatMode,
+        chatMetadata: chatMeta,
+        messages: resolvedAgentSlice,
+        vectorizerAvailable: summaryVectorizerAvailable,
+        embeddingOptions: { embeddingSource },
+      })
+    : null;
   const agentContext: AgentContext = {
     sequentialExecution: chatMode === "game" && chatMeta.gameSequentialAgents === true,
     chatId,
