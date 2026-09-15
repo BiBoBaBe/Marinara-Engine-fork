@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fix reported inconsistencies in provider caching and context accounting, scene setup, and shared UI styling.
+
 - The agent-token estimate’s help opens on tap and stays within the mobile screen (#6228).
 
 - Roleplay agent requests omit chat summaries by default to reduce context size. Turn on **Attach chat summaries** in Chat Settings → Agents when an agent needs them; summaries remain available to the main reply (#6225).
