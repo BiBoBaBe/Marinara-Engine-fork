@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { seedUIState } from "./ui-state-fixture.js";
@@ -25,6 +25,25 @@ const ONE_REQUEST_DRAFT = [
 // rolls and then narrates in a second request.
 const TWO_REQUEST_DRAFT = `You press yourself flat against the wall. [skill_check: skill="Stealth" dc="15"]`;
 const REWRITE_INSTRUCTION = "The engine has now rolled the requested dice:";
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Bring the reply up after a reload. The panel reopens on whatever segment the player
+ * last confirmed, which on WebKit is their own turn rather than the reply, so one Next
+ * per segment brings the reply into view, the way the native-dice spec does. Bounded, so
+ * a panel that never shows the reply fails on the assertion instead of looping.
+ */
+async function revealReply(narration: Locator, playerText: string, replyText: string): Promise<void> {
+  await expect(narration).toContainText(new RegExp(`${escapeRegExp(replyText)}|${escapeRegExp(playerText)}`));
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if ((await narration.textContent())?.includes(replyText)) break;
+    await narration.getByRole("button", { name: "Next", exact: true }).click();
+  }
+  await expect(narration).toContainText(replyText);
+}
 
 test("Game finishes a rolled turn in one request, and leaves the shipped two-request turn alone", async ({
   page,
@@ -208,7 +227,7 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
 
     // It persists: the chat carries it, and a reload renders it back.
     await page.reload();
-    await expect(narration).toContainText("The guard walks on, and you are past him.");
+    await revealReply(narration, "Slip past the guard.", "The guard walks on, and you are past him.");
     section = await openTools();
     await expect(oneRequest()).toBeChecked();
     await expect(narrateOutcomes()).toBeDisabled();
@@ -259,9 +278,7 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
 
     // ── The inline markers, and the dice history ──
     await page.reload();
-    await expect(narration).toContainText("The axe bites deep for 43 damage");
-    await expect(narration).toContainText(keptSuccess ? SUCCESS_HALF : FAILURE_HALF);
-    await expect(narration).not.toContainText(keptSuccess ? FAILURE_HALF : SUCCESS_HALF);
+    await revealReply(narration, "Try the crates instead.", "The axe bites deep for 43 damage");
     const markers = narration.locator(".game-dice-marker");
     await expect(markers).toHaveCount(2);
     await expect(markers.first()).toHaveText("43");
@@ -281,6 +298,11 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
     await expect(logs).toContainText("🎲 6d1+11:");
     await expect(logs).toContainText("= 17");
     await expect(logs).toContainText("Stealth");
+    // The log lists every segment, so it is where the kept half is asserted after the
+    // reload: the panel shows one segment at a time and which one it opens on differs by
+    // browser, while the log does not.
+    await expect(logs).toContainText(keptSuccess ? SUCCESS_HALF : FAILURE_HALF);
+    await expect(logs).not.toContainText(keptSuccess ? FAILURE_HALF : SUCCESS_HALF);
     // A clean turn records no notice, so none of the failure lines is rendered.
     await expect(logs).not.toContainText("Dice: one number could not be rolled");
     await expect(logs).not.toContainText("Dice: the branch was malformed");
@@ -525,7 +547,7 @@ test("Game spends the sighted pool in order and leaves an overflowed check for t
     expect(liveRolls).toEqual([]);
 
     await page.reload();
-    await expect(narration).toContainText("You move along the crates");
+    await revealReply(narration, "Count your chances.", "You move along the crates");
     await page.waitForTimeout(1500);
     expect(liveRolls).toEqual([]);
 
