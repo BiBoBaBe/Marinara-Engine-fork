@@ -920,10 +920,11 @@
   filter: none;
 }
 
+/* Resource sections keep their identifying palettes when the app accent changes. */
 .mari-panel-gradient--characters {
-  --mari-panel-gradient-start: var(--marinara-app-accent-solid);
-  --mari-panel-gradient-end: color-mix(in srgb, var(--marinara-app-accent-solid) 76%, var(--foreground) 24%);
-  --mari-panel-gradient-text: var(--primary-foreground);
+  --mari-panel-gradient-start: #f472b6;
+  --mari-panel-gradient-end: #f43f5e;
+  --mari-panel-gradient-text: #fff7fb;
 }
 
 .mari-panel-gradient--lorebooks {
