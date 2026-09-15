@@ -340,7 +340,9 @@ assert.match(devSource, /detached: process\.platform !== "win32"/u);
 assert.match(devSource, /process\.kill\(-child\.pid, signal\)/u);
 assert.match(devSource, /Reusing it and starting the client\./u);
 
-const fixtureRoot = mkdtempSync(join(tmpdir(), "marinara-launcher-data-"));
+// macOS's long per-user TMPDIR exceeds AF_UNIX's 103-byte path limit here.
+// Keep this fixture short so it still exercises copying a real live socket.
+const fixtureRoot = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "marinara-launcher-data-"));
 const fixtureBackupRoot = resolve(fixtureRoot, "..", `${basename(fixtureRoot)}-backups`);
 try {
   const installFixtureRoot = join(fixtureRoot, "install-check");

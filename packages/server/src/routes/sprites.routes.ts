@@ -1349,8 +1349,11 @@ export async function spritesRoutes(app: FastifyInstance) {
    * GET /api/sprites/:characterId
    * List all sprite expressions for a character.
    */
-  app.get<{ Params: { characterId: string } }>("/:characterId", async (req) => {
+  app.get<{ Params: { characterId: string } }>("/:characterId", async (req, reply) => {
     const { characterId } = req.params;
+    if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
+      return reply.status(400).send({ error: "Invalid character ID" });
+    }
     return listSpriteInfos(characterId);
   });
 

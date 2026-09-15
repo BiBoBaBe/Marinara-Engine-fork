@@ -4,7 +4,18 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [2.4.6]
+
 - Roleplay Visual Novel paragraph buttons and the paragraph counter follow the Chroma accent, including on hover (#6236).
+
+- CI actions use the supported Node.js 24 runtime, and container builds include Docker's fix for workflow-command injection in metadata logs.
+- Prepared v2.4.6 across the Engine, Home version, PWA manifest, Windows installer, and Android bootstrap metadata. Android uses version code 47 so the APK can update existing installations; publication and the release announcement remain separate.
+- Windows installers download the security-patched Node.js 24.21.0 release with its verified checksum.
+- Container bases include the current Node.js security fixes, and Lite images build against the system libraries required by their Node package on both amd64 and arm64.
+- Sprite listings reject invalid character paths before reading or creating directories outside that character's sprite folder.
+- Platform checks now build and exercise full/Lite containers on both supported architectures, native desktop installs and update safeguards, the Windows installer, and Android APK compilation without publishing a release. Android build instructions state the required Gradle minimum, and macOS update tests use a socket path that fits the platform limit.
+- Noodle and Slurp chat controls appear only while their packages are active. Chats can optionally include Slurp activity, off by default, and package context follows the preset's formatting (#6235).
+
 - Scene preset variables are chosen before planning begins and apply to the opening message. Cancelling setup makes no generation request (#6214).
 - OpenRouter prompt caching honors the connection type when using a proxy, and Gemini reports cache-hit tokens in its usage figures (#6217, #6218).
 - Anthropic keeps depth-injected instructions at their position in chat history instead of moving them into the cached system prefix (#6219).
