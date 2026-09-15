@@ -28,6 +28,7 @@ import {
   type SpotifyRuntimeAgent,
 } from "./spotify-agent-runtime.js";
 import { resolveSpotifyToolAvailabilityRequest } from "./spotify-tool-availability.js";
+import { shouldAttachSummariesToAgents } from "./roleplay-summary-retrieval.js";
 import {
   formatZonedConversationTime,
   getZonedDateParts,
@@ -931,7 +932,11 @@ async function resolveToolRuntime(
     }
     Object.assign(chatMetadata, updatedMeta);
     agentContext.chatSummary =
-      typeof chatMetadata.summary === "string" && chatMetadata.summary.trim() ? chatMetadata.summary.trim() : null;
+      shouldAttachSummariesToAgents(agentContext.chatMode, chatMetadata) &&
+      typeof chatMetadata.summary === "string" &&
+      chatMetadata.summary.trim()
+        ? chatMetadata.summary.trim()
+        : null;
     emitMetadataPatch(emittedPatch);
     return updatedMeta;
   };

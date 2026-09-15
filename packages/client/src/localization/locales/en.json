@@ -412,6 +412,8 @@
   "chat.settings.actions.editCharacterCard": "Edit character card",
   "chat.settings.actions.editLorebookEntries": "Edit lorebook entries",
   "chat.settings.actions.editPersonaCard": "Edit persona card",
+  "chat.settings.agents.attachSummaries": "Attach chat summaries",
+  "chat.settings.agents.attachSummariesHelp": "Include saved chat summaries in agent requests, in addition to their recent-message window. Turning this off leaves the main reply's context unchanged.",
   "chat.settings.background": "Background",
   "chat.settings.backgroundHelp": "Choose a background for this chat from your library. The preview shows the currently active background.",
   "chat.settings.dragDropHint": "You can drag and drop the Characters/Personas/Lorebooks/Presets/Connections/Agents/Backgrounds you want to use for this chat from the sidebar.",

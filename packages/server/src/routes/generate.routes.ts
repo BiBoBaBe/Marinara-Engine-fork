@@ -263,6 +263,7 @@ import {
 } from "../services/conversation/transcript-sanitize.js";
 import { normalizePromptTimeZone, toZonedWallClockDate } from "../services/conversation/timezone.js";
 import { countConversationMessagesAfterSummaryAnchor } from "../services/conversation/auto-summary.service.js";
+import { shouldAttachSummariesToAgents } from "../services/generation/roleplay-summary-retrieval.js";
 import { executeKnowledgeRetrieval } from "../services/agents/knowledge-retrieval.js";
 import { executeKnowledgeRouter } from "../services/agents/knowledge-router.js";
 import { extractFileText, getSourceFilePath } from "./knowledge-sources.routes.js";
@@ -4504,7 +4505,7 @@ export async function generateRoutes(app: FastifyInstance) {
           memory: {},
           lorebookEntryCounts: promptMacroContext.lorebookEntryCounts,
           writableLorebookIds: null,
-          chatSummary: activeChatSummary,
+          chatSummary: shouldAttachSummariesToAgents(chatMode, chatMeta) ? activeChatSummary : null,
           authorNotes: authorNotes || null,
           activatedLorebookEntries: lorebookScanSnapshot.activatedEntries.map((entry) => ({
             id: entry.id,

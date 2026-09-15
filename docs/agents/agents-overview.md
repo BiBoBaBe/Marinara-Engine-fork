@@ -46,6 +46,7 @@ You should see the agents you added listed as active, each with a small remove b
 
 The **Agents** section has a few more controls:
 
+- **Attach chat summaries** (Roleplay chats only): off by default, including in existing chats without a saved choice. Turn it on to include saved chat summaries in agent requests, including post-processing and manual retries. This does not remove summaries from the main reply or stop summary generation. Agents explicitly granted full main-prompt access can still read summaries inside that prompt.
 - **Review Agent Outputs**: when on, lorebook, summary, and character card changes wait for your approval before they save. When off, lorebook and summary changes can save on their own, but character card edits still ask you first. See [Agent Approvals and the Agent Suite](approvals-and-agent-suite.md).
 - **Manual Trackers** (Roleplay chats only): when on, tracker agents do not run after every reply. You trigger them by hand from a button in the HUD. HUD means heads-up display, the on-screen status overlay in Roleplay.
 - **Agent Suite**: opens a viewer where you can read and edit everything the agents have stored for this chat.
@@ -54,7 +55,7 @@ The **Agents** section has a few more controls:
 
 Agents cost extra tokens and extra model calls. Each agent adds its own instructions, and often its own model call. Marinara groups agents that share the same connection into one call when it can. Above the agent list, a readout estimates the load for your current setup. It shows about how many tokens of agent instructions you added and about how many extra calls happen per turn.
 
-This readout turns amber with a warning icon when the load gets heavy. The real cost per turn is higher than the number shown. Your chat history and character details are sent with each call. If you see the warning, remove agents you do not need, or move some to a cheaper or local connection.
+Tap the help icon beside the readout to open its explanation on desktop or mobile. This readout turns amber with a warning icon when the load gets heavy. The real cost per turn is higher than the number shown. Your chat history and character details are sent with each call. The recent-message limit only controls chat messages; agent instructions, character details, and attached summaries are additional context. If you see the warning, remove agents you do not need, or move some to a cheaper or local connection.
 
 ## Which agents each mode starts with
 

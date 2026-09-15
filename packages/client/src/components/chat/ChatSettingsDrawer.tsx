@@ -7365,6 +7365,20 @@ export function ChatSettingsDrawer({
                     )}
                     labelClassName="text-xs font-medium"
                   />
+                  {isRoleplayMode && (
+                    <AgentSettingsToggle
+                      label={localizeUi("chat.settings.agents.attachSummaries")}
+                      description={localizeUi("chat.settings.agents.attachSummariesHelp")}
+                      enabled={metadata.attachSummariesToAgents === true}
+                      surface="secondary"
+                      onToggle={() =>
+                        updateMeta.mutate({
+                          id: chat.id,
+                          attachSummariesToAgents: metadata.attachSummariesToAgents !== true,
+                        })
+                      }
+                    />
+                  )}
                   <AgentSettingsToggle
                     label={localizeUi("ui.chat.chatsettingsdrawer.reviewAgentOutputs")}
                     description={
@@ -8974,10 +8988,6 @@ export function ChatSettingsDrawer({
                                 ? "bg-[var(--primary)]/10 text-[var(--primary)] ring-[var(--primary)]/30"
                                 : "bg-[var(--secondary)]/60 text-[var(--primary)] ring-[var(--border)]",
                             )}
-                            title={localizeUi(
-                              "ui.chat.chatsettingsdrawer.approximateEachCallAlsoCarriesChatContextRecentMessages",
-                              { value1: AGENT_COST_HIGH_CALLS, value2: AGENT_COST_HIGH_TOKENS.toLocaleString() },
-                            )}
                           >
                             <span className="flex min-w-0 items-center gap-1.5">
                               {agentLoadCost.cost.level === "high" && (
@@ -8992,7 +9002,15 @@ export function ChatSettingsDrawer({
                                 {localizeUi("ui.chat.chatsettingsdrawer.turn")}
                               </span>
                             </span>
-                            <span className="shrink-0 cursor-help text-[0.625rem] opacity-70">ⓘ</span>
+                            <HelpTooltip
+                              text={localizeUi(
+                                "ui.chat.chatsettingsdrawer.approximateEachCallAlsoCarriesChatContextRecentMessages",
+                                { value1: AGENT_COST_HIGH_CALLS, value2: AGENT_COST_HIGH_TOKENS.toLocaleString() },
+                              )}
+                              className="-my-2 -mr-2 shrink-0"
+                              buttonClassName="h-11 w-11 justify-center"
+                              wide
+                            />
                           </div>
 
                           {visibleActiveAgentIds.length === 0 && (

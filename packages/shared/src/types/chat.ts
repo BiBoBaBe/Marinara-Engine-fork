@@ -309,6 +309,8 @@ export interface ChatMetadata {
   tags: string[];
   /** Whether agents are enabled for this chat */
   enableAgents: boolean;
+  /** Attach shared chat-summary context to Roleplay agents only when true. Missing/false excludes summaries. */
+  attachSummariesToAgents?: boolean;
   /** When true, agent output proposals such as lorebook, summary, and card updates require user review. */
   agentWriteApprovalRequired?: boolean;
   /** Per-agent enable overrides (agentId → boolean) */
