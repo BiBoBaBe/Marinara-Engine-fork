@@ -19798,6 +19798,13 @@ test("Home widgets lift and brighten on fine-pointer hover", async ({ page }, te
 
 test("Home lifecycle stays bounded across repeated tab and chat navigation", async ({ page }, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Chromium lifecycle counters are sampled on desktop.");
+  // Earlier workspace-command fixtures leave approved history behind. Replaying
+  // its cache invalidations on every mount samples request deadlines, not leaks.
+  await page.route("**/api/professor-mari/workspace/status**", async (route) => {
+    const response = await route.fetch();
+    const status = await response.json();
+    await route.fulfill({ response, json: { ...status, history: [] } });
+  });
   await page.addInitScript(() => {
     const activeIntervals = new Set<number>();
     const activeTimeouts = new Map<number, { delay: number; homeSurface: boolean }>();

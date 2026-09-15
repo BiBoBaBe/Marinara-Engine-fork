@@ -43,7 +43,7 @@ The Android app is a Termux bootstrap + WebView shell for Marinara Engine. It is
 
 - **Java 17+** — `brew install openjdk@17` (macOS) or `pkg install openjdk-17` (Termux)
 - **Android SDK** — Set the `ANDROID_HOME` environment variable
-- **Gradle 9.5+** — `brew install gradle` (macOS) or `pkg install gradle` (Termux)
+- **Gradle 9.6+** — required by Android Gradle Plugin 9.4; CI uses the pinned Gradle 9.7.1 distribution. Install with `brew install gradle` (macOS) or `pkg install gradle` (Termux).
 
 ### Build
 
