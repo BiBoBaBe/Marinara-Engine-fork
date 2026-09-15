@@ -107,8 +107,13 @@ const { ClaudeSubscriptionProvider } =
 const { createGameTurnChanceSession, resolveGameTurnBranches, runGameTurnChancePass, summarizeGameDiceTurn } =
   await import("../../packages/server/src/services/game/one-request-dice.js");
 const { stripGmCommandTags } = await import("../../packages/server/src/services/game/segment-edits.js");
-const { dropGameBranchBlocks, readSkillCheckBranchLabel, scanGameBranchBlocks, selectGameBranchHalf } =
-  await import("../../packages/shared/dist/index.js");
+const {
+  dropGameBranchBlocks,
+  readSkillCheckBranchLabel,
+  scanGameBranchBlocks,
+  selectGameBranchHalf,
+  stripGameBranchDelimiters,
+} = await import("../../packages/shared/dist/index.js");
 const { stripGmTags, stripGmTagsKeepReadables } = await import("../../packages/client/src/lib/game-tag-parser.js");
 
 // ══ 1. The grammar, scanned rather than matched ══════════════════════════════
@@ -164,6 +169,22 @@ for (const [raw, reason] of malformed) {
 
 // An unterminated block that never wrote a half marker is the opener alone. Bounding it
 // to the end of the content would let a stray `[branch:` in ordinary prose eat the turn.
+// A turn made of nothing but openers that never close. With an unbounded label class the
+// opener pattern re-scanned to the end of the turn from every one of them, which is
+// quadratic; the bounded label keeps both the scan and the display strip linear. None of
+// them is an opener, because none of them closes, so the text is left exactly as it came.
+{
+  const wall = "[branch:".repeat(60_000);
+  const started = performance.now();
+  assert.deepEqual(scanGameBranchBlocks(wall), [], "an opener that never closes is not a block");
+  assert.equal(stripGameBranchDelimiters(wall), wall, "and the strip leaves it alone");
+  assert.ok(performance.now() - started < 5_000, "in linear time");
+  // The bound itself: a label at it is read, one past it is not an opener at all. The
+  // unknown-tag catch-alls on both sides still take such a tag out of the player's view.
+  assert.equal(scanGameBranchBlocks(`[branch: ${"x".repeat(79)}]`).length, 1, "a label at the bound is read");
+  assert.equal(scanGameBranchBlocks(`[branch: ${"x".repeat(80)}]`).length, 0, "past it the opener is not one");
+}
+
 const stray = scanGameBranchBlocks("He turns. [branch: nothing] The corridor waits.");
 assert.equal(stray.length, 1);
 assert.equal(stray[0]!.raw, "[branch: nothing]", "a stray opener bounds at itself");

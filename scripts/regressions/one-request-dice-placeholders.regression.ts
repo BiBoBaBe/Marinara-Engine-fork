@@ -106,6 +106,22 @@ assert.equal(capped[0]!.refusal, "over-long", "the cap is a rejection reason, no
 const atCap = scanRollPlaceholders(`Body [[roll: ${"9".repeat(PLACEHOLDER_BODY_MAX)}]] end.`);
 assert.equal(atCap[0]!.refusal, null, "a body exactly at the cap is read, then refused by the grammar");
 
+// A body built to make a repeated regex group backtrack: `d0+!` and then many ` +!`. A
+// tail of the shape `(?:\s*[+-]\s*[^+\-\s][^+-]*)*` could divide each run of spaces
+// between its iterations in exponentially many ways before refusing it; the character
+// walk refuses it at once, and still tolerates the whitespace a real body carries.
+{
+  const hostile = `d0+!${" +!".repeat(200)}`;
+  const started = performance.now();
+  assert.equal(parseRollPlaceholderBody(hostile), null, "a run of malformed terms is refused");
+  assert.ok(performance.now() - started < 2_000, "and refused in linear time");
+  assert.equal(
+    parseRollPlaceholderBody(`2d6${" ".repeat(40)}+${" ".repeat(40)}3`)?.dice.modifier,
+    3,
+    "whitespace around a sign is still tolerated",
+  );
+}
+
 const nested = scanRollPlaceholders("Odd [[roll: 2d6 [x]]] here.");
 assert.equal(nested[0]!.end, "Odd [[roll: 2d6 [x]]]".length, "the trailing bracket run is swallowed whole");
 const bracketBody = scanRollPlaceholders("Odd [[roll: 2d6]x]] here.");

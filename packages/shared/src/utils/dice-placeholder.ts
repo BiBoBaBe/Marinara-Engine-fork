@@ -221,12 +221,37 @@ export function scanRollPlaceholders(content: string): RollPlaceholderSpan[] {
   return spans;
 }
 
-/** The dice term, then any number of signed terms. Whitespace around the signs is tolerated. */
-const PLACEHOLDER_BODY_PATTERN = /^(\d*)d(\d+)((?:\s*[+-]\s*[^+\-\s][^+-]*)*)\s*$/i;
+/** The dice term at the head of a body: `2d6`, `d20`. Nothing repeated after it. */
+const PLACEHOLDER_HEAD_PATTERN = /^(\d*)d(\d+)/i;
 /** A flat term is digits only; its sign is carried separately. */
 const PLACEHOLDER_FLAT_TERM = /^\d+$/;
-/** A sheet name: a word, possibly several ("Sleight of Hand"). Never a bracket or a colon. */
-const PLACEHOLDER_NAME_TERM = /^[A-Za-z][A-Za-z0-9 _'-]*$/;
+/** A sheet name: a word, possibly several ("Sleight of Hand"). Never a bracket, a colon or a sign. */
+const PLACEHOLDER_NAME_TERM = /^[A-Za-z][A-Za-z0-9 _']*$/;
+
+/**
+ * Split what follows the dice term into signed terms, or return null when it is not a
+ * run of them. Whitespace around a sign is tolerated; a term runs to the next sign.
+ *
+ * A character walk rather than a repeated regex group on purpose. A group of the shape
+ * `(?:\s*[+-]\s*[^+-]*)*` can divide one run of spaces between its iterations in
+ * exponentially many ways while failing a body it is about to refuse, and a body is
+ * model-written text. The walk reads every character once.
+ */
+function readSignedTerms(tail: string): Array<{ sign: "+" | "-"; value: string }> | null {
+  const terms: Array<{ sign: "+" | "-"; value: string }> = [];
+  let rest = tail.trim();
+  while (rest.length > 0) {
+    const sign = rest[0];
+    if (sign !== "+" && sign !== "-") return null;
+    let end = 1;
+    while (end < rest.length && rest[end] !== "+" && rest[end] !== "-") end += 1;
+    const value = rest.slice(1, end).trim();
+    if (value.length === 0) return null;
+    terms.push({ sign, value });
+    rest = rest.slice(end);
+  }
+  return terms;
+}
 
 /**
  * Read one placeholder body.
@@ -240,19 +265,19 @@ const PLACEHOLDER_NAME_TERM = /^[A-Za-z][A-Za-z0-9 _'-]*$/;
  * module is that this codebase has one. The model writes two placeholders.
  */
 export function parseRollPlaceholderBody(body: string): ParsedRollPlaceholderBody | null {
-  const match = PLACEHOLDER_BODY_PATTERN.exec(body.trim());
-  if (!match) return null;
-  const countText = match[1] ?? "";
-  const sidesText = match[2]!;
-  const tail = match[3] ?? "";
+  const trimmed = body.trim();
+  const head = PLACEHOLDER_HEAD_PATTERN.exec(trimmed);
+  if (!head) return null;
+  const countText = head[1] ?? "";
+  const sidesText = head[2]!;
+  const terms = readSignedTerms(trimmed.slice(head[0].length));
+  if (!terms) return null;
 
   let flatText: string | null = null;
   let flatSign = "+";
   let sheetName: string | null = null;
   let sheetSign: 1 | -1 = 1;
-  for (const term of tail.matchAll(/([+-])\s*([^+-]+)/g)) {
-    const sign = term[1]!;
-    const value = term[2]!.trim();
+  for (const { sign, value } of terms) {
     if (PLACEHOLDER_FLAT_TERM.test(value)) {
       // At most one flat number: two of them is arithmetic this grammar does not do.
       if (flatText !== null) return null;

@@ -50,11 +50,23 @@ export const BRANCH_BLOCK_CLOSER = "[/branch]";
 export const SKILL_CHECK_BRANCH_ATTRIBUTE = "branch";
 
 /**
+ * The longest label an opener is read with. A label is a short word the model repeats
+ * in the check tag's `branch=`; anything longer is not one, and the bound is what keeps
+ * the pattern below linear.
+ */
+export const BRANCH_LABEL_MAX = 80;
+
+/**
  * `[branch: id]`. The only one of the four delimiters that is an ordinary `[name:` head,
  * so it is the only one an unknown-tag catch-all already reaches.
+ *
+ * The label is bounded rather than `*`: an unbounded negated class in front of a literal
+ * closer re-scans to the end of the turn from every unclosed opener, which is quadratic
+ * on a turn made of nothing but `[branch:` openers, and a turn is model-written text.
+ * The `{0,80}` spelling is `BRANCH_LABEL_MAX`; both change together.
  */
 export function createBranchOpenerPattern(): RegExp {
-  return /\[branch:[^\]\r\n]*\]/gi;
+  return /\[branch:[^\]\r\n]{0,80}\]/gi;
 }
 
 /**
