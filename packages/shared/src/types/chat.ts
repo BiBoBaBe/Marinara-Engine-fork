@@ -3,10 +3,11 @@
 // ──────────────────────────────────────────────
 
 import type { MariWorkspaceTraceItem } from "./professor-mari-workspace.js";
+import type { GameDicePlaceholderRecord } from "../utils/dice-placeholder.js";
 import type { GenerationGuideSource } from "../utils/generation-guide.js";
 import type { HapticFeedbackSensitivity } from "./haptic.js";
 import type { CustomEmojiSelectionPrefs } from "../schemas/custom-emoji.schema.js";
-import type { DiceRollResult } from "./game.js";
+import type { DiceRollResult, GameDicePoolConsumption, GameDicePoolMismatch } from "./game.js";
 import type { SpotifySourceType } from "./spotify.js";
 import type {
   RoleplayCommandActivity,
@@ -623,6 +624,26 @@ export interface ChatMetadata {
   gameLorebookSearch?: boolean;
   /** Rewrite Game narration after new text-command dice rolls; absent means enabled. */
   gameDiceOutcomeNarration?: boolean;
+  /**
+   * Finish a rolled Game turn in one provider request: the GM commits its prose blind,
+   * the engine rolls afterwards and fills the result in, and the narration rewrite never
+   * fires. Absent means off.
+   */
+  gameOneRequestDice?: boolean;
+  /**
+   * The sighted pool, a sub-option of `gameOneRequestDice` and off by default. The engine
+   * throws one die of each size before the turn and shows the head values to the GM, so a
+   * number that itself has to pick between three or more endings can be narrated in the
+   * same pass. The GM sees the number before it decides what to check, so it can steer
+   * outcomes in a way the blind forms do not allow; the engine's record is still what is
+   * saved. Only read while `gameOneRequestDice` is on.
+   */
+  gameDicePoolMode?: boolean;
+  /** How many values per size the GM is shown. Absent means 1, which is the smallest
+   *  window the mechanism works at and the largest single mitigation it has. */
+  gameDicePoolWindow?: number;
+  /** Accepted turns a size may go unspent before it is rethrown. Absent means 3; 0 is off. */
+  gameDicePoolAgeTurns?: number;
   /** Serialize narration, agents, and scene media within this Game chat. */
   gameSequentialAgents?: boolean;
   /** Master visibility/runtime switch for manual Game Mode scene videos. */
@@ -889,6 +910,8 @@ export interface MessageExtra {
   diceRollResults?: DiceRollResult[] | null;
   /** Real roll records survived, but the separate outcome narration request failed. */
   gameOutcomeNarrationFailed?: boolean;
+  /** What the one-request dice pass did on this turn, when the switch was on. */
+  gameDiceTurn?: GameDiceTurnNotice | null;
   /** Separate tool planner billing; never added to the narrator model's usage. */
   gameToolPlanning?: GameToolPlanningInfo | null;
   /**
@@ -913,6 +936,43 @@ export interface MessageExtra {
     impersonateBlockAgents?: boolean;
     impersonatePromptTemplate?: string | null;
   } | null;
+}
+
+/**
+ * Summary of the one-request dice pass for one Game turn. Saved on the assistant
+ * message and mirrored on a `game_dice_turn_notice` SSE frame, so the session log can
+ * say in plain words what the engine could and could not roll. Every field is optional
+ * and only truthy values are written, so a clean turn stores nothing.
+ */
+export interface GameDiceTurnNotice {
+  /** Which blind forms actually resolved this turn, in first-seen order. */
+  forms?: Array<"branch" | "placeholder">;
+  /**
+   * One record per substituted placeholder, in reading order: the body as the model
+   * wrote it, the dice actually thrown, and where the number landed. The saved content
+   * carries a bare number so the prompt leaf and the transcript both read as prose, so
+   * this is the only audit trail of what that number was.
+   */
+  placeholders?: GameDicePlaceholderRecord[];
+  /** Spans the pass refused to read and replaced with a visible notice. Never a number. */
+  unreadablePlaceholders?: number;
+  /** Branch blocks the pass could not read. The roll stands, the narration does not. */
+  branchFailures?: number;
+  /** The pass itself threw; its fallback rewrite ran and the turn was kept. */
+  passFailed?: boolean;
+  /**
+   * The pool values this turn actually spent, in spend order. Only ever written while
+   * the sighted pool sub-option is on, so a chat that never turned it on stores nothing.
+   */
+  poolSlots?: GameDicePoolConsumption[];
+  /**
+   * Checks and `[dice:]` tags the pool had no value left for. Nothing was rolled and
+   * nothing was written: the tag went back sparse and the outcome is owed to the next
+   * turn. Never a number, and never a second request to get one.
+   */
+  poolOverflow?: number;
+  /** What the model claimed that disagreed with what the engine spent. Recorded, never obeyed. */
+  poolMismatches?: GameDicePoolMismatch[];
 }
 
 export interface GameToolPlanningInfo {

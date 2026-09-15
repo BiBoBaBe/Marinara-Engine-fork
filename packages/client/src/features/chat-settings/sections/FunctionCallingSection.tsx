@@ -1,10 +1,15 @@
 import { Check, FilePlus2, Plus, Trash2, Wrench } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
+import { DraftNumberInput } from "../../../components/ui/DraftNumberInput";
 import { ChatSettingsSection } from "../ChatSettingsSection";
 import { PickerDropdown } from "../PickerDropdown";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { supportsNativeToolCalls } from "@marinara-engine/shared";
+import {
+  MAX_GAME_DICE_POOL_AGE_TURNS,
+  MAX_GAME_DICE_POOL_WINDOW,
+  supportsNativeToolCalls,
+} from "@marinara-engine/shared";
 
 export interface FunctionToolOption {
   id: string;
@@ -23,6 +28,18 @@ interface FunctionCallingSectionProps {
   onGameLorebookSearchChange: (enabled: boolean) => void;
   gameDiceOutcomeNarration: boolean;
   onGameDiceOutcomeNarrationChange: (enabled: boolean) => void;
+  /** One-request dice: the Game Master finishes a rolled turn itself. Off by default. */
+  gameOneRequestDice: boolean;
+  onGameOneRequestDiceChange: (enabled: boolean) => void;
+  /** The sighted pool sub-option. Rendered only while the parent switch is on; off by default. */
+  gameDicePoolMode: boolean;
+  onGameDicePoolModeChange: (enabled: boolean) => void;
+  /** How many values per size the GM is shown. 1 is the default and the largest mitigation. */
+  gameDicePoolWindow: number;
+  onGameDicePoolWindowChange: (value: number) => void;
+  /** Accepted turns a size may sit unspent before it is rethrown. 0 turns aging off. */
+  gameDicePoolAgeTurns: number;
+  onGameDicePoolAgeTurnsChange: (value: number) => void;
   enableTools: boolean | undefined;
   forceToolCall: boolean | undefined;
   activeToolIds: string[];
@@ -50,6 +67,14 @@ export function FunctionCallingSection({
   onGameLorebookSearchChange,
   gameDiceOutcomeNarration,
   onGameDiceOutcomeNarrationChange,
+  gameOneRequestDice,
+  onGameOneRequestDiceChange,
+  gameDicePoolMode,
+  onGameDicePoolModeChange,
+  gameDicePoolWindow,
+  onGameDicePoolWindowChange,
+  gameDicePoolAgeTurns,
+  onGameDicePoolAgeTurnsChange,
   enableTools,
   forceToolCall,
   activeToolIds,
@@ -123,15 +148,91 @@ export function FunctionCallingSection({
             <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
               {localizeUi("chat.settings.tools.connectionHelp")}
             </p>
+            {/* One-request dice sits directly above the narration toggle because turning this
+                on makes that one inert: its whole purpose is the second request this removes. */}
+            <SettingsSwitch
+              label={localizeUi("chat.settings.tools.oneRequestDice")}
+              description={localizeUi("chat.settings.tools.oneRequestDiceHelp")}
+              checked={gameOneRequestDice}
+              onChange={onGameOneRequestDiceChange}
+              labelPosition="start"
+              className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+              labelClassName="text-xs font-medium"
+            />
+            {gameOneRequestDice && toolConnectionId && (
+              <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("chat.settings.tools.oneRequestDiceToolConnection")}
+              </p>
+            )}
+            {/* The sighted pool, indented under its parent and rendered only while the parent
+                is on. Its help text names the trade-off outright, because a player who does not
+                know the Game Master saw the dice will read a suspiciously heroic session as luck. */}
+            {gameOneRequestDice && (
+              <div className="ml-3 space-y-2 border-l border-[var(--border)] pl-3">
+                <SettingsSwitch
+                  label={localizeUi("chat.settings.tools.dicePool")}
+                  description={localizeUi("chat.settings.tools.dicePoolHelp")}
+                  checked={gameDicePoolMode}
+                  onChange={onGameDicePoolModeChange}
+                  labelPosition="start"
+                  className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+                  labelClassName="text-xs font-medium"
+                />
+                {gameDicePoolMode && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                      {localizeUi("chat.settings.tools.dicePoolWindow")}
+                      {/* The repo's canonical numeric control, not a raw number input: it holds
+                          the draft while the field is being edited, so an empty field on the way
+                          to a two-digit value cannot commit, and the async echo of the previous
+                          commit cannot wipe the edit in progress (#5636). Bounds come from the
+                          shared constants the server clamps with, so the two cannot drift. */}
+                      <DraftNumberInput
+                        ariaLabel={localizeUi("chat.settings.tools.dicePoolWindow")}
+                        min={1}
+                        max={MAX_GAME_DICE_POOL_WINDOW}
+                        integer
+                        value={gameDicePoolWindow}
+                        onCommit={onGameDicePoolWindowChange}
+                        className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      />
+                      <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolWindowHelp")}</span>
+                    </label>
+                    <label className="flex flex-col gap-1 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                      {localizeUi("chat.settings.tools.dicePoolAging")}
+                      <DraftNumberInput
+                        ariaLabel={localizeUi("chat.settings.tools.dicePoolAging")}
+                        min={0}
+                        max={MAX_GAME_DICE_POOL_AGE_TURNS}
+                        integer
+                        value={gameDicePoolAgeTurns}
+                        onCommit={onGameDicePoolAgeTurnsChange}
+                        className="w-24 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      />
+                      <span className="font-normal">{localizeUi("chat.settings.tools.dicePoolAgingHelp")}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Rendered disabled rather than hidden, and its stored value is never written here:
+                a player who turns one-request dice back off gets their narration setting back
+                exactly as they left it. */}
             <SettingsSwitch
               label={localizeUi("chat.settings.tools.diceOutcomeNarration")}
               description={localizeUi("chat.settings.tools.diceOutcomeNarrationHelp")}
               checked={gameDiceOutcomeNarration}
+              disabled={gameOneRequestDice}
               onChange={onGameDiceOutcomeNarrationChange}
               labelPosition="start"
               className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
               labelClassName="text-xs font-medium"
             />
+            {gameOneRequestDice && (
+              <p className="px-1 text-xs text-[var(--muted-foreground)]">
+                {localizeUi("chat.settings.tools.oneRequestDiceNarrationInert")}
+              </p>
+            )}
             <SettingsSwitch
               label={localizeUi("chat.settings.tools.loreSearch")}
               description={localizeUi("chat.settings.tools.loreSearchHelp")}

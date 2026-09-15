@@ -558,6 +558,29 @@ import {
   loadSkillCheckModifierContext,
   resolveSkillCheckTagsInContent,
 } from "../services/game/skill-check-resolution.service.js";
+import { createGameChanceStreamFilter } from "../services/game/chance-stream-filter.js";
+import {
+  buildGameSkillModifierView,
+  createGameTurnChanceSession,
+  isOneRequestDiceEnabled,
+  mergeGameDiceTurnNotices,
+  resolveGameTurnBranches,
+  resolveGameTurnPlaceholders,
+  runGameTurnChancePass,
+  shouldNarrateGameDiceOutcome,
+  summarizeGameDiceTurn,
+} from "../services/game/one-request-dice.js";
+import {
+  isGameDicePoolEnabled,
+  loadGameDicePoolSession,
+  readGameDicePoolSettings,
+  renderGameDicePoolPromptBlock,
+  serializeGameDicePoolTurn,
+  type GameDicePoolSession,
+  type GameDicePoolTarget,
+} from "../services/game/dice-pool.service.js";
+import { createGameDicePoolsStorage } from "../services/storage/game-dice-pools.storage.js";
+import type { GameDiceTurnNotice } from "@marinara-engine/shared";
 import {
   applyMapUpdateCommand,
   getGameMapsFromMeta,
@@ -603,6 +626,9 @@ import { resolveAgentPipelineAgents, resolveEffectiveAgentSettings } from "../se
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
 import {
   GAME_MODE_AUTO_ATTACH_TOOL_NAMES,
+  isChatToolResolved,
+  readChatActiveToolIds,
+  resolveChatToolsEnabled,
   resolveGenerationTools,
   resolveMainGenerationToolChoice,
 } from "../services/generation/tool-resolution-runtime.js";
@@ -3836,6 +3862,68 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           return promptContext;
         };
+
+        // ── One-request dice: the roll_dice split (#6215) ──
+        // Resolved here, above the GM format reminder, because the reminder has to describe the
+        // tool exactly when the turn offers it. Both facts below are read twice: once by the
+        // reminder, once by the tool resolution far below, and they must be the same answer.
+        const oneRequestDiceTurn = chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta);
+        // ── One-request dice: the sighted pool sub-option (#6215) ──
+        // Off by default, and only ever read while the switch above is on. The session is
+        // loaded once for the whole turn and shared by the prompt block and both readers,
+        // because the queue the model was SHOWN and the queue the engine spends from have to
+        // be the same object or the slot names stop meaning anything.
+        const gameDicePoolTurn = oneRequestDiceTurn && isGameDicePoolEnabled(chatMeta);
+        const gameDicePoolTarget: GameDicePoolTarget = input.continueMessageId
+          ? {
+              kind: "continue",
+              messageId: input.continueMessageId,
+              swipeIndex:
+                typeof continueTargetMessage?.activeSwipeIndex === "number"
+                  ? continueTargetMessage.activeSwipeIndex
+                  : 0,
+            }
+          : input.regenerateMessageId
+            ? { kind: "regenerate", messageId: input.regenerateMessageId }
+            : { kind: "fresh" };
+        let gameDicePoolSession: GameDicePoolSession | null = null;
+        const ensureGameDicePoolSession = async (): Promise<GameDicePoolSession | null> => {
+          if (!gameDicePoolTurn) return null;
+          gameDicePoolSession ??= await loadGameDicePoolSession(
+            app.db,
+            input.chatId,
+            gameDicePoolTarget,
+            readGameDicePoolSettings(chatMeta),
+          );
+          return gameDicePoolSession;
+        };
+        // Auto-attach is the mode default, and a tool call costs a whole extra provider round,
+        // which is the same cost the switch exists to remove, so the switch withdraws the default.
+        // What "Enable Tool Use" then does is honored as-is: an explicit user toggle outranks a
+        // mode default, and this deliberately does not subtract a tool the user turned on.
+        const gameDiceToolAutoAttached =
+          !input.impersonate &&
+          !oneRequestDiceTurn &&
+          (chatMode === "game" || (chatMode === "roleplay" && isRoleplayCommandEnabled(chatMeta, "roll")));
+        const gameToolConnectionId =
+          chatMode === "game" && !input.impersonate && typeof chatMeta.gameGmToolConnectionId === "string"
+            ? chatMeta.gameGmToolConnectionId.trim()
+            : "";
+        // A configured Game tool connection must support native tools: generation refuses the
+        // turn below when it does not, so any turn that reaches the model has its answer. With
+        // no such connection the narrator's own decides, exactly as the tool resolution reads it.
+        const nativeToolsAvailableForTurn = gameToolConnectionId ? true : supportsNativeToolCalls(conn.provider);
+        const rollDiceToolAttached = isChatToolResolved("roll_dice", {
+          enableChatTools: resolveChatToolsEnabled({
+            requestBody: input as Record<string, unknown>,
+            chatMetadata: chatMeta,
+            nativeToolsAvailable: nativeToolsAvailableForTurn,
+          }),
+          activeToolIds: readChatActiveToolIds(chatMeta),
+          autoAttachToolNames:
+            gameDiceToolAutoAttached && nativeToolsAvailableForTurn ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
+        });
+
         if (chatMode === "game") {
           const selectedGamePrompt =
             resolvedPreset && presetId
@@ -3989,6 +4077,23 @@ export async function generateRoutes(app: FastifyInstance) {
           const playerDiceRollSubmitted = /\[dice\b/i.test(latestUserContent);
           // The same table object the post-save parse will use — resolved here, cached for the turn.
           const gmVerbTableForPrompt = await getGmVerbTable();
+          // One-request dice (#6215): the sheet names a `[[roll: 1d8+STR]]` placeholder
+          // can actually resolve this turn. A name the chat cannot resolve is refused rather than
+          // defaulted to zero, so the form is advertised only when there is something to resolve.
+          // One read, on the switched-on path only, from the same loader the pass itself uses.
+          const gameSkillModifierContext = oneRequestDiceTurn
+            ? await loadSkillCheckModifierContext(app.db, input.chatId)
+            : null;
+          const gameSkillModifierView = gameSkillModifierContext
+            ? buildGameSkillModifierView(gameSkillModifierContext)
+            : undefined;
+          // The pool block is rendered from the same session the readers spend out of, and
+          // from the same modifier context the resolver uses, so the block and the engine
+          // cannot disagree about a value or about a total.
+          const dicePoolSessionForPrompt = await ensureGameDicePoolSession();
+          const dicePoolBlock = dicePoolSessionForPrompt
+            ? renderGameDicePoolPromptBlock(dicePoolSessionForPrompt, gameSkillModifierContext)
+            : undefined;
           const formatReminder = resolvePromptMacros(
             buildGmFormatReminder({
               hasSceneModel,
@@ -4009,6 +4114,13 @@ export async function generateRoutes(app: FastifyInstance) {
               artStylePrompt: gmCtx.artStylePrompt,
               addressMode,
               playerDiceRollSubmitted,
+              // One-request dice (#6215). Off, the three fields below are inert and
+              // the reminder renders the bytes it renders today.
+              oneRequestDice: oneRequestDiceTurn,
+              skillModifiers: gameSkillModifierView,
+              dicePoolMode: gameDicePoolTurn,
+              dicePoolBlock,
+              rollDiceToolAttached,
               // A package that brought its own inventory takes the built-in one out of the prompt.
               experienceProvidedSystems: capabilityPromptContext.provides,
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
@@ -5164,10 +5276,6 @@ export async function generateRoutes(app: FastifyInstance) {
           pipelineAgents = pipelineAgents.filter((a) => a.type !== "combat");
         }
 
-        const gameToolConnectionId =
-          chatMode === "game" && !input.impersonate && typeof chatMeta.gameGmToolConnectionId === "string"
-            ? chatMeta.gameGmToolConnectionId.trim()
-            : "";
         const gameToolConnection = gameToolConnectionId ? await connections.getWithKey(gameToolConnectionId) : null;
         if (
           gameToolConnectionId &&
@@ -5210,11 +5318,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // only roll_dice is attached, and everything keyed on enableChatTools stays quiet.
           // Impersonation writes the player's own line rather than GM narration, so it is left
           // out: there is nothing for the GM to resolve and no turn for the card to belong to.
-          autoAttachToolNames:
-            !input.impersonate &&
-            (chatMode === "game" || (chatMode === "roleplay" && isRoleplayCommandEnabled(chatMeta, "roll")))
-              ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES
-              : [],
+          //
+          // One-request dice withdraws this default (#6215): see
+          // `gameDiceToolAutoAttached` above, which the format reminder reads from too.
+          autoAttachToolNames: gameDiceToolAutoAttached ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
         });
         const eligiblePipelineAgents: typeof pipelineAgents = [];
         for (const agent of pipelineAgents) {
@@ -5969,6 +6076,14 @@ export async function generateRoutes(app: FastifyInstance) {
           hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")
             ? createAssistantSpatialDirectiveStreamFilter()
             : null;
+        // ── One-request dice: the stream filter (#6215) ──
+        // A placeholder and a branch block both stream before the chance pass runs, so
+        // without this the player watches `[[roll: 2d6+3]]` appear and silently become a
+        // number. Held here, the finished text arrives through content_replace instead.
+        const gameChanceStreamFilter =
+          chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta)
+            ? createGameChanceStreamFilter()
+            : null;
         const emitTokenTextChunked = async (text: string) => {
           for (let i = 0; i < text.length; i += TOKEN_CHUNK_SIZE) {
             const chunk = text.slice(i, i + TOKEN_CHUNK_SIZE);
@@ -5986,7 +6101,8 @@ export async function generateRoutes(app: FastifyInstance) {
         };
         const sendTokenTextChunked = async (text: string) => {
           const commandFiltered = roleplayCommandStreamFilter?.push(text) ?? text;
-          const visibleText = spatialDirectiveStreamFilter?.push(commandFiltered) ?? commandFiltered;
+          const chanceFiltered = gameChanceStreamFilter?.push(commandFiltered) ?? commandFiltered;
+          const visibleText = spatialDirectiveStreamFilter?.push(chanceFiltered) ?? chanceFiltered;
           if (visibleText) {
             recordReasoningDuration(visibleText);
             await emitTokenTextChunked(visibleText);
@@ -7510,10 +7626,17 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           if (!holdForTextRewrite) {
+            // The chance filter drains first and its leftovers go through the spatial
+            // filter, so a released candidate still meets every filter downstream of it.
+            const pendingChanceText = gameChanceStreamFilter?.flush() ?? "";
+            const pendingChanceVisible = pendingChanceText
+              ? (spatialDirectiveStreamFilter?.push(pendingChanceText) ?? pendingChanceText)
+              : "";
             const pendingSpatialText = spatialDirectiveStreamFilter?.flush() ?? "";
-            if (pendingSpatialText) {
-              recordReasoningDuration(pendingSpatialText);
-              await emitTokenTextChunked(pendingSpatialText);
+            const pendingStreamText = `${pendingChanceVisible}${pendingSpatialText}`;
+            if (pendingStreamText) {
+              recordReasoningDuration(pendingStreamText);
+              await emitTokenTextChunked(pendingStreamText);
             }
           }
 
@@ -7532,6 +7655,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
           let contentReplaced = false;
           let gameOutcomeNarrationFailed = false;
+          let gameDiceTurnNotice: GameDiceTurnNotice | null = null;
 
           // Some models inline reasoning blocks instead of using provider-native
           // thinking channels. Lift those blocks into message.extra.thinking.
@@ -7930,6 +8054,31 @@ export async function generateRoutes(app: FastifyInstance) {
 
           // The outcome rewrite must see the commands it is asked to retain or reject.
           const gameDraftWithCommands = fullResponse;
+
+          // ── One-request dice: the chance pass, branch arm (#6215) ──
+          // One session per turn, two insertion points. This is the first: before spatial
+          // extraction and before the package-verb strip, so a discarded half's commands are
+          // gone before anything collects them. The placeholder arm cannot run here — the verb
+          // table is not fetched until below — so it runs immediately after that strip instead.
+          // The wrapper never throws out: on an internal failure the turn is saved with a notice
+          // and the affected tags are left sparse.
+          const gameChanceSession =
+            chatMode === "game" && !input.impersonate && isOneRequestDiceEnabled(chatMeta)
+              ? createGameTurnChanceSession({ db: app.db, chatId: input.chatId })
+              : null;
+          if (gameChanceSession) {
+            const branchArm = await runGameTurnChancePass(
+              fullResponse,
+              gameChanceSession,
+              resolveGameTurnBranches,
+              "branch",
+            );
+            if (branchArm.changed) {
+              fullResponse = branchArm.content;
+              contentReplaced = true;
+            }
+          }
+
           if (hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")) {
             const parsedSpatial = extractAssistantSpatialDirective(fullResponse);
             assistantSpatialDirectiveDetected = parsedSpatial.directive !== null;
@@ -7981,14 +8130,48 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // ── One-request dice: the chance pass, placeholder arm (#6215) ──
+          // The second insertion point, deliberately right here: a claimed verb and its
+          // argument are already gone, so a placeholder written inside a verb's argument is
+          // never rolled and the scanner needs no verb-table awareness of its own.
+          if (gameChanceSession) {
+            const placeholderArm = await runGameTurnChancePass(
+              fullResponse,
+              gameChanceSession,
+              resolveGameTurnPlaceholders,
+              "placeholder",
+            );
+            if (placeholderArm.changed) {
+              fullResponse = placeholderArm.content;
+              contentReplaced = true;
+            }
+            // Each substituted placeholder is a real roll, so it rides the same array
+            // every other roll in this turn does: into message extra, the dice history and
+            // the session log's own 🎲 line. Deliberately WITHOUT the tool_result frame the
+            // general dice resolver emits below — that frame pops a full-screen dice card,
+            // and a damage number popping one would bury the narration it belongs to.
+            toolDiceRollResults.push(...gameChanceSession.diceRolls);
+          }
+
           // Resolve this new segment before content_replace and persistence.
           // A continuation's already-saved segment is never rolled again.
           if (chatMode === "game" && !input.impersonate) {
+            // The sighted pool is handed to BOTH readers and to nobody else. It is what tells
+            // a record the model just wrote apart from one read back out of a saved message:
+            // the two are the same bytes, so the distinction is carried out of band rather
+            // than by a marker in the text that would change how an older turn reads.
+            const dicePoolSession = await ensureGameDicePoolSession();
             const rolled = await resolveSkillCheckTagsInContent(fullResponse, {
               loadContext: () => loadSkillCheckModifierContext(app.db, input.chatId),
               chatId: input.chatId,
+              ...(dicePoolSession ? { pool: dicePoolSession } : {}),
             });
-            const generalRolls = resolveGameDiceRequests(rolled.content, toolDiceRollResults);
+            const generalRolls = resolveGameDiceRequests(
+              rolled.content,
+              toolDiceRollResults,
+              undefined,
+              dicePoolSession ?? undefined,
+            );
             if (generalRolls.content !== fullResponse) {
               fullResponse = generalRolls.content;
               contentReplaced = true;
@@ -8005,7 +8188,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 },
               });
             }
-            if (chatMeta.gameDiceOutcomeNarration !== false && (rolled.resolved || generalRolls.rolled)) {
+            if (shouldNarrateGameDiceOutcome(chatMeta, Boolean(rolled.resolved || generalRolls.rolled))) {
               // The first draft predates these results. Rewrite it with the real
               // outcomes in context, including on providers without a tools API.
               const records = [...fullResponse.matchAll(createGameRollTagRegex())].map((match) => match[0]);
@@ -8105,6 +8288,21 @@ export async function generateRoutes(app: FastifyInstance) {
               }
               contentReplaced = true;
               durationMs = Date.now() - genStartTime;
+            }
+          }
+
+          // ── One-request dice: the turn notice (#6215) ──
+          // Sibling of the narration-failure notice above: a clean turn records nothing, and a
+          // turn where something could not be rolled says so in plain words instead of leaving
+          // the player to guess. The saved flag rides on the message extra; the frame is for the
+          // live session log.
+          if (gameChanceSession) {
+            gameDiceTurnNotice = summarizeGameDiceTurn(gameChanceSession, gameDicePoolSession);
+            if (gameDiceTurnNotice) {
+              sendSseEvent(reply, {
+                type: "game_dice_turn_notice",
+                data: { chatId: input.chatId, ...gameDiceTurnNotice },
+              });
             }
           }
 
@@ -8403,6 +8601,31 @@ export async function generateRoutes(app: FastifyInstance) {
           await executeCollectedGmVerbCalls({ messageId: savedMsg?.id ?? "", swipeIndex: savedSwipeIndex ?? 0 });
           await persistGameStateToolCalls(savedMsg?.id ?? "", savedSwipeIndex ?? 0);
 
+          // ── One-request dice: the pool row (#6215) ──
+          // Written in the same block as the message rather than through the game-state
+          // snapshot, because that snapshot is gated on a tracker agent result and with
+          // agents off no row is created at all. The REFILL is deliberately not applied
+          // here: the row carries the queue this turn was prompted with plus what it spent,
+          // and the next accepted turn derives the refill from the pair — which is what
+          // makes a swipe, a regenerate and a continuation of this same turn all face the
+          // same luck instead of a queue that moved on.
+          if (gameDicePoolSession && savedMsg?.id) {
+            try {
+              const turn = serializeGameDicePoolTurn(gameDicePoolSession);
+              await createGameDicePoolsStorage(app.db).save({
+                chatId: input.chatId,
+                messageId: savedMsg.id,
+                swipeIndex: savedSwipeIndex ?? 0,
+                pool: turn.pool,
+                consumed: turn.consumed,
+              });
+            } catch (err) {
+              // A row that will not write costs the chat its dice continuity — the next turn
+              // throws a fresh allotment and says so — and never costs it the turn.
+              logger.error(err, "[game/dice-pool] Could not save the pool row for chat %s", input.chatId);
+            }
+          }
+
           if (
             savedMsg?.id &&
             savedSwipeIndex !== null &&
@@ -8542,6 +8765,18 @@ export async function generateRoutes(app: FastifyInstance) {
               extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
               // Message-extra updates are shallow: clear a legacy card on every new swipe.
               extraUpdate.diceRollResult = null;
+              // A continuation writes into the same swipe through the same shallow merge,
+              // so writing only this segment's notice would replace the first segment's
+              // placeholder audit and notice lines instead of extending them — the inline
+              // breakdown on numbers the player already read would disappear, and so would
+              // the log lines for what could not be rolled. Folded rather than overwritten,
+              // exactly like the dice history above. A turn with nothing to record still
+              // writes nothing, so a clean transcript stores what it always stored.
+              const mergedDiceTurn = mergeGameDiceTurnNotices(
+                input.continueMessageId ? previousExtra.gameDiceTurn : null,
+                gameDiceTurnNotice,
+              );
+              if (mergedDiceTurn || input.continueMessageId) extraUpdate.gameDiceTurn = mergedDiceTurn;
             } else if (chatMode === "roleplay" && !input.impersonate) {
               // Roleplay results stay behind their command disclosure.
               extraUpdate.diceRollResult = null;

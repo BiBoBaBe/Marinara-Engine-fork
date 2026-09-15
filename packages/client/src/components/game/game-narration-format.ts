@@ -167,8 +167,10 @@ export function formatNarration(content: string, boldDialogue = true): string {
     html = html.replace(narrationQuoteRe, (match) => `<strong>${match}</strong>`);
   }
 
+  // `title` is allowed so the one-request dice marker can carry its roll breakdown as a
+  // hover. It is an inert text attribute: no script, no URL, no style.
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ["strong", "em", "u", "small", "br", "span"],
-    ALLOWED_ATTR: ["class"],
+    ALLOWED_ATTR: ["class", "title"],
   });
 }

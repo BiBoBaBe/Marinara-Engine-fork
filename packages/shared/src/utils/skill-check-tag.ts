@@ -10,7 +10,8 @@
 // GM wrote survives whichever side does the rolling.
 // ──────────────────────────────────────────────
 
-import type { SkillCheckResult } from "../types/game.js";
+import type { GameDicePoolSlotName, SkillCheckResult } from "../types/game.js";
+import { parsePoolSlotName } from "./dice-pool.js";
 import { isWithinDiceLimits, parseDiceNotation } from "./dice-notation.js";
 
 export interface SkillCheckTag {
@@ -37,6 +38,37 @@ export interface SkillCheckTag {
   declaredResolution?: string;
   /** `dice=` as the GM wrote it, lowercased, when they wrote one. Same reason. */
   declaredDice?: string;
+  /**
+   * `threshold=` as a number, when the GM wrote a readable one.
+   *
+   * Read here rather than re-scanned by the one caller that needs it, so the two readers
+   * of the same tag cannot drift. Carried, never judged: whether a threshold is usable —
+   * within the die's range, on a pool with no flat modifier — is the resolver's rule and
+   * stays there.
+   */
+  threshold?: number;
+  /**
+   * Whether `pool=` was written at all, READABLE OR NOT.
+   *
+   * This is what the pool branch gates on, never `poolSlots`. A slot name the engine
+   * cannot read is still the model claiming a pool spend, and dropping such a tag back
+   * onto the ordinary path would adopt its `rolls=` as a player-submitted die — the
+   * model's own invented number becoming the roll, through the one door the authority
+   * rule cannot see. An unreadable name costs the tag a `slot` mismatch instead.
+   */
+  poolDeclared?: boolean;
+  /** `pool=` exactly as written, for the mismatch log. Present whenever `poolDeclared` is. */
+  poolRaw?: string;
+  /**
+   * `pool="d20:1"` as the GM wrote it, parsed into a size and zero-based slots.
+   *
+   * A CHECKSUM, never an instruction. The engine spends the next unconsumed value of that
+   * size in reading order whatever this says, and a disagreement is recorded as a
+   * mismatch. Present on every reader, meaningful only where a pool session is supplied:
+   * a historical tag read back carries it and changes nothing, which is what keeps an
+   * already-saved transcript reading exactly as it always did.
+   */
+  poolSlots?: GameDicePoolSlotName;
 }
 
 /**
@@ -279,6 +311,21 @@ export function parseSkillCheckTagBody(body: string): SkillCheckTag | null {
   const declaredDice = values.has("dice") ? values.get("dice")!.trim().toLowerCase() : undefined;
   if (declaredResolution !== undefined) tag.declaredResolution = declaredResolution;
   if (declaredDice !== undefined) tag.declaredDice = declaredDice;
+
+  // Recorded beside the other declarations, for the same reason and on the same terms:
+  // written at all, not necessarily usable. `Number` rather than `parseInt` deliberately,
+  // so "6.5" stays unusable rather than becoming 6 — the resolver's own integer test is
+  // what refuses it, and reading it loosely here would quietly widen that refusal.
+  if (values.has("threshold")) {
+    const threshold = Number(values.get("threshold"));
+    if (Number.isFinite(threshold)) tag.threshold = threshold;
+  }
+  if (values.has("pool")) {
+    tag.poolDeclared = true;
+    tag.poolRaw = values.get("pool")!;
+    const poolSlots = parsePoolSlotName(tag.poolRaw);
+    if (poolSlots) tag.poolSlots = poolSlots;
+  }
 
   const rollsValue = values.get("rolls");
   const modifier = Number.parseInt(values.get("modifier") ?? "", 10);
