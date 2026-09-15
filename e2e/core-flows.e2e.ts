@@ -21978,11 +21978,7 @@ test("mobile topbar remains reachable while sidebars switch", async ({ page }, t
         getComputedStyle(element).getPropertyValue("--mari-panel-gradient-start").trim(),
       ),
     )
-    .toBe(
-      await page
-        .locator("html")
-        .evaluate((element) => getComputedStyle(element).getPropertyValue("--marinara-app-accent-solid").trim()),
-    );
+    .toBe("#f472b6");
 
   await chatsButton.click();
   await expect(mobileChatSidebar).toBeVisible();
@@ -22011,19 +22007,30 @@ test("mobile topbar remains reachable while sidebars switch", async ({ page }, t
   expect(errors).toEqual([]);
 });
 
-test("Characters topbar underline follows the selected accent", async ({ page }) => {
-  await page.goto("/");
-  await setAppAccentColor(page, "#1e90ff");
-  await page.locator('[data-tour="panel-characters"]').click();
+for (const theme of ["dark", "light"] as const) {
+  test(`Characters section keeps its pink gradient with a custom accent (${theme})`, async ({ page }, testInfo) => {
+    await seedUIState(page, { theme }, "merge");
+    await page.goto("/");
+    await setAppAccentColor(page, "#1e90ff");
+    await page.locator('[data-tour="panel-characters"]').click();
 
-  const underline = page.locator('[data-component="CharactersTopbarUnderline"]');
-  await expect(underline).toBeVisible();
-  await expect
-    .poll(() =>
-      underline.evaluate((element) => getComputedStyle(element).getPropertyValue("--mari-panel-gradient-start").trim()),
-    )
-    .toBe("#1e90ff");
-});
+    const panel = page.locator('[data-component="RightPanel"]');
+    const newButton = panel.getByTitle("New", { exact: true });
+    for (const surface of [
+      page.locator('[data-component="CharactersTopbarUnderline"]'),
+      panel.locator('[data-component="RightPanelHeaderIcon"]'),
+      newButton,
+    ]) {
+      await expect(surface).toBeVisible();
+      await expect(surface).toHaveCSS(
+        "background-image",
+        /linear-gradient\(135deg, rgb\(244, 114, 182\), rgb\(244, 63, 94\)\)/,
+      );
+    }
+    await expect(newButton).toHaveCSS("color", "rgb(255, 247, 251)");
+    await testInfo.attach("Characters pink gradient", { body: await page.screenshot(), contentType: "image/png" });
+  });
+}
 
 test("Updates shows the installed channel before checks and after a failed check", async ({ page }) => {
   await page.route("**/api/updates/channel", (route) => route.fulfill({ json: { channel: "staging" } }));
