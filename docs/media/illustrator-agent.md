@@ -30,7 +30,7 @@ The Illustrator is off by default. In a **Roleplay** chat, add it like this:
 3. Find the **Agents** section and turn on **Enable Agents**.
 4. In the **Misc Agents** group, find **Illustrator** and add it with the Plus button.
 
-You should now see an **Illustrator** settings card with its own options. Adding an agent uses extra tokens and can make extra AI calls per turn. The token estimates describe the selected context and agent instructions; they are not a running cost estimate.
+You should now see an **Illustrator** settings card with its own options. Adding an agent uses extra tokens and can make extra AI calls per turn. The token estimates cover only agent instructions; they are not a running cost estimate.
 
 ### Game Mode: the Game Illustrator toggle
 
