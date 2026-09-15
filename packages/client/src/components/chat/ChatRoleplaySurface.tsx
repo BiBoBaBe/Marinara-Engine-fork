@@ -2753,13 +2753,13 @@ export function ChatRoleplaySurface({
                             {(vnParagraphCount > 1 || visibleVnMessages.length > 1 || hasNextPage) && (
                               <div
                                 data-roleplay-vn-navigation
-                                className="flex items-center justify-between border-t border-[var(--border)]/50 px-3 py-1.5 text-xs text-[var(--muted-foreground)]"
+                                className="flex items-center justify-between border-t border-[var(--border)]/50 px-3 py-1.5 text-xs text-[var(--marinara-chat-chrome-accent)]"
                               >
                                 <button
                                   type="button"
                                   disabled={!canGoPreviousParagraph}
                                   onClick={handlePreviousParagraph}
-                                  className="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-[var(--secondary)] hover:text-[var(--foreground)] disabled:opacity-30 disabled:pointer-events-none"
+                                  className="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] disabled:opacity-30 disabled:pointer-events-none"
                                   aria-label={localizeUi("chat.roleplayVn.previousParagraph")}
                                   title={localizeUi("chat.roleplayVn.previousParagraph")}
                                 >
@@ -2776,7 +2776,7 @@ export function ChatRoleplaySurface({
                                   type="button"
                                   disabled={!canGoNextParagraph}
                                   onClick={handleNextParagraph}
-                                  className="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-[var(--secondary)] hover:text-[var(--foreground)] disabled:opacity-30 disabled:pointer-events-none"
+                                  className="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] disabled:opacity-30 disabled:pointer-events-none"
                                   aria-label={localizeUi("chat.roleplayVn.nextParagraph")}
                                   title={localizeUi("chat.roleplayVn.nextParagraph")}
                                 >

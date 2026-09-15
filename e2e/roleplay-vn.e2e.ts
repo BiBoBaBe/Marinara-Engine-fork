@@ -117,13 +117,17 @@ for (const theme of ["dark", "light"] as const) {
   }, info) => {
     const data = await fixture(request, true);
     try {
-      await open(page, data.chat.id, theme);
+      await open(page, data.chat.id, theme, { appAccentColor: "#3b82f6" });
       const vn = page.locator("[data-roleplay-vn]");
       await expect(vn).toContainText("A small light flickers across the desk.");
       await expect(vn.getByRole("img", { name: "Mari", exact: true })).toBeVisible();
       // Test paragraph progression in VN mode
       const prevBtn = vn.getByRole("button", { name: "Previous paragraph" });
       const nextBtn = vn.getByRole("button", { name: "Next paragraph" });
+      const navigation = vn.locator("[data-roleplay-vn-navigation]");
+      await expect(prevBtn).toHaveCSS("color", "rgb(59, 130, 246)");
+      await expect(nextBtn).toHaveCSS("color", "rgb(59, 130, 246)");
+      await expect(navigation.locator(":scope > span")).toHaveCSS("color", "rgb(59, 130, 246)");
       await expect(nextBtn).toBeDisabled();
       await expect(prevBtn).toBeEnabled();
       await prevBtn.click();
