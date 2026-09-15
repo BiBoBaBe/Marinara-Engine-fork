@@ -184,19 +184,45 @@ export function scanSkillCheckTagSpans(content: string): SkillCheckTagSpan[] {
  * alternative — keeping one unrolled outcome, or both — is asserting something no die
  * decided.
  */
-function boundBranchBlock(content: string, bodyStart: number): { end: number; closed: boolean } {
+/**
+ * The two positions a bound depends on, remembered across openers. Both only ever move
+ * right as the walk does, so a search that found nothing ahead of one opener has found
+ * nothing ahead of the next either: without this memory a turn full of openers that never
+ * close would re-scan its whole suffix from every one of them, which is quadratic.
+ * Each entry is the match's start and end, `[-1, -1]` when there is none anywhere ahead,
+ * and `null` when not yet searched.
+ */
+interface BranchScanMemory {
+  closer: [number, number] | null;
+  half: [number, number] | null;
+}
+
+function nextMatch(
+  content: string,
+  from: number,
+  cached: [number, number] | null,
+  pattern: () => RegExp,
+): [number, number] {
+  if (cached && (cached[0] === -1 || cached[0] >= from)) return cached;
+  const regex = pattern();
+  regex.lastIndex = from;
+  const match = regex.exec(content);
+  return match ? [match.index, match.index + match[0].length] : [-1, -1];
+}
+
+function boundBranchBlock(
+  content: string,
+  bodyStart: number,
+  memory: BranchScanMemory,
+): { end: number; closed: boolean } {
   // Matched case-insensitively ON THE ORIGINAL STRING rather than on a lowercased copy:
   // `toLowerCase()` is not length-preserving (`İ` U+0130 lowercases to two code units),
   // so an offset taken from the copy and applied here would drift by one per such
   // character and the block would end past its own closer, eating the prose after it.
-  const closerPattern = createBranchCloserPattern();
-  closerPattern.lastIndex = bodyStart;
-  const closer = closerPattern.exec(content);
-  if (closer) return { end: closer.index + closer[0].length, closed: true };
-  const half = createBranchHalfPattern();
-  half.lastIndex = bodyStart;
-  const marker = half.exec(content);
-  if (marker) return { end: content.length, closed: false };
+  memory.closer = nextMatch(content, bodyStart, memory.closer, createBranchCloserPattern);
+  if (memory.closer[0] !== -1) return { end: memory.closer[1], closed: true };
+  memory.half = nextMatch(content, bodyStart, memory.half, createBranchHalfPattern);
+  if (memory.half[0] !== -1) return { end: content.length, closed: false };
   return { end: bodyStart, closed: false };
 }
 
@@ -233,10 +259,11 @@ function readBranchHalves(interior: string): { halves: GameBranchHalf[]; refusal
 export function scanGameBranchBlocks(content: string): GameBranchBlock[] {
   const opener = createBranchOpenerPattern();
   const blocks: GameBranchBlock[] = [];
+  const memory: BranchScanMemory = { closer: null, half: null };
   for (let match = opener.exec(content); match; match = opener.exec(content)) {
     const start = match.index;
     const bodyStart = start + match[0].length;
-    const bounded = boundBranchBlock(content, bodyStart);
+    const bounded = boundBranchBlock(content, bodyStart, memory);
     const rawLabel = match[0].slice(BRANCH_BLOCK_OPENER.length, -1).trim();
     const interiorEnd = bounded.closed ? bounded.end - BRANCH_BLOCK_CLOSER.length : bounded.end;
     const interior = content.slice(bodyStart, Math.max(bodyStart, interiorEnd));

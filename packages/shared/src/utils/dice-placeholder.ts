@@ -180,22 +180,43 @@ export function hasRollPlaceholder(content: string): boolean {
  * the price of never leaving a raw span in saved content, it is only reachable when
  * the model wrote a malformed tag, and the raw span is logged verbatim.
  */
-function boundPlaceholderSpan(content: string, bodyStart: number): { end: number; bodyEnd: number; closed: boolean } {
-  let lineEnd = content.length;
-  for (let index = bodyStart; index < content.length; index += 1) {
+/**
+ * The two positions a bound depends on, remembered across openers. Both only ever move
+ * right as the walk does, so a search that found nothing ahead of one opener has found
+ * nothing ahead of the next either: without this memory a line of unterminated openers
+ * would re-scan its whole suffix from every one of them, which is quadratic.
+ */
+interface PlaceholderScanMemory {
+  /** End of the line the walk is on, valid while the walk is still on it. */
+  lineEnd: number;
+  /** The next `]]` at or past the last search, `-1` when there is none anywhere ahead, `-2` when unknown. */
+  closer: number;
+}
+
+function findLineEnd(content: string, from: number): number {
+  for (let index = from; index < content.length; index += 1) {
     const char = content[index];
-    if (char === "\n" || char === "\r") {
-      lineEnd = index;
-      break;
-    }
+    if (char === "\n" || char === "\r") return index;
   }
-  const closer = content.indexOf("]]", bodyStart);
-  if (closer !== -1 && closer < lineEnd) {
+  return content.length;
+}
+
+function boundPlaceholderSpan(
+  content: string,
+  bodyStart: number,
+  memory: PlaceholderScanMemory,
+): { end: number; bodyEnd: number; closed: boolean } {
+  if (bodyStart > memory.lineEnd) memory.lineEnd = findLineEnd(content, bodyStart);
+  if (memory.closer === -2 || (memory.closer !== -1 && memory.closer < bodyStart)) {
+    memory.closer = content.indexOf("]]", bodyStart);
+  }
+  const closer = memory.closer;
+  if (closer !== -1 && closer < memory.lineEnd) {
     let end = closer + 2;
     while (content[end] === "]") end += 1;
     return { end, bodyEnd: closer, closed: true };
   }
-  const end = Math.min(lineEnd, bodyStart + PLACEHOLDER_BODY_MAX);
+  const end = Math.min(memory.lineEnd, bodyStart + PLACEHOLDER_BODY_MAX);
   return { end, bodyEnd: end, closed: false };
 }
 
@@ -203,11 +224,12 @@ function boundPlaceholderSpan(content: string, bodyStart: number): { end: number
 export function scanRollPlaceholders(content: string): RollPlaceholderSpan[] {
   const opener = createOpenerPattern();
   const spans: RollPlaceholderSpan[] = [];
+  const memory: PlaceholderScanMemory = { lineEnd: -1, closer: -2 };
   let match: RegExpExecArray | null;
   while ((match = opener.exec(content)) !== null) {
     const start = match.index;
     const bodyStart = start + match[0].length;
-    const bounded = boundPlaceholderSpan(content, bodyStart);
+    const bounded = boundPlaceholderSpan(content, bodyStart, memory);
     const body = content.slice(bodyStart, bounded.bodyEnd).trim();
     let refusal: RollPlaceholderRefusal | null = null;
     if (!bounded.closed) refusal = "unterminated";

@@ -122,6 +122,22 @@ assert.equal(atCap[0]!.refusal, null, "a body exactly at the cap is read, then r
   );
 }
 
+// A line of openers that never close. Each one is bounded by the cap, and the walk must
+// not search the whole suffix for a `]]` from every one of them: the scan remembers that
+// nothing lies ahead, so the wall is bounded in linear time.
+{
+  const wall = "[[roll:".repeat(60_000);
+  const started = performance.now();
+  const spans = scanRollPlaceholders(wall);
+  assert.ok(performance.now() - started < 5_000, "a wall of unterminated openers is bounded in linear time");
+  assert.ok(spans.length > 0 && spans.every((span) => span.refusal === "unterminated"));
+  // The same wall with one closer at the very end: the first span runs to it and is
+  // refused as over-long, and the walk resumes past it rather than inside it.
+  const closedWall = scanRollPlaceholders(`${wall}]] tail`);
+  assert.equal(closedWall.length, 1);
+  assert.equal(closedWall[0]!.refusal, "over-long");
+}
+
 const nested = scanRollPlaceholders("Odd [[roll: 2d6 [x]]] here.");
 assert.equal(nested[0]!.end, "Odd [[roll: 2d6 [x]]]".length, "the trailing bracket run is swallowed whole");
 const bracketBody = scanRollPlaceholders("Odd [[roll: 2d6]x]] here.");

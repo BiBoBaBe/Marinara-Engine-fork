@@ -179,6 +179,15 @@ for (const [raw, reason] of malformed) {
   assert.deepEqual(scanGameBranchBlocks(wall), [], "an opener that never closes is not a block");
   assert.equal(stripGameBranchDelimiters(wall), wall, "and the strip leaves it alone");
   assert.ok(performance.now() - started < 5_000, "in linear time");
+  // The same wall built of REAL openers, none of which closes or writes a half marker.
+  // Every one is a refused block, and the scan must not search the whole suffix for a
+  // closer and then a half marker from each of them: it remembers that nothing lies ahead.
+  const openerWall = "[branch:x]".repeat(60_000);
+  const openersStarted = performance.now();
+  const refused = scanGameBranchBlocks(openerWall);
+  assert.ok(performance.now() - openersStarted < 5_000, "a wall of real openers is scanned in linear time");
+  assert.equal(refused.length, 60_000, "every opener is a block of its own");
+  assert.ok(refused.every((block) => block.refusal === "unterminated"));
   // The bound itself: a label at it is read, one past it is not an opener at all. The
   // unknown-tag catch-alls on both sides still take such a tag out of the player's view.
   assert.equal(scanGameBranchBlocks(`[branch: ${"x".repeat(79)}]`).length, 1, "a label at the bound is read");
