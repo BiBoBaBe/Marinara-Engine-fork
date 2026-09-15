@@ -36,6 +36,7 @@ import {
   createGameDicePool,
   formatPoolSlotName,
   gameDicePoolSizeForFaces,
+  isRollPlaceholderName,
   parseGameDicePool,
   refillPool,
   renderGameDicePoolView,
@@ -44,13 +45,18 @@ import {
   type GameDicePoolConsumption,
   type GameDicePoolMismatch,
   type GameDicePoolSize,
-  type RPGAttributes,
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { createGameDicePoolsStorage } from "../storage/game-dice-pools.storage.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
-import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
+import {
+  attributeModifier,
+  getGoverningAttribute,
+  mapSheetAttributeName,
+  readContextAttributeScore,
+  SHEET_ATTRIBUTE_LABELS,
+} from "./skill-check.service.js";
 import type { SkillCheckModifierContext } from "./skill-check-resolution.service.js";
 
 /** How much of a model-written claim is worth carrying into a log line or a notice. */
@@ -424,13 +430,18 @@ function renderCheckModifiers(context: SkillCheckModifierContext | null): string
   if (context) {
     for (const [name, raw] of Object.entries(context.skills ?? {})) {
       const label = typeof name === "string" ? name.trim() : "";
-      if (!label || !Number.isFinite(Number(raw))) continue;
-      const governing = readAttributeScore(context, getGoverningAttribute(label));
+      // A skill key is model-written text. Only a name the placeholder grammar could read
+      // back is printed, so a bracket or a newline in one cannot reshape this block, and
+      // the list is bounded so a runaway sheet cannot pad the prompt.
+      if (!label || label.length > CHECK_MODIFIER_NAME_MAX || !isRollPlaceholderName(label)) continue;
+      if (!Number.isFinite(Number(raw))) continue;
+      const governing = readContextAttributeScore(context, getGoverningAttribute(label));
       const total = Number(raw) + (governing === null ? 0 : attributeModifier(governing));
       skills.push(`${label} ${formatSigned(total)}`);
+      if (skills.length >= CHECK_MODIFIER_NAMES_MAX) break;
     }
     for (const [key, label] of SHEET_ATTRIBUTE_LABELS) {
-      const score = readAttributeScore(context, key);
+      const score = readContextAttributeScore(context, key);
       if (score !== null) attributes.push(`${label} ${formatSigned(attributeModifier(score))}`);
     }
   }
@@ -455,22 +466,9 @@ function formatSigned(value: number): string {
   return value >= 0 ? `+${value}` : `${value}`;
 }
 
-const SHEET_ATTRIBUTE_LABELS: ReadonlyArray<[keyof RPGAttributes, string]> = [
-  ["str", "STR"],
-  ["dex", "DEX"],
-  ["con", "CON"],
-  ["int", "INT"],
-  ["wis", "WIS"],
-  ["cha", "CHA"],
-];
-
-function readAttributeScore(context: SkillCheckModifierContext, attribute: keyof RPGAttributes): number | null {
-  if (context.attributes && Number.isFinite(Number(context.attributes[attribute]))) {
-    return Number(context.attributes[attribute]);
-  }
-  const sheet = context.sheetAttributes[attribute];
-  return sheet == null ? null : sheet;
-}
+/** The longest skill name the block will print, and how many. A sheet is not that long. */
+const CHECK_MODIFIER_NAME_MAX = 40;
+const CHECK_MODIFIER_NAMES_MAX = 40;
 
 /** Re-exported so a caller that only needs the name mapping does not reach past this module. */
 export { mapSheetAttributeName };

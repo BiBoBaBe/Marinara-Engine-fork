@@ -661,7 +661,7 @@
   "game.dice.marker.sourceAttribute": "from an attribute",
   "game.dice.marker.sourceFlat": "flat",
   "game.dice.marker.sourceSkill": "from a skill",
-  "game.dice.turnNotice.branchFailed": "Dice: a branch was written wrong. The roll stands, the narration does not.",
+  "game.dice.turnNotice.branchFailed": "Dice: the branch was malformed. The roll stands, but the narration was discarded.",
   "game.dice.turnNotice.failedToast": "Some of this turn's dice could not be rolled. The session log says what was left out.",
   "game.dice.turnNotice.passFailed": "Dice: this turn's dice step failed. The numbers were left out and the turn was kept.",
   "game.dice.turnNotice.placeholderUnreadable": "Dice: one number could not be rolled and was left out of the sentence.",

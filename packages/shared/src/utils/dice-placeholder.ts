@@ -229,6 +229,15 @@ const PLACEHOLDER_FLAT_TERM = /^\d+$/;
 const PLACEHOLDER_NAME_TERM = /^[A-Za-z][A-Za-z0-9 _']*$/;
 
 /**
+ * Whether a sheet name is one a placeholder could ever carry. The prompt advertises only
+ * names that pass this, so a name the grammar would refuse (a bracket, a newline, a sign)
+ * is never offered and can never reshape the block it is printed into.
+ */
+export function isRollPlaceholderName(name: string): boolean {
+  return PLACEHOLDER_NAME_TERM.test(name);
+}
+
+/**
  * Split what follows the dice term into signed terms, or return null when it is not a
  * run of them. Whitespace around a sign is tolerated; a term runs to the next sign.
  *

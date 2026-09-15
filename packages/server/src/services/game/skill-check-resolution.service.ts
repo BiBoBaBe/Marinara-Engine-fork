@@ -38,6 +38,7 @@ import {
   attributeModifier,
   getGoverningAttribute,
   mapSheetAttributesToRPG,
+  readContextAttributeScore,
   resolveSkillCheck,
 } from "./skill-check.service.js";
 
@@ -200,12 +201,7 @@ export function resolveSkillCheckWithContext(
   const skillMod = Number.isFinite(Number(rawSkillMod)) ? Number(rawSkillMod) : 0;
 
   const attr = getGoverningAttribute(request.skill);
-  let attrScore: number | null = null;
-  if (context.attributes && Number.isFinite(Number(context.attributes[attr]))) {
-    attrScore = Number(context.attributes[attr]);
-  } else if (context.sheetAttributes[attr] != null) {
-    attrScore = context.sheetAttributes[attr]!;
-  }
+  const attrScore = readContextAttributeScore(context, attr);
 
   return resolveSkillCheck({
     skill: request.skill,
@@ -336,16 +332,22 @@ export async function resolveSkillCheckTagsInContent(
     /** Set only for a tag the pool spends for, carrying the body the audit reads. */
     poolBody?: string;
   }> = [];
+  /** Pool checks the resolver could not roll, written back without the numbers they claimed. */
+  const stripped: Array<{ start: number; end: number; replacement: string }> = [];
   let trusted = 0;
   let left = 0;
 
   /** Splice one replacement per pending tag, in reading order, keeping the prose between them. */
   const rewrite = (replace: (entry: (typeof pending)[number]) => string): string => {
+    const edits = [
+      ...pending.map((entry) => ({ start: entry.start, end: entry.end, text: () => replace(entry) })),
+      ...stripped.map((entry) => ({ start: entry.start, end: entry.end, text: () => entry.replacement })),
+    ].sort((a, b) => a.start - b.start);
     let out = "";
     let cursor = 0;
-    for (const entry of pending) {
-      out += content.slice(cursor, entry.start) + replace(entry);
-      cursor = entry.end;
+    for (const edit of edits) {
+      out += content.slice(cursor, edit.start) + edit.text();
+      cursor = edit.end;
     }
     return out + content.slice(cursor);
   };
@@ -377,8 +379,16 @@ export async function resolveSkillCheckTagsInContent(
           });
           continue;
         }
+        // Unrollable, and written with `pool=`: whatever numbers it carries are a claim the
+        // pool never validated, so the tag is written back without them rather than left as
+        // the model wrote it. The ask survives; the claimed outcome does not.
+        stripped.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          replacement: stripPoolClaims(match[1] ?? ""),
+        });
         logger.debug(
-          "[game/skill-check] Leaving a pool check whose skill is unusable for chat %s",
+          "[game/skill-check] Dropping the claims off an unrollable pool check for chat %s",
           options.chatId ?? "unknown",
         );
         left += 1;
@@ -422,7 +432,10 @@ export async function resolveSkillCheckTagsInContent(
       pending.push({ start: match.index, end: match.index + match[0].length, request, tag });
     }
 
-    if (pending.length === 0) return { content, resolved: 0, trusted, left, sparse: 0 };
+    if (pending.length === 0) {
+      if (stripped.length === 0) return { content, resolved: 0, trusted, left, sparse: 0 };
+      return { content: rewrite(() => ""), resolved: 0, trusted, left, sparse: stripped.length };
+    }
 
     const context = await options.loadContext();
     const results: SkillCheckResult[] = [];
@@ -467,7 +480,7 @@ export async function resolveSkillCheckTagsInContent(
       resolved: pending.length - overflowed,
       trusted,
       left: left + overflowed,
-      sparse: overflowed,
+      sparse: overflowed + stripped.length,
     };
   } catch (err) {
     // The log itself must not be a second way to fail: a rejected value with a
@@ -489,7 +502,10 @@ export async function resolveSkillCheckTagsInContent(
     // strip and the text stands as the model wrote it — the same outcome the
     // caller's own catch used to reach, kept only for the case where this
     // function never got far enough to know better.
-    if (pending.length === 0) return { content, resolved: 0, trusted, left, sparse: 0 };
+    if (pending.length === 0) {
+      if (stripped.length === 0) return { content, resolved: 0, trusted, left, sparse: 0 };
+      return { content: rewrite(() => ""), resolved: 0, trusted, left, sparse: stripped.length };
+    }
     // Otherwise: pure string work over tags already parsed above, so the honest
     // path cannot fail its way back into saving the model's numbers.
     const honest = rewrite((entry) =>
@@ -502,8 +518,32 @@ export async function resolveSkillCheckTagsInContent(
         declaredDice: entry.tag.declaredDice,
       }),
     );
-    return { content: honest, resolved: 0, trusted, left: left + pending.length, sparse: pending.length };
+    return {
+      content: honest,
+      resolved: 0,
+      trusted,
+      left: left + pending.length,
+      sparse: pending.length + stripped.length,
+    };
   }
+}
+
+/** The attributes a check tag keeps when its numbers are dropped: the ask, never the answer. */
+const POOL_CLAIM_KEPT_ATTRIBUTES = new Set(["skill", "dc", "mode", "dice", "resolution", "threshold"]);
+
+/**
+ * Write an unrollable pool check back without the numbers the model claimed for it.
+ *
+ * The attributes that describe the ask are kept exactly as written; `rolls=`, `used=`,
+ * `modifier=`, `total=`, `result=` and `pool=` are dropped, so nothing the pool never
+ * validated reaches the saved turn. The resolver cannot roll the tag, so this is the one
+ * honest shape left for it: an ask with no answer, which the next turn narrates blind.
+ */
+export function stripPoolClaims(body: string): string {
+  const kept = readGmTagAttributes(body)
+    .filter((attribute) => POOL_CLAIM_KEPT_ATTRIBUTES.has(attribute.key.toLowerCase()))
+    .map((attribute) => `${attribute.key}=${attribute.rawValue}`);
+  return `[skill_check: ${kept.join(" ")}]`;
 }
 
 /**

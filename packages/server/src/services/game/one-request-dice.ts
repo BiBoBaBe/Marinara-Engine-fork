@@ -37,6 +37,7 @@
 import {
   dropGameBranchBlocks,
   isEngineRollableSkillCheckTag,
+  isRollPlaceholderName,
   parseRollPlaceholderBody,
   parseSkillCheckTagBody,
   readSkillCheckBranchLabel,
@@ -55,7 +56,6 @@ import {
   type GameDicePlaceholderRecord,
   type RollPlaceholderRefusalRecord,
   type RollPlaceholderSheetModifier,
-  type RPGAttributes,
   type SkillCheckResult,
   type SkillCheckTagSpan,
 } from "@marinara-engine/shared";
@@ -63,7 +63,13 @@ import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import { rollDieSecurely, type DieRoller } from "./dice-rng.js";
 import type { GameDicePoolSession } from "./dice-pool.service.js";
-import { attributeModifier, getGoverningAttribute, mapSheetAttributeName } from "./skill-check.service.js";
+import {
+  attributeModifier,
+  getGoverningAttribute,
+  mapSheetAttributeName,
+  readContextAttributeScore,
+  SHEET_ATTRIBUTE_LABELS,
+} from "./skill-check.service.js";
 import type { GameSkillModifierView } from "./gm-prompts.js";
 import {
   isResolvableSkillCheckRequest,
@@ -469,7 +475,7 @@ export function resolveSheetModifier(
 ): RollPlaceholderSheetModifier | null {
   const attribute = mapSheetAttributeName(name);
   if (attribute) {
-    const score = readAttributeScore(context, attribute);
+    const score = readContextAttributeScore(context, attribute);
     if (score === null) return null;
     return { value: attributeModifier(score), source: "attribute" };
   }
@@ -477,22 +483,16 @@ export function resolveSheetModifier(
   const skills = context.skills;
   const rawSkillMod = skills ? (skills[name] ?? skills[name.toLowerCase()]) : undefined;
   if (rawSkillMod === undefined || !Number.isFinite(Number(rawSkillMod))) return null;
-  const governing = readAttributeScore(context, getGoverningAttribute(name));
+  const governing = readContextAttributeScore(context, getGoverningAttribute(name));
   return {
     value: Number(rawSkillMod) + (governing === null ? 0 : attributeModifier(governing)),
     source: "skill",
   };
 }
 
-/** The short sheet spellings, in the order a character sheet lists them. */
-const SHEET_ATTRIBUTE_LABELS: ReadonlyArray<[keyof RPGAttributes, string]> = [
-  ["str", "STR"],
-  ["dex", "DEX"],
-  ["con", "CON"],
-  ["int", "INT"],
-  ["wis", "WIS"],
-  ["cha", "CHA"],
-];
+/** The longest skill name the prompt will advertise, and how many. A sheet is not that long. */
+const SHEET_NAME_MAX = 40;
+const SHEET_NAMES_MAX = 40;
 
 /**
  * The names the prompt may advertise for a `[[roll: 1d8+NAME]]` placeholder this turn.
@@ -503,30 +503,28 @@ const SHEET_ATTRIBUTE_LABELS: ReadonlyArray<[keyof RPGAttributes, string]> = [
  * something prettier would print a name that then refuses. An empty view is the normal
  * default configuration, where no game-state snapshot means no skills, and it is what drops the
  * sheet-modifier sentence from the block entirely.
+ *
+ * A skill key is model-written text from the snapshot, so it is advertised only when the
+ * placeholder grammar could read it back: a name with a bracket, a newline or a sign in it
+ * can never be written into a placeholder, and printing it would let it reshape the block
+ * it is printed into. The list is bounded for the same reason.
  */
 export function buildGameSkillModifierView(context: SkillCheckModifierContext): GameSkillModifierView {
   const skills: string[] = [];
   for (const [name, value] of Object.entries(context.skills ?? {})) {
     const trimmed = typeof name === "string" ? name.trim() : "";
-    if (!trimmed || !Number.isFinite(Number(value))) continue;
+    if (!trimmed || trimmed.length > SHEET_NAME_MAX || !isRollPlaceholderName(trimmed)) continue;
+    if (!Number.isFinite(Number(value))) continue;
     skills.push(trimmed);
+    if (skills.length >= SHEET_NAMES_MAX) break;
   }
 
   const attributes: string[] = [];
   for (const [key, label] of SHEET_ATTRIBUTE_LABELS) {
-    if (readAttributeScore(context, key) !== null) attributes.push(label);
+    if (readContextAttributeScore(context, key) !== null) attributes.push(label);
   }
 
   return { skills, attributes };
-}
-
-/** The snapshot's engine-shape attributes first, then the player card's sheet, exactly as a check reads them. */
-function readAttributeScore(context: SkillCheckModifierContext, attribute: keyof RPGAttributes): number | null {
-  if (context.attributes && Number.isFinite(Number(context.attributes[attribute]))) {
-    return Number(context.attributes[attribute]);
-  }
-  const sheet = context.sheetAttributes[attribute];
-  return sheet == null ? null : sheet;
 }
 
 /**

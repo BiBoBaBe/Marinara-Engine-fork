@@ -176,6 +176,14 @@ const roundTripped = parseGameDicePool(serializeGameDicePool(queue));
 assert.deepEqual(roundTripped, queue, "a pool read back out of its row is the pool that was written");
 assert.equal(parseGameDicePool('{"v":2,"values":{}}'), null, "another revision is refused, never half-read");
 assert.equal(parseGameDicePool('{"v":1,"values":{"d20":[99]}}'), null, "a value the die cannot show is refused");
+{
+  const oversized = createGameDicePool(() => 1);
+  oversized.values.d20.push(1);
+  assert.equal(parseGameDicePool(serializeGameDicePool(oversized)), null, "a queue past its allotment is refused");
+  const short = createGameDicePool(() => 1);
+  short.values.d20 = [1];
+  assert.equal(parseGameDicePool(serializeGameDicePool(short))?.values.d20.length, 1, "a short queue is legitimate");
+}
 assert.equal(parseGameDicePool("not json"), null);
 assert.equal(parseGameDicePool(null), null);
 
@@ -361,6 +369,55 @@ for (const unreadable of ['pool="d20:7"', 'pool="d7:1"', 'pool="nonsense"', 'poo
     poolOf({ d20: [14, 3, 19, 8, 11, 2] }),
   );
   assert.match(low.resolution.content, /dc="1"/);
+}
+
+// ── 5b. A pool claim the resolver cannot roll loses its numbers ─────────────
+{
+  // An engine-rollable pool check the resolver refuses (a skill past the length bound) is
+  // written back without the numbers it claimed, never left as the model wrote it.
+  const longSkill = "S".repeat(101);
+  const { resolution } = await resolveWithPool(
+    `[skill_check: skill="${longSkill}" dc="15" rolls="14" used="14" modifier="0" total="14" result="failure" pool="d20:1"]`,
+    poolOf({ d20: [14, 3, 19, 8, 11, 2] }),
+  );
+  assert.equal(resolution.sparse, 1, "counted as sparse, because it is");
+  assert.match(resolution.content, new RegExp(`skill="${longSkill}" dc="15"`), "the ask survives as written");
+  assert.doesNotMatch(resolution.content, /rolls=|used=|modifier=|total=|result=|pool=/, "the claim does not");
+}
+{
+  // `pool=` written in front of nothing the grammar can read: the numbers on such a record
+  // are a claim the pool never validated, so they are dropped with the claim.
+  const session = createGameDicePoolSession({ chatId: "chat-pool", pool: poolOf({}), settings });
+  const garbage = resolveGameDiceRequests('[dice: nope = 17 (9 + 8) pool="d6:1"]', [], undefined, session);
+  assert.equal(garbage.content, "[dice: nope]", "the head stays as the bare ask it may have been");
+  assert.equal(garbage.diceRolls.length, 0);
+  // With no pool in play the same text is left exactly as written, as it always was.
+  const historical = resolveGameDiceRequests('[dice: nope = 17 (9 + 8) pool="d6:1"]', []);
+  assert.equal(historical.content, '[dice: nope = 17 (9 + 8) pool="d6:1"]');
+  // An empty slot name is still a claim, and the tag is still recomputed from the pool.
+  const empty = createGameDicePoolSession({ chatId: "chat-pool", pool: poolOf({ d6: [2, 5, 3, 3, 1, 6] }), settings });
+  const emptyClaim = resolveGameDiceRequests('[dice: 2d6 = 12 (6 + 6) pool=""]', [], undefined, empty);
+  assert.equal(emptyClaim.content, '[dice: 2d6 = 7 (2 + 5) pool="d6:1|2"]', "the engine's arithmetic, not the model's");
+  assert.ok(empty.mismatches.some((mismatch) => mismatch.kind === "slot"));
+}
+{
+  // A success pool that overflows keeps its per-die threshold: without it every later
+  // reader would refuse the ask for having no counting rule.
+  const session = createGameDicePoolSession({
+    chatId: "chat-pool",
+    pool: poolOf({ d10: [6, 7, 2, 9, 1, 8] }),
+    settings,
+  });
+  const overflowed = resolveGameDiceRequests(
+    '[skill_check: skill="Intimidation" dc="4" dice="7d10" resolution="successes" threshold="6" rolls="6|7|2|9|1|8|9" total="5" result="success" pool="d10:1|2|3|4|5|6|7"]',
+    [],
+    undefined,
+    session,
+  );
+  assert.equal(session.overflow, 1);
+  assert.match(overflowed.content, /threshold="6"/, "the counting rule survives the overflow");
+  assert.match(overflowed.content, /resolution="successes"/);
+  assert.doesNotMatch(overflowed.content, /rolls=|total=|result=|pool=/, "the claimed numbers do not");
 }
 
 // ── 6. Rewind, continuation, and the row ────────────────────────────────────

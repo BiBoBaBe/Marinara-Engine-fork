@@ -26,6 +26,7 @@ import {
   type GameDicePoolSlotName,
   type ParsedDiceNotation,
   type SkillCheckResult,
+  type SkillCheckTagExtras,
 } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { logPoolDcFit, pooledSizeForNotation, type GameDicePoolSession } from "./dice-pool.service.js";
@@ -89,14 +90,20 @@ export function createGameRollTagRegex(): RegExp {
 export function readPoolDiceBody(
   body: string,
 ): { notation: ParsedDiceNotation; raw: string; slots: GameDicePoolSlotName | null } | null {
-  const raw = readGmTagAttributes(body).find((attribute) => attribute.key.toLowerCase() === "pool")?.rawValue;
-  // Written at all, readable or not. A slot name the engine cannot read is still the
-  // model claiming a pool spend, and letting such a tag fall back to the ordinary path
-  // would keep the model's own numbers in the saved record.
-  if (!raw) return null;
+  const attribute = readGmTagAttributes(body).find((candidate) => candidate.key.toLowerCase() === "pool");
+  // Written at all, readable or not, empty included. A slot name the engine cannot read
+  // is still the model claiming a pool spend, and letting such a tag fall back to the
+  // ordinary path would keep the model's own numbers in the saved record.
+  if (!attribute) return null;
+  const raw = attribute.rawValue;
   const head = body.trim().split(/[\s=]/, 1)[0] ?? "";
   const notation = parseDiceNotation(head);
   return notation ? { notation, raw, slots: parsePoolSlotName(raw) } : null;
+}
+
+/** Whether a `[dice:]` body wrote `pool=` at all, readable or not. */
+export function hasPoolClaim(body: string): boolean {
+  return readGmTagAttributes(body).some((attribute) => attribute.key.toLowerCase() === "pool");
 }
 
 /** The engine's own `[dice:]` record, with the slot it spent named on the end. */
@@ -146,6 +153,15 @@ export function resolveGameDiceRequests(
         const poolBody = pool ? readPoolDiceBody(body) : null;
         if (pool && poolBody)
           return resolvePoolDiceTag(pool, poolBody, body, diceRolls, () => rolled++, poolTagIndex++);
+        if (pool && hasPoolClaim(body)) {
+          // `pool=` written in front of nothing the grammar can read. The numbers on such
+          // a record are a claim the pool never validated, so they are dropped with the
+          // claim rather than saved as written; the head is kept as the bare ask it may
+          // have been. Only reachable with a live pool, so a re-read is untouched.
+          const head = body.trim().split(/[\s=]/, 1)[0] ?? "";
+          reportUnresolved(body, "A pool record needs a readable NdM notation; its numbers were dropped.");
+          return `[dice: ${head}]`;
+        }
         // Widened for the pool's slot name only. Widening it is necessary and not
         // sufficient: it makes a pool-bearing record PASS the historical test, which is
         // right for a re-read and fatal for a fresh turn without the out-of-band session
@@ -168,9 +184,9 @@ export function resolveGameDiceRequests(
     const declared = tag.declaredDice ? parseDiceNotation(tag.declaredDice) : null;
     const notation = declared ? clampParsedDiceToLimits(declared) : null;
     const resolution = tag.declaredResolution ?? "sum";
-    const sparse = (reason: string) => {
+    const sparse = (reason: string, extras?: SkillCheckTagExtras) => {
       reportUnresolved(`${tag.skill} (${tag.declaredDice ?? "no dice declared"})`, reason);
-      return serializeSparseSkillCheckTag({ ...tag, preRolledD20: undefined });
+      return serializeSparseSkillCheckTag({ ...tag, preRolledD20: undefined }, extras);
     };
     if (
       !notation ||
@@ -214,7 +230,12 @@ export function resolveGameDiceRequests(
         `${tag.skill} (${tag.declaredDice ?? "no dice"})`,
         poolTagIndex++,
       );
-      if (!spent) return sparse("The pool held no value for this check; no outcome has been determined.");
+      // The per-die threshold rides along: without it a success pool has no counting rule,
+      // and every later reader would refuse the ask instead of rolling it.
+      if (!spent)
+        return sparse("The pool held no value for this check; no outcome has been determined.", {
+          threshold: tag.threshold,
+        });
       pool.audit(spent.spent, {
         ...(tag.poolRaw !== undefined ? { rawPool: tag.poolRaw } : {}),
         ...(tag.poolSlots ? { slots: tag.poolSlots.slots } : {}),

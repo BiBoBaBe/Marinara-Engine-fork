@@ -10,11 +10,14 @@
 //
 // Reattaching is the whole problem this module solves, and it is not a lookup.
 //
-//   - THE OFFSET CANNOT BE TRUSTED. `stripGmTags` removes tags ahead of the number and
-//     the segment editor rewrites content wholesale, so a record's `index` is a hint
-//     about where the number was when it was substituted, not where it is now. The
-//     narration is also split into segments before it is rendered, so the offset is in
-//     message coordinates while the text here is one segment of it.
+//   - THE OFFSET CANNOT BE TRUSTED, SO IT IS NEVER READ. `stripGmTags` removes tags ahead
+//     of the number and the segment editor rewrites content wholesale, so a record's
+//     `index` says where the number was when it was substituted, not where it is now.
+//     The narration is also split into segments before it is rendered, so the offset is
+//     in message coordinates while the text here is one segment of it, and every segment
+//     is handed the whole message's records. An offset compared against that text would
+//     let a record from one segment claim an equal number in another. `index` stays on
+//     the record as an audit fact and nothing here uses it to choose.
 //   - A WRONG MATCH IS WORSE THAN NO MATCH. Marking the wrong word would attach a real
 //     roll's breakdown to a number nobody rolled. So the rule is conservative: a record
 //     marks a number only when the text says unambiguously which occurrence it is, and
@@ -29,13 +32,6 @@ import type { GameDicePlaceholderRecord } from "@marinara-engine/shared";
 
 /** The wrapper class the narration stylesheet paints. */
 export const GAME_DICE_MARKER_CLASS = "game-dice-marker";
-
-/**
- * How far from a record's `index` an occurrence may sit and still be recognised by the
- * offset hint alone. Only ever used to separate two records that rolled the same total;
- * a single unambiguous occurrence is matched wherever it is.
- */
-export const GAME_DICE_MARKER_WINDOW = 160;
 
 /** One record, reattached to the number it produced. */
 export interface GameDiceMarkerMatch {
@@ -115,10 +111,10 @@ function findStandaloneOccurrences(text: string, value: string, protectedRanges:
  * Reattach every record that can be reattached without guessing.
  *
  * A record matches when the text contains exactly one standalone occurrence of its
- * number and no other record rolled that same total. When several occurrences or several
- * records compete, the offset hint may break the tie, but only when one candidate is
- * inside `GAME_DICE_MARKER_WINDOW` of the record's `index` and is strictly nearer to it
- * than every other candidate. Anything still ambiguous is left unmarked.
+ * number and no other record rolled that same total. Several occurrences, or several
+ * records that rolled the same total, are left unmarked: the record's offset is in
+ * message coordinates and this text is one segment, so an offset cannot break the tie
+ * without sometimes breaking it the wrong way.
  *
  * Returned in reading order, never overlapping.
  */
@@ -135,31 +131,11 @@ export function matchGameDicePlaceholders(
   const matches: GameDiceMarkerMatch[] = [];
   for (const record of records) {
     if (typeof record?.text !== "string" || !/^-?\d+$/.test(record.text)) continue;
+    if ((shared.get(record.text) ?? 0) !== 1) continue;
     const occurrences = findStandaloneOccurrences(text, record.text, protectedRanges).filter((at) => !claimed.has(at));
-    if (occurrences.length === 0) continue;
+    if (occurrences.length !== 1) continue;
 
-    let chosen: number | null = null;
-    if (occurrences.length === 1 && (shared.get(record.text) ?? 0) === 1) {
-      chosen = occurrences[0]!;
-    } else if (typeof record.index === "number" && Number.isFinite(record.index)) {
-      // Ambiguous: several equal numbers here, or several records that rolled the same
-      // total. The offset hint may break the tie, but only when one candidate is inside
-      // the window AND strictly nearer than every other. A hint that cannot separate
-      // them is a hint that proves nothing.
-      const near = occurrences
-        .filter((at) => Math.abs(at - record.index) <= GAME_DICE_MARKER_WINDOW)
-        .sort((left, right) => Math.abs(left - record.index) - Math.abs(right - record.index));
-      const best = near[0];
-      const runnerUp = near[1];
-      if (
-        best !== undefined &&
-        (runnerUp === undefined || Math.abs(best - record.index) < Math.abs(runnerUp - record.index))
-      ) {
-        chosen = best;
-      }
-    }
-    if (chosen === null) continue;
-
+    const chosen = occurrences[0]!;
     claimed.add(chosen);
     matches.push({ record, start: chosen, end: chosen + record.text.length });
   }

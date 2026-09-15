@@ -715,7 +715,7 @@ assert.equal(untouched.sparse, 0);
 // through the error door.
 assert.match(
   generateRoutes,
-  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*const generalRolls = resolveGameDiceRequests\(\s*rolled\.content,\s*toolDiceRollResults,[\s\S]*?\);\s*if \(generalRolls\.content !== fullResponse\) \{/u,
+  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*const generalRolls = resolveGameDiceRequests\(\s*rolled\.content,\s*toolDiceRollResults,\s*undefined,\s*dicePoolSession \?\? undefined,?\s*\);\s*if \(generalRolls\.content !== fullResponse\) \{/u,
   "the resolver's own output decides the frame and the save on both paths",
 );
 

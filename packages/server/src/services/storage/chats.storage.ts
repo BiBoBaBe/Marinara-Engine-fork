@@ -2981,6 +2981,34 @@ export function createChatsStorage(db: DB) {
             .set({ swipeIndex: snapshot.swipeIndex - 1 })
             .where(and(eq(gameEngineState.chatId, msg.chatId), eq(gameEngineState.id, snapshot.id)));
         }
+        // The dice-pool row is keyed by swipe too. Left behind, the removed swipe's row would
+        // answer the next regenerate of this message, and a later swipe's row would sit one
+        // index off from the swipe it was dealt for.
+        await db
+          .delete(gameDicePools)
+          .where(
+            and(
+              eq(gameDicePools.chatId, msg.chatId),
+              eq(gameDicePools.messageId, messageId),
+              eq(gameDicePools.swipeIndex, index),
+            ),
+          );
+        const dicePoolsToShift = await db
+          .select()
+          .from(gameDicePools)
+          .where(
+            and(
+              eq(gameDicePools.chatId, msg.chatId),
+              eq(gameDicePools.messageId, messageId),
+              gt(gameDicePools.swipeIndex, index),
+            ),
+          );
+        for (const poolRow of dicePoolsToShift) {
+          await db
+            .update(gameDicePools)
+            .set({ swipeIndex: poolRow.swipeIndex - 1 })
+            .where(and(eq(gameDicePools.chatId, msg.chatId), eq(gameDicePools.id, poolRow.id)));
+        }
 
         await db
           .update(messages)

@@ -4,12 +4,17 @@
 // One row per (chat, message, swipe), holding the queue a turn was PROMPTED with and
 // what that turn spent out of it. Reads are always chat-scoped, so a lookup never
 // crosses a chat even when a message id is reused by an import.
+//
+// The row's id IS the triple. The lazy tier cannot declare a `uniqueBy` constraint
+// (`file-backed-store.ts` refuses to boot a lazy table that does), so the primary key
+// is what makes the triple unique: a save is an upsert on the id, and two saves for the
+// same turn can never leave two rows for `getForTurn` to choose between.
 // ──────────────────────────────────────────────
 
 import { and, desc, eq } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import { gameDicePools } from "../../db/schema/index.js";
-import { newId, now } from "../../utils/id-generator.js";
+import { now } from "../../utils/id-generator.js";
 
 export interface GameDicePoolRow {
   id: string;
@@ -27,6 +32,11 @@ export interface SaveGameDicePoolInput {
   swipeIndex: number;
   pool: string;
   consumed: string;
+}
+
+/** The row id for one turn: the triple itself, so the key and the identity cannot drift apart. */
+export function gameDicePoolRowId(chatId: string, messageId: string, swipeIndex: number): string {
+  return `${chatId}:${messageId}:${swipeIndex}`;
 }
 
 export function createGameDicePoolsStorage(db: DB) {
@@ -73,31 +83,33 @@ export function createGameDicePoolsStorage(db: DB) {
     },
 
     /**
-     * Write this turn's row, replacing the one it already had.
+     * Write this turn's row, updating the one it already had in place.
      *
-     * Replace rather than append, because a continuation updates its own row IN PLACE:
-     * two rows for one (message, swipe) would mean two different accounts of what that
-     * turn spent, and the later reader could not tell which one the prompt was built from.
+     * An upsert on the primary key rather than a delete and an insert: a continuation
+     * updates its own row, and whichever of two overlapping saves lands second becomes an
+     * update of the same id instead of a second row. The original timestamp is kept so an
+     * in-place update does not reorder the chat's rows under `getLatestForChat`.
      */
     async save(input: SaveGameDicePoolInput): Promise<GameDicePoolRow> {
+      const id = gameDicePoolRowId(input.chatId, input.messageId, input.swipeIndex);
       const existing = await this.getForTurn(input.chatId, input.messageId, input.swipeIndex);
-      if (existing) {
+      // A row written under a random id, before the id was the triple, would otherwise be
+      // left standing beside the keyed one.
+      if (existing && existing.id !== id) {
         await db
           .delete(gameDicePools)
           .where(and(eq(gameDicePools.chatId, input.chatId), eq(gameDicePools.id, existing.id)));
       }
       const row: GameDicePoolRow = {
-        id: existing?.id ?? newId(),
+        id,
         chatId: input.chatId,
         messageId: input.messageId,
         swipeIndex: input.swipeIndex,
         pool: input.pool,
         consumed: input.consumed,
-        // The original row's timestamp is kept so a continuation's in-place update does
-        // not reorder the chat's rows under `getLatestForChat`.
         createdAt: existing?.createdAt ?? now(),
       };
-      await db.insert(gameDicePools).values(row);
+      await db.insert(gameDicePools).values(row).onConflictDoUpdate({ target: gameDicePools.id, set: row });
       return row;
     },
   };

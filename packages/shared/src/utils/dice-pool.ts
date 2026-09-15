@@ -151,6 +151,10 @@ export function parseGameDicePool(raw: string | null | undefined): GameDicePool 
   for (const size of GAME_DICE_POOL_SIZES) {
     const list = rawValues[size];
     if (!Array.isArray(list)) return null;
+    // A short queue is one a previous turn overspent and is legitimate; a queue past its
+    // allotment was never written by this code, and accepting it would let a hand-edited
+    // row hand out more values than the allotment allows.
+    if (list.length > GAME_DICE_POOL_ALLOTMENT[size]) return null;
     const faces = gameDicePoolSizeFaces(size);
     const cleaned: number[] = [];
     for (const entry of list) {

@@ -231,12 +231,15 @@ assert.deepEqual(
   "two candidates and an offset that proves nothing: mark neither",
 );
 assert.equal(applyGameDiceMarkers(twice, [record({ text: "12", total: 12, index: 9_999 })], describe), twice);
-// The offset is allowed to break a tie, but only when exactly one candidate is near it.
+// The offset never breaks a tie, even when it points straight at one candidate: it is in
+// message coordinates and the text here is one segment, so the same hint that is right in
+// this segment would claim an equal number in another.
 assert.deepEqual(
-  matchGameDicePlaceholders(twice, [record({ text: "12", total: 12, index: 12 })]).map((match) => match.start),
-  [12],
+  matchGameDicePlaceholders(twice, [record({ text: "12", total: 12, index: 12 })]),
+  [],
+  "an offset that happens to fit proves nothing either",
 );
-// Two records that rolled the same total, with no offset to separate them, mark neither.
+// Two records that rolled the same total mark neither, wherever each one sits.
 assert.deepEqual(
   matchGameDicePlaceholders("It hits for 12, then for 12 again.", [
     record({ text: "12", total: 12, index: 9_000 }),
@@ -244,6 +247,19 @@ assert.deepEqual(
   ]),
   [],
 );
+// The cross-segment case those two rules exist for: two placeholders rolled the same total
+// in different segments, and every segment is handed both records. Neither segment may let
+// the first record claim its number, or the second segment shows the first roll's breakdown.
+for (const segment of ["The axe bites for 12 damage.", "The burn lasts 12 rounds."]) {
+  assert.deepEqual(
+    matchGameDicePlaceholders(segment, [
+      record({ text: "12", total: 12, index: 20 }),
+      record({ text: "12", total: 12, index: 300 }),
+    ]),
+    [],
+    segment,
+  );
+}
 // A number that is part of a longer run is not this record's number.
 assert.deepEqual(matchGameDicePlaceholders("You carry 1234 coins.", [record({ text: "12", total: 12 })]), []);
 // A number inside a larger numeric token is not the number either: a decimal, a grouped

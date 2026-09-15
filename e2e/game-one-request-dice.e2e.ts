@@ -283,7 +283,7 @@ test("Game finishes a rolled turn in one request, and leaves the shipped two-req
     await expect(logs).toContainText("Stealth");
     // A clean turn records no notice, so none of the failure lines is rendered.
     await expect(logs).not.toContainText("Dice: one number could not be rolled");
-    await expect(logs).not.toContainText("Dice: a branch was written wrong");
+    await expect(logs).not.toContainText("Dice: the branch was malformed");
     await expect(logs).not.toContainText("Dice: this turn's dice step failed");
     await testInfo.attach(`one-request-dice-logs-${testInfo.project.name}.png`, {
       body: await logs.screenshot({ path: testInfo.outputPath("one-request-dice-logs.png") }),
