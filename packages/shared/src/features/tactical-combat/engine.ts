@@ -9,8 +9,9 @@
 // refresh-safe). The LLM only narrates the aftermath via `buildTacticalSummary`.
 
 import type { Combatant, CombatSkill, CombatStatusEffect, CombatSummary } from "../../types/game.js";
+import { summarizeTacticalBattlefield } from "./battlefield-summary.js";
 import { CLASS_PROFILES, deriveClass } from "./classes.js";
-import { generateGrid, placeSpawns } from "./grid-gen.js";
+import { generateTacticalBattlefield, placeSpawns } from "./grid-gen.js";
 import {
   clamp,
   computeDamage,
@@ -28,6 +29,7 @@ import { deterministicRng } from "./rng.js";
 import type {
   ApplyActionResult,
   TacticalAction,
+  TacticalBattlefieldBrief,
   TacticalCombatState,
   TacticalCoord,
   TacticalDifficulty,
@@ -99,6 +101,7 @@ function combatantToUnit(c: Combatant, side: "party" | "enemy", isBoss: boolean)
     statusEffects: (c.statusEffects ?? []).map((e) => ({ ...e })),
     element: c.element,
     sprite: c.sprite,
+    movementMode: c.movementMode,
     isBoss,
     x: 0,
     y: 0,
@@ -120,7 +123,13 @@ function combatantToUnit(c: Combatant, side: "party" | "enemy", isBoss: boolean)
 export function createTacticalCombat(
   party: Combatant[],
   enemies: Combatant[],
-  opts: { seed: number; difficulty: string; environment?: string; formation?: string },
+  opts: {
+    seed: number;
+    difficulty: string;
+    environment?: string;
+    formation?: string;
+    battlefield?: TacticalBattlefieldBrief;
+  },
 ): TacticalCombatState {
   const difficulty = normalizeDifficulty(opts.difficulty);
   const environment = normalizeEnvironment(opts.environment);
@@ -146,8 +155,12 @@ export function createTacticalCombat(
   ];
 
   const setupRng = deterministicRng(seed, 0);
-  const grid = generateGrid(units.length, setupRng, environment);
-  placeSpawns(grid, units, formation, setupRng);
+  const generated = generateTacticalBattlefield(units.length, setupRng, environment, opts.battlefield);
+  if (!generated.ok) throw new Error(generated.error);
+  const { grid } = generated;
+  if (!placeSpawns(grid, units, formation, setupRng, generated.protectedTiles)) {
+    throw new Error("Battlefield features prevent a connected unit deployment.");
+  }
 
   const state: TacticalCombatState = {
     schemaVersion: 1,
@@ -160,6 +173,7 @@ export function createTacticalCombat(
     log: [{ kind: "phase", text: "Player Phase — Round 1", phase: "player" }],
     difficulty,
     formation,
+    battlefield: generated.battlefield,
     ...(environment ? { environment } : {}),
   };
   return state;
@@ -190,6 +204,22 @@ export function getMovementRange(state: TacticalCombatState, unitId: string): Ta
   const unit = getUnit(state, unitId);
   if (!unit || unit.hp <= 0) return [];
   const { grid } = state;
+
+  const movementMode = unit.movementMode ?? "walk";
+  if (movementMode === "fly" || movementMode === "teleport") {
+    const out: TacticalCoord[] = [];
+    for (let y = 0; y < grid.height; y++) {
+      for (let x = 0; x < grid.width; x++) {
+        if (manhattan(unit, { x, y }) > unit.movement) continue;
+        // Flight may hover over every terrain type. Teleport crosses all
+        // intervening terrain and units but still needs walkable footing.
+        if (movementMode === "teleport" && isImpassable(grid, x, y)) continue;
+        if (occupantAt(state, x, y, unit.id)) continue;
+        out.push({ x, y });
+      }
+    }
+    return out;
+  }
 
   const cost = new Map<string, number>();
   const start = `${unit.x},${unit.y}`;
@@ -817,6 +847,7 @@ export function applyAction(state: TacticalCombatState, action: TacticalAction):
 export function buildTacticalSummary(state: TacticalCombatState): CombatSummary {
   const outcome: CombatSummary["outcome"] =
     state.outcome === "fled" ? "flee" : state.outcome === "defeat" ? "defeat" : "victory";
+  const battlefieldSummary = summarizeTacticalBattlefield(state);
   return {
     outcome,
     rounds: state.round,
@@ -837,6 +868,7 @@ export function buildTacticalSummary(state: TacticalCombatState): CombatSummary 
         hp: u.hp,
         maxHp: u.maxHp,
       })),
+    ...(battlefieldSummary ? { battlefieldSummary } : {}),
   };
 }
 

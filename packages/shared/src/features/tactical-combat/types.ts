@@ -15,6 +15,43 @@ export type { GameCombatStyle } from "../../types/game.js";
 
 export type TacticalTerrain = "plains" | "forest" | "mountain" | "ruin" | "water" | "wall";
 
+/** Fixed board sizes for procedural tactical encounters. */
+export type TacticalBattlefieldSize = "small" | "medium" | "large";
+
+/** Setup-owned preferences for newly-created tactical encounters. */
+export interface TacticalBattlefieldSetup {
+  seed?: number;
+  size?: TacticalBattlefieldSize;
+  instructions?: string;
+}
+
+/** How a unit traverses the battlefield. Missing values retain walk-only rules. */
+export type TacticalMovementMode = "walk" | "fly" | "teleport";
+
+/** A bounded, directional landmark request for procedural terrain generation. */
+export interface TacticalBattlefieldFeature {
+  terrain: TacticalTerrain;
+  placement: "center" | "north" | "south" | "east" | "west";
+  shape: "patch" | "barrier";
+}
+
+/**
+ * Structured terrain input for a generated battlefield. It cannot express
+ * arbitrary coordinates; exact authored maps remain a later contract.
+ */
+export interface TacticalBattlefieldBrief {
+  size?: TacticalBattlefieldSize;
+  features?: TacticalBattlefieldFeature[];
+}
+
+/** Saved provenance for a generated grid. `grid` remains the resolved authority. */
+export interface TacticalBattlefieldProvenance {
+  kind: "generated";
+  generatorVersion: 1;
+  size: TacticalBattlefieldSize;
+  brief?: TacticalBattlefieldBrief;
+}
+
 export interface TerrainInfo {
   /** Movement points required to ENTER this tile. */
   moveCost: number;
@@ -134,6 +171,8 @@ export interface TacticalUnit {
   movement: number;
   /** Basic-attack reach in Manhattan distance (from the unit's class profile). */
   attackRange: TacticalAttackRange;
+  /** Flight and teleport rules. Absent legacy snapshots walk. */
+  movementMode?: TacticalMovementMode;
   hasMoved: boolean;
   hasActed: boolean;
   /** Set when the unit chose Defend last turn — halves incoming damage until its next turn. */
@@ -213,6 +252,8 @@ export interface TacticalCombatState {
   environment?: TacticalEnvironment;
   /** Scene-derived spawn arrangement (Round 2). Optional — defaults to "line" behavior when absent. */
   formation?: TacticalFormation;
+  /** Provenance for a generated grid. Optional so legacy snapshots remain valid. */
+  battlefield?: TacticalBattlefieldProvenance;
 }
 
 // ── Forecast (shown FE-style before confirming an attack) ──

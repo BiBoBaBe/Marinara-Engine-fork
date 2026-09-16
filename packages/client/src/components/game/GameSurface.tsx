@@ -170,6 +170,7 @@ import {
   normalizeMusicEnemyTier,
   isContextMusicTag,
   isEngineRollableSkillCheckTag,
+  validateTacticalBattlefieldBrief,
   type MusicEnemyTier,
   scoreAmbient,
 } from "@marinara-engine/shared";
@@ -390,6 +391,8 @@ type PreparedCombatState = {
   environment: string;
   styleNotes: CombatStyleNotes | null;
   formation: string | null;
+  battlefield: TacticalBattlefieldBrief | null;
+  battlefieldError: string | null;
 };
 
 type GameAssetGenerationOptions = {
@@ -832,6 +835,15 @@ function readCombatNumber(value: unknown): number | null {
   return Number.isFinite(numericValue) ? numericValue : null;
 }
 
+function normalizeCombatMovementMode(value: unknown): Combatant["movementMode"] | undefined {
+  return value === "walk" || value === "fly" || value === "teleport" ? value : undefined;
+}
+
+function normalizeTacticalBattlefieldBrief(value: unknown): TacticalBattlefieldBrief | null {
+  const result = validateTacticalBattlefieldBrief(value);
+  return result.ok ? (result.brief ?? null) : null;
+}
+
 function normalizeCombatStatName(value: unknown): string {
   return typeof value === "string"
     ? value
@@ -1030,6 +1042,7 @@ export function generatedPartyMemberToCombatant(
   const mana = readGameCardPool(gameCard, "mp", "mana", "magic points", "energy");
   const element = member.attacks?.find((attack) => attack.element)?.element;
   const combatClass = typeof member.class === "string" && member.class.trim() ? member.class.trim() : undefined;
+  const movementMode = normalizeCombatMovementMode(member.movementMode);
   return {
     id: matchedAvatar?.id ?? `generated-party-${index}-${slugifyCombatantId(member.name)}`,
     name: member.name || `Ally ${index + 1}`,
@@ -1047,6 +1060,7 @@ export function generatedPartyMemberToCombatant(
     skills: combatSkillsFromSheet(gameCard?.abilities) ?? combatSkillsFromGeneratedAttacks(member.attacks, level),
     element,
     combatClass,
+    movementMode,
   };
 }
 
@@ -1072,6 +1086,7 @@ export function generatedEnemyToCombatant(enemy: CombatEnemy, index: number, fal
   const level = combatLevelFromHp(maxHp, fallbackLevel);
   const element = enemy.attacks?.find((attack) => attack.element)?.element;
   const combatClass = typeof enemy.class === "string" && enemy.class.trim() ? enemy.class.trim() : undefined;
+  const movementMode = normalizeCombatMovementMode(enemy.movementMode);
   return {
     id: `generated-enemy-${index}-${slugifyCombatantId(enemy.name)}`,
     name: enemy.name || `Enemy ${index + 1}`,
@@ -1087,6 +1102,7 @@ export function generatedEnemyToCombatant(enemy: CombatEnemy, index: number, fal
     skills: combatSkillsFromGeneratedAttacks(enemy.attacks, level),
     element,
     combatClass,
+    movementMode,
   };
 }
 
@@ -1538,6 +1554,7 @@ import type {
   GameCombatStateSnapshot,
   GameCombatStyle,
   TacticalCombatState,
+  TacticalBattlefieldBrief,
   CombatStyleNotes,
 } from "@marinara-engine/shared";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
@@ -2984,6 +3001,7 @@ function GameSurfaceComponent({
   const [combatItemEffects, setCombatItemEffects] = useState<CombatItemEffect[]>([]);
   const [combatMechanics, setCombatMechanics] = useState<CombatMechanic[]>([]);
   const [combatDialogueCues, setCombatDialogueCues] = useState<CombatDialogueCue[]>([]);
+  const [combatPinnedStyle, setCombatPinnedStyle] = useState<GameCombatStyle | null>(null);
   // Scene fields captured from the /encounter/init blueprint. Threaded into the
   // tactical combat UI (environment palette + formation) and used to auto-generate
   // a battlefield background. Set alongside combatParty; cleared with it.
@@ -2991,6 +3009,8 @@ function GameSurfaceComponent({
     environment: string;
     environmentType: string | null;
     formation: string | null;
+    battlefield: TacticalBattlefieldBrief | null;
+    battlefieldError: string | null;
     styleNotes: CombatStyleNotes | null;
   } | null>(null);
   // Encounter tier for context-bound combat music (#5161): set from the
@@ -3397,6 +3417,7 @@ function GameSurfaceComponent({
     setCombatParty(null);
     setCombatEnemies(null);
     setCombatSceneMeta(null);
+    setCombatPinnedStyle(null);
     setCombatMusicTier(null);
     contextMusicRequestRef.current.clear();
     setCombatSpriteSuggestion(null);
@@ -4605,7 +4626,9 @@ function GameSurfaceComponent({
     if (!snapshot || !snapshot.party?.length || !snapshot.enemies?.length) return;
     if (chatMeta.gameActiveState !== "combat") {
       // Stale snapshot — combat ended but the metadata write didn't land. Clear it.
-      api.patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null }).catch(() => {});
+      api
+        .patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null })
+        .catch(() => {});
       return;
     }
     // Runtime validation: the snapshot is JSON-deserialized from chat metadata that
@@ -4620,7 +4643,9 @@ function GameSurfaceComponent({
         "[game-surface] Discarding combat snapshot — failed Combatant schema validation. " +
           "Likely written by an older client version.",
       );
-      api.patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null }).catch(() => {});
+      api
+        .patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null })
+        .catch(() => {});
       return;
     }
     setCombatParty(rawParty);
@@ -4628,6 +4653,28 @@ function GameSurfaceComponent({
     setCombatItemEffects(Array.isArray(snapshot.itemEffects) ? snapshot.itemEffects : []);
     setCombatMechanics(Array.isArray(snapshot.mechanics) ? snapshot.mechanics : []);
     setCombatDialogueCues(Array.isArray(snapshot.dialogueCues) ? snapshot.dialogueCues : []);
+    // Older saves did not pin a style per battle. Preserve an existing tactical
+    // board before consulting the setting for the next encounter.
+    const setup = chatMeta.gameSetupConfig as GameSetupConfig | undefined;
+    const restoredCombatStyle: GameCombatStyle =
+      snapshot.combatStyle === "tactical" || snapshot.combatStyle === "classic"
+        ? snapshot.combatStyle
+        : chatMeta.gameTacticalCombatSnapshot
+          ? "tactical"
+          : (chatMeta.gameCombatStyle ?? setup?.combatStyle) === "tactical"
+            ? "tactical"
+            : "classic";
+    setCombatPinnedStyle(restoredCombatStyle);
+    const restoredEnvironmentType =
+      snapshot.sceneEnvironmentType ?? snapshot.styleNotes?.environmentType?.trim() ?? null;
+    setCombatSceneMeta({
+      environment: snapshot.sceneEnvironment ?? "",
+      environmentType: restoredEnvironmentType || null,
+      formation: snapshot.formation ?? null,
+      battlefield: snapshot.battlefield ?? null,
+      battlefieldError: snapshot.battlefieldError ?? null,
+      styleNotes: snapshot.styleNotes ?? null,
+    });
     if (snapshot.startMessageId) setCombatStartMessageId(snapshot.startMessageId);
     // #5161: restore the encounter tier so a mid-fight refresh doesn't swap
     // the boss theme for generic combat music. Older snapshots (no field)
@@ -4643,7 +4690,16 @@ function GameSurfaceComponent({
         "common",
     );
     useGameModeStore.getState().setGameState("combat");
-  }, [activeChatId, chatMeta.gameCombatState, chatMeta.gameActiveState, chatMeta.gameSceneMusic, isMessagesLoading]);
+  }, [
+    activeChatId,
+    chatMeta.gameCombatState,
+    chatMeta.gameActiveState,
+    chatMeta.gameSceneMusic,
+    chatMeta.gameCombatStyle,
+    chatMeta.gameSetupConfig,
+    chatMeta.gameTacticalCombatSnapshot,
+    isMessagesLoading,
+  ]);
 
   // ── Persist live combat snapshot to chat metadata (debounced) ──
   // Mirrors the scene-asset persistence above but only fires while combat is active.
@@ -4664,7 +4720,7 @@ function GameSurfaceComponent({
       combatPersistTimer.current = null;
     }
     combatPendingSnapshotRef.current = null;
-    api.patch(`/chats/${chatId}/metadata`, { gameCombatState: null }).catch(() => {});
+    api.patch(`/chats/${chatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null }).catch(() => {});
   }, []);
   useEffect(() => {
     if (combatRestoredChatIdRef.current !== activeChatId) return;
@@ -4678,6 +4734,13 @@ function GameSurfaceComponent({
       dialogueCues: combatDialogueCues,
       startMessageId: combatStartMessageId,
       musicTier: combatMusicTier,
+      combatStyle: combatPinnedStyle,
+      sceneEnvironment: combatSceneMeta?.environment ?? null,
+      sceneEnvironmentType: combatSceneMeta?.environmentType ?? null,
+      formation: combatSceneMeta?.formation ?? null,
+      battlefield: combatSceneMeta?.battlefield ?? null,
+      battlefieldError: combatSceneMeta?.battlefieldError ?? null,
+      styleNotes: combatSceneMeta?.styleNotes ?? null,
     };
     combatPendingSnapshotRef.current = { chatId: activeChatId, snapshot };
     combatPersistTimer.current = setTimeout(() => {
@@ -4712,11 +4775,13 @@ function GameSurfaceComponent({
   }, [
     activeChatId,
     combatMusicTier,
+    combatPinnedStyle,
     combatParty,
     combatEnemies,
     combatItemEffects,
     combatMechanics,
     combatDialogueCues,
+    combatSceneMeta,
     combatStartMessageId,
     gameState,
   ]);
@@ -8319,6 +8384,7 @@ function GameSurfaceComponent({
   // wizard setup choice ?? legacy default "classic".
   const combatSetupConfig = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
   const effectiveCombatStyle: GameCombatStyle =
+    combatPinnedStyle ??
     (chatMeta.gameCombatStyle as GameCombatStyle | undefined) ??
     (combatSetupConfig?.combatStyle as GameCombatStyle | undefined) ??
     "classic";
@@ -8607,6 +8673,11 @@ function GameSurfaceComponent({
           // may add for tactical combat; read defensively in case the type lags the schema.
           const blueprintFormation = (response.combatState as { battlefield?: { formation?: unknown } }).battlefield
             ?.formation;
+          const blueprintTerrainBrief = normalizeTacticalBattlefieldBrief(
+            (response.combatState as { battlefield?: { terrainBrief?: unknown } }).battlefield?.terrainBrief,
+          );
+          const blueprintTerrainBriefError = (response.combatState as { battlefield?: { terrainBriefError?: unknown } })
+            .battlefield?.terrainBriefError;
 
           setPreparedCombatState({
             messageId,
@@ -8619,6 +8690,11 @@ function GameSurfaceComponent({
             styleNotes,
             formation:
               typeof blueprintFormation === "string" && blueprintFormation.trim() ? blueprintFormation.trim() : null,
+            battlefield: blueprintTerrainBrief,
+            battlefieldError:
+              !blueprintTerrainBrief && typeof blueprintTerrainBriefError === "string"
+                ? blueprintTerrainBriefError.trim() || null
+                : null,
           });
         })
         .catch((err) => {
@@ -8701,10 +8777,13 @@ function GameSurfaceComponent({
     setCombatItemEffects(preparedCombatState.itemEffects);
     setCombatMechanics(preparedCombatState.mechanics);
     setCombatDialogueCues(preparedCombatState.dialogueCues);
+    setCombatPinnedStyle(effectiveCombatStyle);
     setCombatSceneMeta({
       environment: preparedCombatState.environment,
       environmentType: preparedCombatState.styleNotes?.environmentType?.trim() || null,
       formation: preparedCombatState.formation,
+      battlefield: preparedCombatState.battlefield,
+      battlefieldError: preparedCombatState.battlefieldError,
       styleNotes: preparedCombatState.styleNotes,
     });
     setCombatStartMessageId(preparedCombatState.messageId);
@@ -8718,6 +8797,7 @@ function GameSurfaceComponent({
     assetGenerationBlocksScene,
     combatUiActive,
     directionsPlaying,
+    effectiveCombatStyle,
     isStreaming,
     latestAssistantMsg?.id,
     latestNarrationText,
@@ -8738,6 +8818,7 @@ function GameSurfaceComponent({
 
     const combatSetupConfig = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
     const effectiveCombatStyle: GameCombatStyle =
+      combatPinnedStyle ??
       (chatMeta.gameCombatStyle as GameCombatStyle | undefined) ??
       (combatSetupConfig?.combatStyle as GameCombatStyle | undefined) ??
       "classic";
@@ -8802,6 +8883,7 @@ function GameSurfaceComponent({
     activeChatId,
     combatStartMessageId,
     combatSceneMeta,
+    combatPinnedStyle,
     chatMeta.gameCombatStyle,
     chatMeta.gameSetupConfig,
     chatMeta.gameTacticalCombatSnapshot,
@@ -10100,6 +10182,7 @@ function GameSurfaceComponent({
     setCombatParty(null);
     setCombatEnemies(null);
     setCombatSceneMeta(null);
+    setCombatPinnedStyle(null);
     setCombatMusicTier(null);
     setPendingEncounter(null);
     setQueuedEncounter(null);
@@ -10130,12 +10213,24 @@ function GameSurfaceComponent({
     setCombatEnemies(nextEnemies);
   }, []);
 
+  const handleTacticalBattlefieldReady = useCallback((accepted: TacticalCombatState) => {
+    setCombatSceneMeta((current) => ({
+      environment: current?.environment ?? "",
+      environmentType: accepted.environment ?? null,
+      formation: accepted.formation ?? null,
+      battlefield: accepted.battlefield?.brief ?? null,
+      battlefieldError: null,
+      styleNotes: current?.styleNotes ?? null,
+    }));
+  }, []);
+
   // Combat end handler — clear combat state and notify GM
   const handleCombatEnd = useCallback(
     (outcome: "victory" | "defeat" | "flee", summary: CombatSummary) => {
       setCombatParty(null);
       setCombatEnemies(null);
       setCombatSceneMeta(null);
+      setCombatPinnedStyle(null);
       setCombatMusicTier(null);
       setQueuedCombatGeneration(null);
       setCombatGenerationPending(false);
@@ -10185,6 +10280,7 @@ function GameSurfaceComponent({
         recapLines.push(`Survived: ${survivingEnemies.map((e) => `${e.name} (${e.hp}/${e.maxHp} HP)`).join(", ")}`);
       }
       recapLines.push(`Party: ${partyStatus.join("; ")}`);
+      if (summary.battlefieldSummary?.trim()) recapLines.push(`Battlefield: ${summary.battlefieldSummary.trim()}`);
       if (lootText) recapLines.push(`Loot: ${lootText}`);
       else
         recapLines.push(
@@ -12548,6 +12644,9 @@ function GameSurfaceComponent({
                               }
                               environment={combatSceneMeta?.environmentType ?? null}
                               formation={combatSceneMeta?.formation ?? null}
+                              battlefield={combatSceneMeta?.battlefield ?? null}
+                              battlefieldError={combatSceneMeta?.battlefieldError ?? null}
+                              onBattlefieldReady={handleTacticalBattlefieldReady}
                               playerCombatantId={combatParty[0]?.id ?? null}
                               onCombatEnd={handleCombatEnd}
                               onCustomInstruction={handleCombatCustomInstruction}

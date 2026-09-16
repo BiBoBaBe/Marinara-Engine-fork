@@ -189,6 +189,11 @@ import {
   type RPGStatsConfig,
 } from "@marinara-engine/shared";
 import {
+  resolveTacticalStartPreferences,
+  tacticalBattlefieldSeedSchema,
+  tacticalBattlefieldSetupSchema,
+} from "../services/game/tactical-battlefield.service.js";
+import {
   mergeCustomParameters,
   parseGameStateRow,
   resolveBaseUrl,
@@ -1787,6 +1792,7 @@ const gameSetupConfigSchema = z.object({
   tone: z.string().min(1).max(200),
   difficulty: z.string().min(1).max(100),
   combatStyle: z.enum(["classic", "tactical"]).optional(),
+  tacticalBattlefield: tacticalBattlefieldSetupSchema.optional(),
   spatialMapInstructions: z.string().max(4000).optional(),
   gameWorldMapMode: z.enum(["standard", "hierarchical"]).optional(),
   spatialMapDraftSize: z.enum(["small", "medium", "large"]).optional(),
@@ -6367,8 +6373,19 @@ export async function gameRoutes(app: FastifyInstance) {
   };
 
   // ── POST /game/create ──
-  app.post("/create", async (req) => {
+  app.post("/create", async (req, reply) => {
     logger.info("[game/create] Received request");
+    const requestedBattlefield = (req.body as { setupConfig?: { tacticalBattlefield?: unknown } } | null)?.setupConfig
+      ?.tacticalBattlefield;
+    if (requestedBattlefield !== undefined) {
+      const battlefieldResult = tacticalBattlefieldSetupSchema.safeParse(requestedBattlefield);
+      if (!battlefieldResult.success) {
+        const issue = battlefieldResult.error.issues[0];
+        return reply.status(400).send({
+          error: `Invalid tactical battlefield settings: ${issue?.message ?? "invalid settings"}`,
+        });
+      }
+    }
     const parsedCreateGameInput = createGameSchema.parse(req.body);
     const { name, connectionId, promptPresetId, chatId, preferences, shareLabels } = parsedCreateGameInput;
     const normalizedSpatialMapDraftOptions =
@@ -9670,6 +9687,13 @@ export async function gameRoutes(app: FastifyInstance) {
       defense: z.number(),
       speed: z.number(),
       level: z.number(),
+      movementMode: z.enum(["walk", "fly", "teleport"]).optional(),
+    })
+    .passthrough();
+
+  const tacticalStateUnitSchema = z
+    .object({
+      movementMode: z.enum(["walk", "fly", "teleport"]).optional(),
     })
     .passthrough();
 
@@ -9725,10 +9749,10 @@ export async function gameRoutes(app: FastifyInstance) {
             }
           }
         }),
-      units: z.array(z.record(z.unknown())).max(40),
+      units: z.array(tacticalStateUnitSchema).max(40),
       phase: z.enum(["player", "enemy"]),
       round: z.number().int().min(1).max(10000),
-      seed: z.number().int(),
+      seed: tacticalBattlefieldSeedSchema,
       actionCounter: z.number().int().min(0).max(1_000_000),
       log: z.array(z.record(z.unknown())).max(2000),
       difficulty: z.string(),
@@ -9753,29 +9777,52 @@ export async function gameRoutes(app: FastifyInstance) {
       // never produce a state /action rejects.
       party: z.array(tacticalCombatantSchema).min(1).max(20),
       enemies: z.array(tacticalCombatantSchema).min(1).max(20),
-      seed: z.number().int().optional(),
+      seed: tacticalBattlefieldSeedSchema.optional(),
       // Scene-derived battlefield theming (Round 2). Unknown strings normalize
       // in the engine (environment → default, formation → "line").
       environment: z.string().optional(),
       formation: z.string().optional(),
+      battlefield: z.unknown().optional(),
     });
-    const { chatId, party, enemies, seed, environment, formation } = schema.parse(req.body);
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+      return reply
+        .status(400)
+        .send({ error: `Invalid tactical battle request: ${field}${issue?.message ?? "invalid input"}` });
+    }
+    const { chatId, party, enemies, seed, environment, formation, battlefield } = parsed.data;
 
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
     const meta = parseMeta(chat.metadata);
-    const difficulty = ((meta.gameSetupConfig as Record<string, unknown>)?.difficulty as string) ?? "normal";
-    // Determinism only matters once the seed exists, so any source is fine here.
-    const resolvedSeed = seed ?? randomInt(0, 0x1_0000_0000);
-
-    const state = createTacticalCombat(party as unknown as Combatant[], enemies as unknown as Combatant[], {
-      seed: resolvedSeed,
-      difficulty,
-      environment,
-      formation,
+    const setupConfig = meta.gameSetupConfig as Record<string, unknown> | undefined;
+    const difficulty = (setupConfig?.difficulty as string) ?? "normal";
+    const preferences = resolveTacticalStartPreferences({
+      setup: setupConfig?.tacticalBattlefield,
+      requestSeed: seed,
+      requestBattlefield: battlefield,
+      randomSeed: () => randomInt(0, 0x1_0000_0000),
     });
+    if (!preferences.ok) return reply.status(400).send({ error: preferences.error });
+
+    let state: TacticalCombatState;
+    try {
+      state = createTacticalCombat(party as unknown as Combatant[], enemies as unknown as Combatant[], {
+        seed: preferences.seed,
+        difficulty,
+        environment,
+        formation,
+        battlefield: preferences.battlefield,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to generate the requested battlefield.";
+      logger.warn(err, "Tactical battlefield generation failed for chat %s", chatId);
+      return reply.status(400).send({ error: `Unable to generate tactical battlefield: ${message}` });
+    }
 
     logger.info(
       "Tactical combat started for chat %s (%d party, %d enemies, difficulty=%s, seed=%d)",
@@ -9783,7 +9830,7 @@ export async function gameRoutes(app: FastifyInstance) {
       party.length,
       enemies.length,
       difficulty,
-      resolvedSeed,
+      preferences.seed,
     );
 
     return { state };
@@ -9796,7 +9843,15 @@ export async function gameRoutes(app: FastifyInstance) {
       state: tacticalStateSchema,
       action: tacticalActionSchema,
     });
-    const { chatId, state, action } = schema.parse(req.body);
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+      return reply
+        .status(400)
+        .send({ error: `Invalid tactical action request: ${field}${issue?.message ?? "invalid input"}` });
+    }
+    const { chatId, state, action } = parsed.data;
 
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);

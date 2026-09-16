@@ -45,6 +45,7 @@ This file is a thin maintainer note for contributors using Codex. Canonical work
 
 ## AI-Generated Pull Request
 
+- Before requesting PR review or marking a draft ready, run CodeRabbit locally, address its findings, and rerun until the local review reports no findings. Keep the PR in draft if local review is blocked. This conserves the repository's shared CodeRabbit review quota; it does not replace required tests or the GitHub review gate.
 - **Never auto-check validation or test-plan checkboxes in a PR.** Those boxes are a to-do list for the human contributor, not evidence that work is done. If you generate a test plan, leave every box unchecked.
 - When preparing a PR description, list what needs manual verification clearly and explicitly. Write entries like "Manually verify X in browser" rather than "Works correctly."
 - If there is no linked issue or feature request, note that one should be opened before the PR is submitted. See `CONTRIBUTING.md § Before You Open a Pull Request`.

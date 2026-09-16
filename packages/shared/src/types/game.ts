@@ -2,9 +2,10 @@
 // Game Mode Types
 // ──────────────────────────────────────────────
 import type { GenerationParameters } from "./prompt.js";
-import type { CombatItemEffect, CombatMechanic, CombatDialogueCue } from "./combat-encounter.js";
+import type { CombatItemEffect, CombatMechanic, CombatDialogueCue, CombatStyleNotes } from "./combat-encounter.js";
 import type { SpotifySourceType } from "./spotify.js";
 import type { SpatialMapDraftSize, SpatialMapGroundingMode } from "./spatial-context.js";
+import type { TacticalBattlefieldBrief } from "../features/tactical-combat/types.js";
 
 /** The four main states a game can be in during a session. */
 export type GameActiveState = "exploration" | "dialogue" | "combat" | "travel_rest";
@@ -204,6 +205,8 @@ export interface GameSetupConfig {
   rating: "sfw" | "nsfw";
   /** Combat presentation preference (classic menu battles vs tactical grid battles). Defaults to "classic". */
   combatStyle?: GameCombatStyle;
+  /** Optional tactical battlefield preferences used for newly-created encounters. */
+  tacticalBattlefield?: import("../features/tactical-combat/types.js").TacticalBattlefieldSetup;
   /** Optional user prompt used to create the initial hierarchical world map draft. */
   spatialMapInstructions?: string;
   /** Campaign-scale map authority selected during New Game. Older saves default to "standard". */
@@ -501,6 +504,8 @@ export interface Combatant {
   elementAura?: { element: string; gauge: number; sourceId: string } | null;
   /** Tactical-combat class hint (fighter/knight/rogue/archer/mage/healer). Classic combat ignores this. */
   combatClass?: string;
+  /** Tactical traversal rule. Classic combat ignores this; missing means walk. */
+  movementMode?: import("../features/tactical-combat/types.js").TacticalMovementMode;
 }
 
 export interface CombatStatusEffect {
@@ -602,6 +607,15 @@ export interface GameCombatStateSnapshot {
   /** Encounter tier for context-bound combat music (#5161). Optional so
    *  snapshots from older clients stay valid. */
   musicTier?: string | null;
+  /** Combat UI style pinned for the active encounter so settings changes cannot remount a different engine. */
+  combatStyle?: GameCombatStyle | null;
+  /** Tactical scene data needed to resume exact generated/fallback battlefield setup after refresh. */
+  sceneEnvironment?: string | null;
+  sceneEnvironmentType?: string | null;
+  formation?: string | null;
+  battlefield?: TacticalBattlefieldBrief | null;
+  battlefieldError?: string | null;
+  styleNotes?: CombatStyleNotes | null;
 }
 
 /** Post-combat summary handed to the GM for narration. */
@@ -621,6 +635,8 @@ export interface CombatSummary {
     hp: number;
     maxHp: number;
   }>;
+  /** Resolved tactical terrain retained after the live combat snapshot is cleared. */
+  battlefieldSummary?: string;
   loot?: Array<{ name: string; quantity?: number }>;
 }
 

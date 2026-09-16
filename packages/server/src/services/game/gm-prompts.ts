@@ -52,6 +52,8 @@ export interface GmPromptContext {
   difficulty: string;
   /** "classic" (menu combat) or "tactical" (grid battle). Absent = classic. */
   combatStyle?: string;
+  /** Bounded summary of the accepted generated battlefield for later narration. */
+  tacticalBattlefieldContext?: string;
   genre: string;
   setting: string;
   tone: string;
@@ -467,6 +469,16 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   }
   gameBlockLines.push(`</game>`);
   sections.push(...gameBlockLines);
+
+  if (ctx.tacticalBattlefieldContext) {
+    sections.push(
+      `<tactical_battlefield>`,
+      `This is the accepted generated board for the active tactical encounter:`,
+      ctx.tacticalBattlefieldContext,
+      `Keep later combat narration consistent with this resolved board and its terrain.`,
+      `</tactical_battlefield>`,
+    );
+  }
 
   sections.push(wrapGameInstructions(normalizePromptText(ctx.gameSystemPrompt) || DEFAULT_GAME_SYSTEM_PROMPT));
 

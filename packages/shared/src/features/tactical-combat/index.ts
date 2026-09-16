@@ -20,6 +20,15 @@ export {
 
 export { runEnemyPhase } from "./ai.js";
 
+export { summarizeTacticalBattlefield } from "./battlefield-summary.js";
+
 export { deriveMovement, elementMultiplier, DIFFICULTY_DAMAGE_MULT } from "./math.js";
 export { CLASS_PROFILES, deriveClass, normalizeClass, type ClassProfile } from "./classes.js";
-export { gridDimensions } from "./grid-gen.js";
+export {
+  TACTICAL_BATTLEFIELD_GENERATOR_VERSION,
+  generateTacticalBattlefield,
+  gridDimensions,
+  validateTacticalBattlefieldBrief,
+  type GenerateTacticalBattlefieldResult,
+  type TacticalBattlefieldBriefValidation,
+} from "./grid-gen.js";

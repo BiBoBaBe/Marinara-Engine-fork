@@ -6,11 +6,11 @@ This records the agreed direction for [hybrid terrain #6265](https://github.com/
 
 The current `combatStyle` values are `classic` and `tactical`. Preserve them. Future summoning belongs to a separate participation setting, defaulting to party combat for older setups and saves. Creation presets can set both values without introducing another persisted mode enum:
 
-| Preset | Participation | Battlefield |
-| --- | --- | --- |
-| Party | Player and companions | Classic menus |
-| Summoning (planned) | Controlled creatures; trainer outside combat | Classic menus |
-| Tactical | Player and companions | Tactical grid |
+| Preset                     | Participation                                | Battlefield   |
+| -------------------------- | -------------------------------------------- | ------------- |
+| Party                      | Player and companions                        | Classic menus |
+| Summoning (planned)        | Controlled creatures; trainer outside combat | Classic menus |
+| Tactical                   | Player and companions                        | Tactical grid |
 | Tactical summoning (later) | Controlled creatures; trainer outside combat | Tactical grid |
 
 Do not expose unfinished combinations. Narrative companions and combat units are distinct; the first party member's array position must not become a permanent controller identity contract.
