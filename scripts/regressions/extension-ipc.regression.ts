@@ -19,7 +19,10 @@ import { appendFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateTextTokens } from "../../packages/shared/dist/utils/token-estimator.js";
+import {
+  estimateTextTokens,
+  getSerializedTextTokenEstimator,
+} from "../../packages/shared/dist/utils/token-estimator.js";
 import {
   extractProtocolLines,
   resolveSandboxPollDelay,
@@ -206,7 +209,7 @@ try {
       id: "ipc-regression",
       name: "IPC Regression",
       contentHash: "test",
-      tokenEstimatorSource: `(${estimateTextTokens.toString()})`,
+      tokenEstimatorSource: getSerializedTextTokenEstimator(),
       source: `
         marinara.log.info("runner-alive");
         const samples = ["", "hello, world hi this is test", "안녕하세요", "漢字", "ひらがな", "カタカナ", "😀", "hello 안녕 漢あ", " abc "];

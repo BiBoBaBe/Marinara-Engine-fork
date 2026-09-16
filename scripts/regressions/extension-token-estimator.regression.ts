@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
-import { estimateTextTokens } from "../../packages/shared/dist/utils/token-estimator.js";
+import {
+  estimateTextTokens,
+  getSerializedTextTokenEstimator,
+} from "../../packages/shared/dist/utils/token-estimator.js";
 import type {
   PersonalExtensionTokenApi,
   PersonalExtension,
@@ -24,9 +27,9 @@ const expected = samples.map(estimateTextTokens);
 const typedApi: PersonalExtensionTokenApi = { estimateTextTokens };
 assert.equal(typedApi.estimateTextTokens("안녕하세요"), 3);
 const isolated = runInNewContext(
-  `(${estimateTextTokens.toString()})`,
+  getSerializedTextTokenEstimator(),
 ) as PersonalExtensionTokenApi["estimateTextTokens"];
-assert.deepEqual(samples.map(isolated), expected, "serialized estimator must have no external dependencies");
+assert.deepEqual(samples.map(isolated), expected, "serialized estimator must include all external dependencies");
 
 // Execute the actual Full page access API factory without loading React or a GUI.
 const injector = readFileSync(
