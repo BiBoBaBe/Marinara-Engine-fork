@@ -127,6 +127,7 @@ export * from "./utils/xml-wrapper.js";
 export * from "./utils/music-score.js";
 export * from "./utils/agent-cost.js";
 export * from "./utils/token-estimator.js";
+export * from "./utils/character-token-estimator.js";
 export * from "./utils/regex-replacement.js";
 export * from "./utils/skill-check-format.js";
 export * from "./utils/skill-check-tag.js";
