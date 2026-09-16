@@ -12,14 +12,13 @@ To write and import your own package, use the [Personal Extension authoring guid
 
 ## Estimate text tokens
 
-Browser, Full page access, and Server extensions can call the same lightweight estimator used by the Engine:
+Browser, Full page access, and Server Personal Extensions can use Marinara's built-in text token estimator:
 
 ```js
-const tokens = marinara.estimateTextTokens("안녕하세요"); // 3
-const label = `~${tokens.toLocaleString()} tokens`;
+const tokens = marinara.estimateTextTokens(text);
 ```
 
-The signature is `estimateTextTokens(text: string): number`, also described by the exported `PersonalExtensionTokenApi` type in `@marinara-engine/shared`. The call is synchronous and needs no extra capability. It counts raw Unicode code points without trimming and returns a rounded-up, model-agnostic estimate, not an exact tokenizer result. Do not import Engine modules at runtime. On older Engines, check `typeof marinara.estimateTextTokens === "function"` before calling it.
+The signature is `estimateTextTokens(text: string): number`, also described by the exported `PersonalExtensionTokenApi` type in `@marinara-engine/shared`. The call is synchronous, needs no extra capability, and returns Marinara's model-agnostic estimated token count rather than an exact tokenizer result. On older Engines, check `typeof marinara.estimateTextTokens === "function"` before calling it.
 
 ## Review and enable
 
