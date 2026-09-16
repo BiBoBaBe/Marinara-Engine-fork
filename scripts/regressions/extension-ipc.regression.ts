@@ -19,6 +19,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { estimateTextTokens } from "../../packages/shared/dist/utils/token-estimator.js";
 import {
   extractProtocolLines,
   resolveSandboxPollDelay,
@@ -205,7 +206,16 @@ try {
       id: "ipc-regression",
       name: "IPC Regression",
       contentHash: "test",
-      source: 'marinara.log.info("runner-alive");',
+      tokenEstimatorSource: `(${estimateTextTokens.toString()})`,
+      source: `
+        marinara.log.info("runner-alive");
+        const samples = ["", "hello, world hi this is test", "안녕하세요", "漢字", "ひらがな", "カタカナ", "😀", "hello 안녕 漢あ", " abc "];
+        marinara.log.info("token-counts", samples.map(text => marinara.estimateTextTokens(text)));
+        let codeGenerationBlocked = false;
+        try { marinara.estimateTextTokens.constructor("return process")(); }
+        catch { codeGenerationBlocked = true; }
+        marinara.log.info("estimator-isolated", codeGenerationBlocked);
+      `,
     })}\n`,
   );
   assert.ok(
@@ -216,6 +226,26 @@ try {
     await waitForLine(outputPath, (line) => line.includes("runner-alive"), 10_000),
     "extension log output reaches the output file",
   );
+
+  const countsLine = await waitForLine(outputPath, (line) => line.includes("token-counts"), 10_000);
+  assert.ok(countsLine);
+  assert.deepEqual(
+    JSON.parse(countsLine).args[1],
+    [
+      "",
+      "hello, world hi this is test",
+      "안녕하세요",
+      "漢字",
+      "ひらがな",
+      "カタカナ",
+      "😀",
+      "hello 안녕 漢あ",
+      " abc ",
+    ].map(estimateTextTokens),
+  );
+  const isolatedLine = await waitForLine(outputPath, (line) => line.includes("estimator-isolated"), 10_000);
+  assert.ok(isolatedLine);
+  assert.equal(JSON.parse(isolatedLine).args[1], true);
 
   // Let the hot window lapse so the next message exercises the IDLE cadence,
   // then require pickup comfortably within one idle interval plus slack.
