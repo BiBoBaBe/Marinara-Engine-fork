@@ -4,9 +4,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
-### Added
-
-- Personal Extensions can use Marinara's built-in text token estimator through `marinara.estimateTextTokens(text)`.
+- Personal Extensions can use Marinara's built-in text token estimator through `marinara.estimateTextTokens(text)` (#6257).
+- Character Library previews preserve saved portrait crops without stretching them in compact or mobile layouts. Library and Recent Chats hover feedback keeps image sizes stable to avoid transient resampling artifacts (#6247, #6249).
+- Memory Recall reuses a continuity summary when its sources are unchanged and it still fits the adjusted context budget, avoiding duplicate entries and unnecessary summary requests (#6250).
 
 ## [2.4.6]
 
