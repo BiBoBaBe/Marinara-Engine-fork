@@ -4039,7 +4039,7 @@ export function GameSetupWizard({
                     <button
                       type="button"
                       onClick={handleExportSetup}
-                      disabled={isLoading}
+                      disabled={isLoading || !tacticalBattlefieldSeedValid}
                       className={cn(GAME_SETUP_GHOST_BUTTON_CLASS, "disabled:cursor-wait disabled:opacity-40")}
                     >
                       <Download size={14} />

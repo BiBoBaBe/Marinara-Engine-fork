@@ -78,8 +78,9 @@ async function chooseClassicForNextBattle(page: Page, testInfo: TestInfo) {
   await page.getByRole("button", { name: "Close chat settings", exact: true }).click();
 }
 
-for (const legacySnapshot of [false, true]) {
-  test(`GameSurface restores ${legacySnapshot ? "legacy" : "current"} pending and accepted tactical terrain without changing the active battle style`, async ({
+for (const variant of ["current", "legacy", "invalid-brief"] as const) {
+  const legacySnapshot = variant === "legacy";
+  test(`GameSurface restores ${variant} pending and accepted tactical terrain without changing the active battle style`, async ({
     page,
     request,
   }, testInfo) => {
@@ -122,8 +123,14 @@ for (const legacySnapshot of [false, true]) {
         sceneEnvironment: "A ruined gate in a broken mountain pass",
         sceneEnvironmentType: "ruins",
         formation: "line",
-        battlefield: null,
-        battlefieldError: "The GM's terrain request was invalid: Unknown battlefield terrain.",
+        battlefield:
+          variant === "invalid-brief"
+            ? ({
+                features: [{ terrain: "lava", placement: "center", shape: "patch" }],
+              } as unknown as GameCombatStateSnapshot["battlefield"])
+            : null,
+        battlefieldError:
+          variant === "invalid-brief" ? null : "The GM's terrain request was invalid: Unknown battlefield terrain.",
         styleNotes: {
           environmentType: "ruins",
           atmosphere: "dark",

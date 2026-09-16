@@ -43,7 +43,7 @@ const party = [
 ];
 const enemies = [{ id: "guard", name: "Guard", hp: 12, maxHp: 12, attack: 6, defense: 4, speed: 4, level: 1 }];
 
-async function resolvePromptCombatStyle(chatMetadata: Record<string, unknown>) {
+async function resolvePromptContext(chatMetadata: Record<string, unknown>) {
   const runtime = await injectGameGmPromptRuntime({
     messages: [{ role: "system", content: "placeholder" }],
     chatId: "prompt-style-regression",
@@ -63,7 +63,7 @@ async function resolvePromptCombatStyle(chatMetadata: Record<string, unknown>) {
     personaName: "Hero",
     resolvePromptMacros: (value) => value,
   });
-  return runtime.gmCtx.combatStyle;
+  return runtime.gmCtx;
 }
 
 try {
@@ -110,35 +110,45 @@ try {
   assert.match(summarizeTacticalBattlefield(state) ?? "", /Accepted features: forest center patch/);
   assert.match(summarizeTacticalBattlefield(state) ?? "", /Resolved terrain:/);
 
+  const activeContext = await resolvePromptContext({
+    gameActiveState: "combat",
+    gameCombatStyle: "classic",
+    gameCombatState: { combatStyle: "tactical" },
+    gameTacticalCombatSnapshot: state,
+  });
   assert.equal(
-    await resolvePromptCombatStyle({
-      gameActiveState: "combat",
-      gameCombatStyle: "classic",
-      gameCombatState: { combatStyle: "tactical" },
-      gameTacticalCombatSnapshot: state,
-    }),
+    activeContext.combatStyle,
     "tactical",
     "An active encounter's pinned style wins over the next-battle setting",
   );
+  assert.match(activeContext.tacticalBattlefieldContext ?? "", /Accepted features: forest center patch/);
   assert.equal(
-    await resolvePromptCombatStyle({
-      gameActiveState: "combat",
-      gameCombatStyle: "classic",
-      gameCombatState: {},
-      gameTacticalCombatSnapshot: state,
-    }),
+    (
+      await resolvePromptContext({
+        gameActiveState: "combat",
+        gameCombatStyle: "classic",
+        gameCombatState: {},
+        gameTacticalCombatSnapshot: state,
+      })
+    ).combatStyle,
     "tactical",
     "A legacy active tactical snapshot supplies the missing style pin",
   );
+  const explorationContext = await resolvePromptContext({
+    gameActiveState: "exploration",
+    gameCombatStyle: "classic",
+    gameCombatState: { combatStyle: "tactical" },
+    gameTacticalCombatSnapshot: state,
+  });
   assert.equal(
-    await resolvePromptCombatStyle({
-      gameActiveState: "exploration",
-      gameCombatStyle: "classic",
-      gameCombatState: { combatStyle: "tactical" },
-      gameTacticalCombatSnapshot: state,
-    }),
+    explorationContext.combatStyle,
     "classic",
     "Outside combat, the runtime setting continues to select the next battle style",
+  );
+  assert.equal(
+    explorationContext.tacticalBattlefieldContext,
+    undefined,
+    "Exploration must not receive stale battlefield context",
   );
 
   const invalidModelMovement = validateTacticalEncounterBlueprint({

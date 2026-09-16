@@ -345,7 +345,10 @@ export async function injectGameGmPromptRuntime(args: {
       pinnedCombatStyle ??
       legacyTacticalCombatStyle ??
       ((args.chatMetadata.gameCombatStyle as string) || (setupConfig?.combatStyle as string) || "classic"),
-    tacticalBattlefieldContext: summarizeTacticalBattlefield(args.chatMetadata.gameTacticalCombatSnapshot),
+    tacticalBattlefieldContext:
+      gameActiveState === "combat"
+        ? summarizeTacticalBattlefield(args.chatMetadata.gameTacticalCombatSnapshot)
+        : undefined,
     genre: (setupConfig?.genre as string) || "fantasy",
     setting: (setupConfig?.setting as string) || "original",
     tone: (setupConfig?.tone as string) || "balanced",

@@ -564,7 +564,7 @@ test("Tactical setup imports and submits seed zero, size and terrain guidance", 
       ),
     });
   await expect(wizard.getByPlaceholder("Name your adventure...", { exact: true })).toHaveValue("River crossing");
-  const { next } = stepNavigation(wizard);
+  const { next, back } = stepNavigation(wizard);
   await next();
   const seed = wizard.getByLabel("Battlefield seed", { exact: true });
   await expect(seed).toHaveValue("0");
@@ -572,6 +572,11 @@ test("Tactical setup imports and submits seed zero, size and terrain guidance", 
   await expect(wizard.getByLabel("Terrain guidance", { exact: true })).toHaveValue("Ruins beside a forest clearing.");
   await seed.fill("1.5");
   await expect(wizard.getByRole("alert")).toContainText(/whole number/i);
+  for (let step = 0; step < 5; step++) await next();
+  await expect(wizard.getByRole("button", { name: "Download setup", exact: true })).toBeDisabled();
+  await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
+  for (let step = 0; step < 5; step++) await back();
+  await expect(wizard.getByRole("heading", { name: "World", exact: true })).toBeVisible();
   await seed.fill("0");
   await expect(wizard.getByRole("alert")).toHaveCount(0);
   await wizard.getByRole("button", { name: /^Classic/ }).click();
@@ -581,6 +586,7 @@ test("Tactical setup imports and submits seed zero, size and terrain guidance", 
   await wizard.getByLabel("Terrain guidance", { exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("hybrid-terrain-setup.png") });
   for (let step = 0; step < 5; step++) await next();
+  await expect(wizard.getByRole("button", { name: "Download setup", exact: true })).toBeEnabled();
   await wizard.getByRole("button", { name: /Start/u }).click();
   const result = JSON.parse((await page.getByTestId("wizard-result").textContent()) ?? "{}");
   expect(result.config.combatStyle).toBe("tactical");

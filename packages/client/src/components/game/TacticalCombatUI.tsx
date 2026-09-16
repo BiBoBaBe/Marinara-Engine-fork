@@ -966,7 +966,7 @@ export function TacticalCombatUI({
     setForecastTargetId(null);
   }, []);
 
-  // ── Restart the whole battle (fresh seed/terrain from the server) ──
+  // ── Restart the whole battle with the accepted seed and terrain ──
   // Tears down all transient animation/selection/dialog state, clears the current
   // battle, then re-launches with the same props. Works for snapshot-restored
   // battles too (it drives launchBattle directly, independent of `initialState`).
@@ -1901,7 +1901,7 @@ export function TacticalCombatUI({
           <div className="w-full max-w-xs rounded-2xl border border-[var(--border)] bg-slate-900 p-5 text-center">
             <RotateCcw className="mx-auto mb-2 h-6 w-6 text-[var(--primary)]" />
             <p className="mb-4 text-sm text-white/90">
-              {localizeUi("ui.game.tacticalcombatui.restartThisBattleFromTheBeginningAFreshBattlefield")}
+              {localizeUi("ui.game.tacticalcombatui.restartCurrentBattlefield")}
             </p>
             <div className="flex gap-2">
               <button

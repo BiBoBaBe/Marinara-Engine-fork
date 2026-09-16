@@ -405,6 +405,9 @@ export function generateTacticalBattlefield(
     for (const tile of featureTiles(grid, feature)) {
       const key = tileKey(tile.x, tile.y);
       const existing = grid.tiles[tile.y]![tile.x]!;
+      // A brief declares constraints, not ordered paint layers. Silently
+      // overwriting one landmark would violate it; the UI offers explicit
+      // generated-terrain fallback when constraints conflict.
       if (protectedTiles.has(key) && existing !== feature.terrain) {
         return { ok: false, error: "Battlefield features overlap with different terrain." };
       }

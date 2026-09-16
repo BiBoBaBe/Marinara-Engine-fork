@@ -4667,12 +4667,14 @@ function GameSurfaceComponent({
     setCombatPinnedStyle(restoredCombatStyle);
     const restoredEnvironmentType =
       snapshot.sceneEnvironmentType ?? snapshot.styleNotes?.environmentType?.trim() ?? null;
+    const restoredBattlefield = validateTacticalBattlefieldBrief(snapshot.battlefield ?? undefined);
     setCombatSceneMeta({
       environment: snapshot.sceneEnvironment ?? "",
       environmentType: restoredEnvironmentType || null,
       formation: snapshot.formation ?? null,
-      battlefield: snapshot.battlefield ?? null,
-      battlefieldError: snapshot.battlefieldError ?? null,
+      battlefield: restoredBattlefield.ok ? (restoredBattlefield.brief ?? null) : null,
+      // Invalid saved terrain must stop for explicit recovery, just like a bad GM brief.
+      battlefieldError: restoredBattlefield.ok ? (snapshot.battlefieldError ?? null) : restoredBattlefield.error,
       styleNotes: snapshot.styleNotes ?? null,
     });
     if (snapshot.startMessageId) setCombatStartMessageId(snapshot.startMessageId);
