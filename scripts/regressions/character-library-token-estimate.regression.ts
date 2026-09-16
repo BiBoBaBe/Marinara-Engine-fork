@@ -38,6 +38,23 @@ assert.ok(
   estimateCharacterCardTokens(fullCard) > estimateCharacterCardTokens(compactFieldsOnly),
   "the full-card estimate must include text omitted from compact catalog rows",
 );
+const compactEstimate = estimateCharacterCardTokens(compactFieldsOnly);
+for (const field of ["mes_example", "alternate_greetings", "system_prompt", "post_history_instructions"] as const) {
+  assert.ok(
+    estimateCharacterCardTokens({ ...compactFieldsOnly, [field]: fullCard[field] }) > compactEstimate,
+    `${field} contributes independently to the full-card estimate`,
+  );
+}
+for (const field of ["backstory", "appearance", "world", "depth_prompt"] as const) {
+  assert.ok(
+    estimateCharacterCardTokens({ ...compactFieldsOnly, extensions: { [field]: fullCard.extensions[field] } }) > compactEstimate,
+    `extensions.${field} contributes independently to the full-card estimate`,
+  );
+}
+assert.ok(
+  estimateCharacterCardTokens({ ...compactFieldsOnly, character_book: { entries: fullCard.character_book.entries } }) > compactEstimate,
+  "character-book entries contribute without relying on the book title or description",
+);
 
 const catalogSource = readFileSync(
   new URL("../../packages/server/src/services/storage/character-catalog.ts", import.meta.url),
