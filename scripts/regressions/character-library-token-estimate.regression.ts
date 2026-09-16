@@ -58,3 +58,23 @@ assert.match(
   /tokenEstimate:\s*char\.tokenEstimate\s*\?\?\s*estimateCharacterCardTokens\(char\.parsed\)/u,
   "the paginated library must use the cached full-card estimate and retain the full-detail fallback",
 );
+
+const charactersPanelSource = readFileSync(
+  new URL("../../packages/client/src/components/panels/CharactersPanel.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(
+  charactersPanelSource,
+  /const tokenEstimate = char\.tokenEstimate;/u,
+  "the character panel root rows must display the catalog estimate",
+);
+assert.match(
+  charactersPanelSource,
+  /const memberTokenEstimate = fullMember\?\.tokenEstimate \?\? null;/u,
+  "the character panel folder rows must display the catalog estimate",
+);
+assert.doesNotMatch(
+  charactersPanelSource,
+  /estimateCharacterCardTokens\((?:char|fullMember)\.parsed\)/u,
+  "the character panel must not recalculate token badges from compact catalog fields",
+);

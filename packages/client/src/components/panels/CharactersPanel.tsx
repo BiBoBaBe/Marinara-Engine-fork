@@ -62,7 +62,7 @@ import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import type { CharacterCatalogEntry } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
-import { estimateCharacterCardTokens, formatEstimatedTokens } from "../../lib/character-token-count";
+import { formatEstimatedTokens } from "../../lib/character-token-count";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
@@ -1106,7 +1106,7 @@ export function CharactersPanel() {
                     : getCharacterTitle(member);
                   const memberPreviewMetadata = fullMember ? getCharacterPreviewMetadata(fullMember) : null;
                   const memberTags = fullMember ? getCharacterTags(fullMember) : [];
-                  const memberTokenEstimate = fullMember ? estimateCharacterCardTokens(fullMember.parsed) : null;
+                  const memberTokenEstimate = fullMember?.tokenEstimate ?? null;
                   const memberNameColor = (fullMember?.parsed.extensions?.nameColor as string) || undefined;
                   const memberAvatarCrop = normalizeAvatarCrop(fullMember?.parsed.extensions?.avatarCrop) ?? undefined;
                   return (
@@ -1457,7 +1457,7 @@ export function CharactersPanel() {
           const isFavorite = !!char.parsed.extensions?.fav;
           const avatarUrl = char.avatarPath;
           const previewMetadata = getCharacterPreviewMetadata(char);
-          const tokenEstimate = estimateCharacterCardTokens(char.parsed);
+          const tokenEstimate = char.tokenEstimate;
 
           return (
             <div
