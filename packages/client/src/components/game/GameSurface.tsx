@@ -8816,12 +8816,6 @@ function GameSurfaceComponent({
   useEffect(() => {
     if (!combatUiActive || !activeChatId || !combatStartMessageId) return;
 
-    const combatSetupConfig = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
-    const effectiveCombatStyle: GameCombatStyle =
-      combatPinnedStyle ??
-      (chatMeta.gameCombatStyle as GameCombatStyle | undefined) ??
-      (combatSetupConfig?.combatStyle as GameCombatStyle | undefined) ??
-      "classic";
     if (effectiveCombatStyle !== "tactical") return;
 
     // Only for a FRESH battle — a restored in-progress snapshot keeps its background.
@@ -8883,9 +8877,9 @@ function GameSurfaceComponent({
     activeChatId,
     combatStartMessageId,
     combatSceneMeta,
-    combatPinnedStyle,
-    chatMeta.gameCombatStyle,
-    chatMeta.gameSetupConfig,
+    effectiveCombatStyle,
+    combatSetupConfig?.genre,
+    combatSetupConfig?.setting,
     chatMeta.gameTacticalCombatSnapshot,
     chatMeta.gameWorldOverview,
     chat.name,
