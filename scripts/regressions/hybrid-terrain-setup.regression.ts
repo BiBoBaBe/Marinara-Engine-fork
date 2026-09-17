@@ -25,7 +25,9 @@ const shared = buildGameSetupShareFile(source, "2026-09-16T00:00:00.000Z");
 const imported = parseGameSetupShareFileJson(JSON.stringify(shared));
 assert.deepEqual(imported.setup.config.tacticalBattlefield, config.tacticalBattlefield);
 i18n.addResourceBundle("en", "translation", {
+  "ui.game.gamesetupsummary.auto": "Localized automatic battlefield",
   "ui.game.gamesetupsummary.sizeLarge": "Localized large battlefield",
+  "ui.game.gamesetupsummary.sizeMedium": "Localized medium battlefield",
 });
 const summary = buildGameSetupSummarySections(source).flatMap((section) => section.rows);
 assert.ok(
@@ -37,6 +39,20 @@ assert.ok(
   "The reusable summary uses the localized size label",
 );
 assert.ok(summary.some((row) => String(row.value).includes("forest clearing")));
+
+for (const [size, expectedLabel] of [
+  [undefined, "Localized automatic battlefield"],
+  ["oversized", "Localized medium battlefield"],
+  ["toString", "Localized medium battlefield"],
+] as const) {
+  const savedConfig = { ...config, tacticalBattlefield: { size } } as unknown as GameSetupConfig;
+  assert.ok(
+    buildGameSetupSummarySections({ ...source, config: savedConfig })
+      .flatMap((section) => section.rows)
+      .some((row) => row.value === expectedLabel),
+    "Older malformed size values retain a readable localized summary",
+  );
+}
 
 for (const tacticalBattlefield of [
   { seed: -1 },
