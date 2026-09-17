@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { capabilityPackageManifestSchema } from "../../packages/shared/src/index.js";
 import { executeToolCalls } from "../../packages/server/src/services/tools/tool-executor.js";
 import {
   capabilityToolDefs,
@@ -51,8 +52,14 @@ assert.deepEqual(defs[0], {
 });
 
 // ── Registration refuses what the model could never be told about ──
-assert.throws(() => registerCapabilityTool(PACKAGE_ID, { name: "Set Time", description: "x", parameters, handler: () => null }), /is invalid/);
-assert.throws(() => registerCapabilityTool(PACKAGE_ID, { name: "ok_name", description: "  ", parameters, handler: () => null }), /needs a description/);
+assert.throws(
+  () => registerCapabilityTool(PACKAGE_ID, { name: "Set Time", description: "x", parameters, handler: () => null }),
+  /is invalid/,
+);
+assert.throws(
+  () => registerCapabilityTool(PACKAGE_ID, { name: "ok_name", description: "  ", parameters, handler: () => null }),
+  /needs a description/,
+);
 assert.throws(
   () =>
     registerCapabilityTool(PACKAGE_ID, {
@@ -106,7 +113,12 @@ releaseThrower();
 release();
 assert.equal(isCapabilityTool("world_clock_set_time"), false);
 registerCapabilityTool(PACKAGE_ID, { name: "set_time", description: "x", parameters, handler: () => null });
-registerCapabilityTool(PACKAGE_ID, { name: "other", description: "x", parameters: { type: "object" }, handler: () => null });
+registerCapabilityTool(PACKAGE_ID, {
+  name: "other",
+  description: "x",
+  parameters: { type: "object" },
+  handler: () => null,
+});
 assert.equal(capabilityToolDefs().length, 2);
 releaseCapabilityTools(PACKAGE_ID);
 assert.deepEqual(capabilityToolDefs(), []);
@@ -114,7 +126,9 @@ assert.deepEqual(capabilityToolDefs(), []);
 // ── Wiring that needs a running server to exercise is pinned by shape ──
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
-const runtimeSource = read("../../packages/server/src/services/capability-packages/capability-module-runtime.service.ts");
+const runtimeSource = read(
+  "../../packages/server/src/services/capability-packages/capability-module-runtime.service.ts",
+);
 assert.match(
   runtimeSource,
   /registerTool: \(registration\) => \{[\s\S]*permissions\?\.includes\("tools"\)[\s\S]*registerCapabilityTool\(installed\.id, registration\)/u,
@@ -190,5 +204,32 @@ assert.match(String(collided?.result), /custom tool/);
 assert.doesNotMatch(String(collided?.result), /package handler/, "the package handler must not run");
 hijack();
 releaseCapabilityTools("world");
+
+// ── The declared API version is what keeps a tools package off an Engine without registerTool ──
+const manifestBase = {
+  schemaVersion: 2 as const,
+  id: "world-clock",
+  name: "World Clock",
+  version: "1.0.0",
+  description: "Capability tool regression fixture.",
+  engine: { min: "2.4.0", maxExclusive: "3.0.0" },
+  kind: ["agent"],
+  capabilityApi: { major: 1, minor: 19 },
+  builtAgainst: { engineVersion: "2.4.5", engineCommit: "a".repeat(40) },
+  entrypoints: { server: "server.mjs" },
+  files: [{ path: "server.mjs", sha256: "b".repeat(64), bytes: 10 }],
+  permissions: ["tools"],
+};
+assert.doesNotThrow(() => capabilityPackageManifestSchema.parse(manifestBase));
+assert.throws(
+  () => capabilityPackageManifestSchema.parse({ ...manifestBase, capabilityApi: { major: 1, minor: 18 } }),
+  /permission requires schemaVersion 2 and capabilityApi 1\.19 or newer/,
+);
+const { capabilityApi: _api, builtAgainst: _built, ...v1Manifest } = manifestBase;
+assert.throws(
+  () => capabilityPackageManifestSchema.parse({ ...v1Manifest, schemaVersion: 1 }),
+  /permission requires schemaVersion 2 and capabilityApi 1\.19 or newer/,
+  "a schemaVersion 1 manifest must not be able to declare the tools permission",
+);
 
 console.info("Capability tool runtime regression passed");

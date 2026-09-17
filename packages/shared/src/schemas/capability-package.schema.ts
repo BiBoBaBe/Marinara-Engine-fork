@@ -280,6 +280,19 @@ export const capabilityPackageManifestSchema = z
         });
       }
     }
+    // `registerTool` only exists on an Engine this new, so the declared API version is what stops a
+    // package shipping tools and then failing to activate on an older install. Enforced here rather
+    // than left to the documentation, which cannot refuse anything.
+    if (manifest.permissions.includes("tools")) {
+      const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
+      if (!api || api.major < 1 || (api.major === 1 && api.minor < 19)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["permissions"],
+          message: 'The "tools" permission requires schemaVersion 2 and capabilityApi 1.19 or newer',
+        });
+      }
+    }
     if (manifest.contributions?.gameSurface?.prepareBeforeStart) {
       const api = manifest.schemaVersion === 2 ? manifest.capabilityApi : null;
       if (!api || api.major < 1 || (api.major === 1 && api.minor < 17)) {
