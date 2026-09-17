@@ -575,7 +575,8 @@ async function loadToolDefinitions(args: {
         },
       });
     } catch (error) {
-      registeredToolSources.delete(customTool.name);
+      // Keep enabled custom names reserved even if their schema needs repair.
+      // Fixing a schema must not silently switch this name to a package handler.
       logger.warn(
         error,
         '[tools] Skipping custom tool "%s" with invalid parameter schema: %s',

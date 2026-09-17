@@ -200,6 +200,30 @@ function baseArgs(overrides: Partial<ResolveGenerationToolsArgs>): ResolveGenera
       undefined,
       "disabling chat tools cannot expose a package handler under a custom tool's name",
     );
+    for (const enableTools of [false, true]) {
+      const invalidCustom = await resolveGenerationTools(
+        baseArgs({
+          chatMetadata: { enableTools },
+          customToolsStore: {
+            listEnabled: async () => [
+              {
+                name: "fixture_clock",
+                description: "My clock",
+                parametersSchema: "invalid",
+                executionType: "static",
+                webhookUrl: null,
+                staticResult: "noon",
+                scriptBody: null,
+              },
+            ],
+          },
+        }),
+      );
+      assert.ok(
+        !names(invalidCustom.toolDefs).includes("fixture_clock"),
+        "an invalid enabled custom tool still owns its name",
+      );
+    }
     const unsupported = await resolveGenerationTools(baseArgs({ nativeToolsAvailable: false }));
     assert.equal(unsupported.toolsAttached, false, "package tools respect the provider's native tool capability");
     assert.equal(unsupported.toolDefs, undefined);
