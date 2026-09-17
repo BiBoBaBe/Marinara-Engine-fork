@@ -73,16 +73,17 @@ export function validateTacticalEncounterBlueprint(value: unknown): TacticalEnco
     return { ok: false, error: "battlefield must be an object" };
   }
 
-  const briefResult = validateTacticalBattlefieldBrief(blueprint.battlefield.terrainBrief);
+  const battlefield = { ...blueprint.battlefield };
+  const briefResult = validateTacticalBattlefieldBrief(battlefield.terrainBrief);
   if (!briefResult.ok) {
-    delete blueprint.battlefield.terrainBrief;
-    blueprint.battlefield.terrainBriefError = `The GM's terrain request was invalid: ${briefResult.error}`;
-    return { ok: true, blueprint };
+    delete battlefield.terrainBrief;
+    battlefield.terrainBriefError = `The GM's terrain request was invalid: ${briefResult.error}`;
+    return { ok: true, blueprint: { ...blueprint, battlefield } };
   }
-  delete blueprint.battlefield.terrainBriefError;
-  if (briefResult.brief) blueprint.battlefield.terrainBrief = briefResult.brief;
-  else delete blueprint.battlefield.terrainBrief;
-  return { ok: true, blueprint };
+  delete battlefield.terrainBriefError;
+  if (briefResult.brief) battlefield.terrainBrief = briefResult.brief;
+  else delete battlefield.terrainBrief;
+  return { ok: true, blueprint: { ...blueprint, battlefield } };
 }
 
 export type TacticalStartPreferences =

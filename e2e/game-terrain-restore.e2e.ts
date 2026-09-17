@@ -217,3 +217,147 @@ for (const variant of ["current", "legacy", "invalid-brief"] as const) {
     }
   });
 }
+
+test("GameSurface turns an invalid generated terrain brief without an error field into an explicit fallback", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  page.setDefaultTimeout(15_000);
+  const created = await request.post("/api/game/create", {
+    data: {
+      name: "Generated invalid terrain browser proof",
+      setupConfig: {
+        genre: "Fantasy",
+        setting: "A shattered lava bridge",
+        tone: "Adventure",
+        difficulty: "normal",
+        playerGoals: "Hold the bridge",
+        gmMode: "standalone",
+        rating: "sfw",
+        partyCharacterIds: [],
+        combatStyle: "tactical",
+        tacticalBattlefield: { seed: 0, size: "large" },
+      },
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const chatId = (await created.json()).sessionChat.id as string;
+
+  try {
+    const messageResponse = await request.post(`/api/chats/${chatId}/messages`, {
+      data: {
+        role: "assistant",
+        content: "Lava hisses under the shattered bridge as enemies close in. [state: combat]",
+      },
+    });
+    expect(messageResponse.ok(), await messageResponse.text()).toBeTruthy();
+
+    const patched = await request.patch(`/api/chats/${chatId}/metadata`, {
+      data: {
+        gameSessionStatus: "active",
+        gameIntroPresented: true,
+        gameActiveState: "exploration",
+        gameImageAutoGenerationEnabled: false,
+        gameStoryboardAutoIllustrationsEnabled: false,
+        gameCombatStyle: "tactical",
+        gameCombatState: null,
+        gameTacticalCombatSnapshot: null,
+      },
+    });
+    expect(patched.ok(), await patched.text()).toBeTruthy();
+
+    const encounterRequests: unknown[] = [];
+    await page.route("**/api/encounter/init", (route) => {
+      encounterRequests.push(route.request().postDataJSON());
+      return route.fulfill({
+        json: {
+          combatState: {
+            party: [
+              {
+                name: "Terrain Restorer",
+                hp: 24,
+                maxHp: 24,
+                attacks: [{ name: "Slash", type: "single-target", description: "A careful blade strike." }],
+                items: [],
+                statuses: [],
+                isPlayer: true,
+                class: "fighter",
+                movementMode: "walk",
+              },
+            ],
+            enemies: [
+              {
+                name: "Ruin Guard",
+                hp: 18,
+                maxHp: 18,
+                attacks: [{ name: "Spear", type: "single-target", description: "A guarded thrust." }],
+                statuses: [],
+                description: "A guard holding the broken bridge.",
+                sprite: "🛡️",
+                class: "knight",
+                movementMode: "walk",
+              },
+            ],
+            environment: "A shattered lava bridge",
+            styleNotes: {
+              environmentType: "ruins",
+              atmosphere: "tense",
+              timeOfDay: "night",
+              weather: "clear",
+            },
+            itemEffects: [],
+            mechanics: [],
+            dialogueCues: [],
+            visuals: { encounterTier: "common" },
+            battlefield: {
+              formation: "line",
+              terrainBrief: {
+                features: [{ terrain: "lava", placement: "center", shape: "patch" }],
+              },
+            },
+          },
+        },
+      });
+    });
+
+    const startRequests: unknown[] = [];
+    page.on("request", (browserRequest) => {
+      if (browserRequest.url().endsWith("/api/game/combat/tactical/start")) {
+        startRequests.push(browserRequest.postDataJSON());
+      }
+    });
+
+    await openGame(page, chatId, testInfo);
+    const fallback = page.getByRole("button", { name: "Use generated terrain", exact: true });
+    await expect(fallback).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByText(/Unknown battlefield terrain/i)).toBeVisible();
+    expect(encounterRequests).toHaveLength(1);
+    expect(startRequests).toEqual([]);
+    expect((await readMetadata(request, chatId)).gameTacticalCombatSnapshot).toBeFalsy();
+    await expect
+      .poll(async () => (await readMetadata(request, chatId)).gameCombatState?.battlefieldError)
+      .toMatch(/Unknown battlefield terrain/i);
+
+    await page.reload();
+    await expect(fallback).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByText(/Unknown battlefield terrain/i)).toBeVisible();
+    expect(encounterRequests).toHaveLength(1);
+    expect(startRequests).toEqual([]);
+    expect((await readMetadata(request, chatId)).gameTacticalCombatSnapshot).toBeFalsy();
+
+    await fallback.click();
+    const tacticalBattle = page.locator('[data-component="TacticalCombatUI"]');
+    await expect(tacticalBattle.getByRole("button", { name: "End Turn", exact: true })).toBeVisible({
+      timeout: 40_000,
+    });
+    await expect.poll(async () => (await readMetadata(request, chatId)).gameTacticalCombatSnapshot).toBeTruthy();
+    const accepted = (await readMetadata(request, chatId)).gameTacticalCombatSnapshot as TacticalCombatState;
+    expect(accepted.seed).toBe(0);
+    expect([accepted.grid.width, accepted.grid.height]).toEqual([14, 10]);
+    expect(accepted.battlefield).toMatchObject({ kind: "generated", generatorVersion: 1, size: "large" });
+    expect(startRequests).toHaveLength(1);
+  } finally {
+    await request.delete(`/api/chats/${chatId}?force=true`).catch(() => undefined);
+  }
+});

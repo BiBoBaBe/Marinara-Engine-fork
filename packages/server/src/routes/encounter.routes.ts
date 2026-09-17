@@ -13,6 +13,7 @@ import { createLLMProvider } from "../services/llm/provider-registry.js";
 import type { ChatMessage } from "../services/llm/base-provider.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
+import { passThroughLeaf } from "../services/prompt/prompt-escaping.js";
 import { localAuthProviderBaseUrl, normalizeRpgStatPools } from "@marinara-engine/shared";
 import {
   tacticalBattlefieldSetupSchema,
@@ -337,7 +338,8 @@ function buildInitPrompt(
   }
 
   if (tactical && tacticalBattlefield?.instructions) {
-    system += `The player supplied these battlefield design instructions. Follow them when choosing the bounded semantic terrain brief, while keeping the generated battlefield playable:\n<battlefield_instructions>\n${tacticalBattlefield.instructions}\n</battlefield_instructions>\n\n`;
+    // User-authored prompt prose stays verbatim under the shared prompt-leaf contract.
+    system += `The player supplied these battlefield design instructions. Follow them when choosing the bounded semantic terrain brief, while keeping the generated battlefield playable:\n<battlefield_instructions>\n${passThroughLeaf(tacticalBattlefield.instructions)}\n</battlefield_instructions>\n\n`;
   }
 
   system += `Here is the chat history before the encounter:\n<history>\n`;

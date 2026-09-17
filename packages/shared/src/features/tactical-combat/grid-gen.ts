@@ -66,10 +66,10 @@ export function validateTacticalBattlefieldBrief(value: unknown): TacticalBattle
 
   const seen = new Set<string>();
   const features: TacticalBattlefieldFeature[] = [];
-  for (const value of source.features ?? []) {
-    if (!value || typeof value !== "object" || Array.isArray(value))
+  for (const rawFeature of source.features ?? []) {
+    if (!rawFeature || typeof rawFeature !== "object" || Array.isArray(rawFeature))
       return { ok: false, error: "Invalid battlefield feature." };
-    const feature = value as { terrain?: unknown; placement?: unknown; shape?: unknown };
+    const feature = rawFeature as { terrain?: unknown; placement?: unknown; shape?: unknown };
     if (!(typeof feature.terrain === "string" && hasOwnKey(TERRAIN_DATA, feature.terrain))) {
       return { ok: false, error: "Unknown battlefield terrain." };
     }

@@ -839,11 +839,6 @@ function normalizeCombatMovementMode(value: unknown): Combatant["movementMode"] 
   return value === "walk" || value === "fly" || value === "teleport" ? value : undefined;
 }
 
-function normalizeTacticalBattlefieldBrief(value: unknown): TacticalBattlefieldBrief | null {
-  const result = validateTacticalBattlefieldBrief(value);
-  return result.ok ? (result.brief ?? null) : null;
-}
-
 function normalizeCombatStatName(value: unknown): string {
   return typeof value === "string"
     ? value
@@ -8672,9 +8667,11 @@ function GameSurfaceComponent({
           // may add for tactical combat; read defensively in case the type lags the schema.
           const blueprintFormation = (response.combatState as { battlefield?: { formation?: unknown } }).battlefield
             ?.formation;
-          const blueprintTerrainBrief = normalizeTacticalBattlefieldBrief(
-            (response.combatState as { battlefield?: { terrainBrief?: unknown } }).battlefield?.terrainBrief,
+          const blueprintTerrain = validateTacticalBattlefieldBrief(
+            (response.combatState as { battlefield?: { terrainBrief?: unknown } }).battlefield?.terrainBrief ??
+              undefined,
           );
+          const blueprintTerrainBrief = blueprintTerrain.ok ? (blueprintTerrain.brief ?? null) : null;
           const blueprintTerrainBriefError = (response.combatState as { battlefield?: { terrainBriefError?: unknown } })
             .battlefield?.terrainBriefError;
 
@@ -8690,8 +8687,9 @@ function GameSurfaceComponent({
             formation:
               typeof blueprintFormation === "string" && blueprintFormation.trim() ? blueprintFormation.trim() : null,
             battlefield: blueprintTerrainBrief,
-            battlefieldError:
-              !blueprintTerrainBrief && typeof blueprintTerrainBriefError === "string"
+            battlefieldError: !blueprintTerrain.ok
+              ? blueprintTerrain.error
+              : !blueprintTerrainBrief && typeof blueprintTerrainBriefError === "string"
                 ? blueprintTerrainBriefError.trim() || null
                 : null,
           });

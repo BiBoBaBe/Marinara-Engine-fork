@@ -5,7 +5,11 @@ import type { GenerationParameters } from "./prompt.js";
 import type { CombatItemEffect, CombatMechanic, CombatDialogueCue, CombatStyleNotes } from "./combat-encounter.js";
 import type { SpotifySourceType } from "./spotify.js";
 import type { SpatialMapDraftSize, SpatialMapGroundingMode } from "./spatial-context.js";
-import type { TacticalBattlefieldBrief } from "../features/tactical-combat/types.js";
+import type {
+  TacticalBattlefieldBrief,
+  TacticalBattlefieldSetup,
+  TacticalMovementMode,
+} from "../features/tactical-combat/types.js";
 
 /** The four main states a game can be in during a session. */
 export type GameActiveState = "exploration" | "dialogue" | "combat" | "travel_rest";
@@ -206,7 +210,7 @@ export interface GameSetupConfig {
   /** Combat presentation preference (classic menu battles vs tactical grid battles). Defaults to "classic". */
   combatStyle?: GameCombatStyle;
   /** Optional tactical battlefield preferences used for newly-created encounters. */
-  tacticalBattlefield?: import("../features/tactical-combat/types.js").TacticalBattlefieldSetup;
+  tacticalBattlefield?: TacticalBattlefieldSetup;
   /** Optional user prompt used to create the initial hierarchical world map draft. */
   spatialMapInstructions?: string;
   /** Campaign-scale map authority selected during New Game. Older saves default to "standard". */
@@ -505,7 +509,7 @@ export interface Combatant {
   /** Tactical-combat class hint (fighter/knight/rogue/archer/mage/healer). Classic combat ignores this. */
   combatClass?: string;
   /** Tactical traversal rule. Classic combat ignores this; missing means walk. */
-  movementMode?: import("../features/tactical-combat/types.js").TacticalMovementMode;
+  movementMode?: TacticalMovementMode;
 }
 
 export interface CombatStatusEffect {

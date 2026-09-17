@@ -159,35 +159,42 @@ try {
   assert.equal(invalidModelMovement.ok, false);
   if (!invalidModelMovement.ok) assert.match(invalidModelMovement.error, /movementMode/);
 
-  const recoverableTerrain = validateTacticalEncounterBlueprint({
+  const invalidTerrainInput = Object.freeze({
     party: [{ movementMode: "walk" }],
     enemies: [],
-    battlefield: {
+    battlefield: Object.freeze({
       terrainBrief: { features: [{ terrain: "forest", placement: "center", shape: "barrier" }] },
       terrainBriefError: "model-authored spoof",
-    },
+    }),
   });
+  const recoverableTerrain = validateTacticalEncounterBlueprint(invalidTerrainInput);
   assert.equal(recoverableTerrain.ok, true);
   if (recoverableTerrain.ok) {
     assert.equal(recoverableTerrain.blueprint.battlefield?.terrainBrief, undefined);
     assert.match(recoverableTerrain.blueprint.battlefield?.terrainBriefError ?? "", /barrier features/i);
+    assert.notEqual(recoverableTerrain.blueprint.battlefield, invalidTerrainInput.battlefield);
   }
+  assert.equal(invalidTerrainInput.battlefield.terrainBriefError, "model-authored spoof");
+  assert.equal(invalidTerrainInput.battlefield.terrainBrief.features.length, 1);
 
-  const validTerrain = validateTacticalEncounterBlueprint({
+  const validTerrainInput = Object.freeze({
     party: [{ movementMode: "walk" }],
     enemies: [],
-    battlefield: {
+    battlefield: Object.freeze({
       terrainBrief: { features: [{ terrain: "ruin", placement: "north", shape: "patch" }] },
       terrainBriefError: "model-authored spoof",
-    },
+    }),
   });
+  const validTerrain = validateTacticalEncounterBlueprint(validTerrainInput);
   assert.equal(validTerrain.ok, true);
   if (validTerrain.ok) {
     assert.deepEqual(validTerrain.blueprint.battlefield?.terrainBrief, {
       features: [{ terrain: "ruin", placement: "north", shape: "patch" }],
     });
     assert.equal(validTerrain.blueprint.battlefield?.terrainBriefError, undefined);
+    assert.notEqual(validTerrain.blueprint.battlefield, validTerrainInput.battlefield);
   }
+  assert.equal(validTerrainInput.battlefield.terrainBriefError, "model-authored spoof");
 
   const legacyState = structuredClone(state);
   for (const unit of legacyState.units) delete unit.movementMode;
