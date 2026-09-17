@@ -232,4 +232,97 @@ assert.throws(
   "a schemaVersion 1 manifest must not be able to declare the tools permission",
 );
 
+// ── A superseded releaser must not delete the registration that replaced it ──
+const firstRelease = registerCapabilityTool("replacer", {
+  name: "thing",
+  description: "First.",
+  parameters: { type: "object" },
+  handler: () => ({ which: "first" }),
+});
+registerCapabilityTool("replacer", {
+  name: "thing",
+  description: "Second.",
+  parameters: { type: "object" },
+  handler: () => ({ which: "second" }),
+});
+firstRelease();
+assert.equal(isCapabilityTool("replacer_thing"), true, "the replacement must survive the old releaser");
+assert.deepEqual(await executeCapabilityTool("replacer_thing", {}, "chat-1"), { which: "second" });
+releaseCapabilityTools("replacer");
+
+// ── A handler that never settles must not hold the turn open ──
+const releaseHang = registerCapabilityTool("slowpoke", {
+  name: "hang",
+  description: "Never settles.",
+  parameters: { type: "object" },
+  handler: () => new Promise(() => undefined),
+});
+const started = Date.now();
+// withDeadline unrefs its timer, which is right in a server that always has other work but would let
+// this script exit before the deadline fires. Hold the loop open for the duration of the wait.
+const keepAlive = setInterval(() => undefined, 250);
+const timedOut = (await executeCapabilityTool("slowpoke_hang", {}, "chat-1")) as { error?: string };
+clearInterval(keepAlive);
+assert.match(String(timedOut.error), /Tool hang failed/);
+assert.ok(Date.now() - started < 30_000, "the handler wait must be bounded");
+releaseHang();
+releaseCapabilityTools("slowpoke");
+
+// ── Definitions ride along in every provider request, so they are bounded at registration ──
+assert.throws(
+  () =>
+    registerCapabilityTool("bounded", {
+      name: "wordy",
+      description: "x".repeat(513),
+      parameters: { type: "object" },
+      handler: () => null,
+    }),
+  /description exceeds 512 characters/,
+);
+assert.throws(
+  () =>
+    registerCapabilityTool("bounded", {
+      name: "fat_schema",
+      description: "x",
+      parameters: { type: "object", properties: { a: { type: "string", enum: ["y".repeat(9000)] } } },
+      handler: () => null,
+    }),
+  /parameters schema exceeds 8192 bytes/,
+);
+for (let i = 0; i < 16; i += 1) {
+  registerCapabilityTool("bounded", {
+    name: `tool_${i}`,
+    description: "x",
+    parameters: { type: "object" },
+    handler: () => null,
+  });
+}
+assert.throws(
+  () =>
+    registerCapabilityTool("bounded", {
+      name: "one_too_many",
+      description: "x",
+      parameters: { type: "object" },
+      handler: () => null,
+    }),
+  /may register at most 16 tools/,
+);
+// Re-registering a name the package already owns is a replacement, not a new slot.
+assert.doesNotThrow(() =>
+  registerCapabilityTool("bounded", {
+    name: "tool_0",
+    description: "replacement",
+    parameters: { type: "object" },
+    handler: () => null,
+  }),
+);
+releaseCapabilityTools("bounded");
+assert.deepEqual(capabilityToolDefs(), []);
+
+assert.match(
+  runtimeSource,
+  /if \(!activationLive\) \{[\s\S]*cannot register a tool after its activation ended/u,
+  "a retained activation context must not be able to register a tool once the activation is torn down",
+);
+
 console.info("Capability tool runtime regression passed");

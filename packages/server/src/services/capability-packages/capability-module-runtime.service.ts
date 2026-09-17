@@ -201,6 +201,11 @@ class CapabilityModuleRuntime {
     const { installed } = runtimePackage;
     const registeredCleanups: Cleanup[] = [];
     let moduleCleanup: Cleanup | undefined;
+    // A package can keep hold of the activation context and call back into it later. Once this
+    // activation has been torn down, those calls must not reach the host: a tool registered after
+    // cleanup belongs to a package that is no longer running, and a re-activated package would have
+    // its live tool replaced by the dead runtime's.
+    let activationLive = true;
     try {
       await capabilityPackageManager.markRuntimeReadiness(installed.id, "pending");
       const blockReason = capabilityPackageManager.runtimeBlockReason(installed);
@@ -255,6 +260,9 @@ class CapabilityModuleRuntime {
                 `Capability package ${installed.id} must declare the "tools" permission to register a tool`,
               );
             }
+            if (!activationLive) {
+              throw new Error(`Capability package ${installed.id} cannot register a tool after its activation ended`);
+            }
             return trackCleanup(registerCapabilityTool(installed.id, registration));
           },
           registerPrivilegedRoutes: async (routes, options) =>
@@ -272,6 +280,7 @@ class CapabilityModuleRuntime {
         // A module cleanup that throws must not strand the host-side registrations. A tool left in
         // the registry would be offered to a model whose package is no longer there to answer it,
         // so tracked cleanups and the tool release run either way and the first error is rethrown.
+        activationLive = false;
         try {
           if (moduleCleanup) await moduleCleanup();
         } finally {
@@ -285,6 +294,7 @@ class CapabilityModuleRuntime {
       logger.info("Activated and verified capability package %s@%s", installed.id, installed.version);
     } catch (error) {
       logger.error(error, "Failed to activate capability package %s@%s", installed.id, installed.version);
+      activationLive = false;
       try {
         try {
           if (moduleCleanup) await moduleCleanup();

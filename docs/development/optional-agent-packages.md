@@ -567,7 +567,16 @@ Rules worth knowing before you write one:
 - The parameters schema is compiled at registration, so a schema the Engine cannot compile fails the
   package at activation, where a developer sees it, rather than mid-turn.
 - A handler that throws is reported to the model as a failed tool call and logged; its message is not
-  forwarded. A package must never be able to cost somebody their turn.
+  forwarded. A handler that has not settled within **10 seconds** is abandoned the same way — it keeps
+  running, but the turn stops waiting on it. A package must never be able to cost somebody their turn.
+- Every definition is serialised into each turn's provider request and counted by context fitting, so
+  registration is bounded: at most **16 tools per package** and **64 across all packages**, a
+  description of at most **512 characters**, and a parameters schema of at most **8 KiB**. Exceeding
+  any of these throws, which fails activation. Registering a name the package already owns replaces
+  that tool rather than consuming another slot.
+- The activation context stops working once the activation is torn down: a package that retains `api`
+  and calls `registerTool` from a later callback is refused, so a dead runtime cannot register a tool
+  or replace a live one belonging to a re-activated package.
 - Deactivating, updating or removing a package releases its tools, so a tool is never offered to a
   model whose package is no longer there to answer it.
 
