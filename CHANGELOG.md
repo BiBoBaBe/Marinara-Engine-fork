@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Capability packages can now contribute tools the model may call. A package declaring the new `tools` permission registers a named tool through `api.registerTool` (capability API 1.19), and the Engine offers it alongside the built-ins on every turn, validates the call against the package's own JSON Schema — naming the allowed values when an enum is missed — and hands the arguments to the package's handler. Tool calling rather than a response format, so the narration still streams while the structured part arrives beside it. Tool names are namespaced by package id, a schema the Engine cannot compile fails the package at activation rather than mid-turn, and a handler that throws is reported to the model as a failed tool call instead of costing the turn.
+
 - Refresh compatible dependency and CI-action versions while preserving the supported Node, schema and native-runtime compatibility pins. The sandbox regression fixture also resolves macOS temporary-directory aliases before comparing canonical store links, and restart-test failures retain startup-stage diagnostics.
 
 - Starting a Conversation or Roleplay chat from a character card keeps that character selected when saved wizard defaults are applied (#6284).

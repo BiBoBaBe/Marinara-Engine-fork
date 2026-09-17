@@ -16,6 +16,7 @@ export const capabilityPermissionSchema = z.enum([
   "prompt-context",
   "routes",
   "storage",
+  "tools",
   "ui",
 ]);
 
@@ -223,7 +224,12 @@ const capabilityPackageManifestBaseSchema = z
 //        regardless of declared capabilityApi; declare 1.16 only to REQUIRE it. Needs `chat-write`).
 // 1.17: opted-in Experience surfaces prepare before startup and supply first-turn world context.
 // 1.18: Experience seed/default declarations in the Engine setup wizard.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 18 } as const);
+// 1.19: package-contributed tools — a package holding `tools` registers a named tool through
+//        `api.registerTool`, and the engine offers it to the model alongside the built-ins on every
+//        turn, validates the call against the package's own JSON Schema, and hands the arguments to
+//        the package's handler. Not a soft seam: the API only exists on an engine this new, so a
+//        package that needs it must declare 1.19. Needs `tools`.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 19 } as const);
 
 const capabilityApiVersionSchema = z
   .object({

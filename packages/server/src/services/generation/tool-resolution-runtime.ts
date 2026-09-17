@@ -2,6 +2,7 @@ import { BUILT_IN_TOOLS, DEFAULT_AGENT_TOOLS, customAgentHasCapability } from "@
 import type { AgentContext } from "@marinara-engine/shared";
 import type { LLMToolDefinition } from "../llm/base-provider.js";
 import type { ResolvedAgent } from "../agents/agent-pipeline.js";
+import { capabilityToolDefs } from "../capability-packages/capability-tool-registry.service.js";
 import {
   createCustomToolArgumentsValidator,
   executeToolCallForModel,
@@ -469,7 +470,7 @@ async function loadToolDefinitions(args: {
 
   if (!args.resolveTools) return { toolDefs, allToolDefs, customToolDefs };
 
-  const registeredToolSources = new Map<string, "built-in" | "custom">();
+  const registeredToolSources = new Map<string, "built-in" | "custom" | "package">();
 
   for (const tool of BUILT_IN_TOOLS) {
     const existingSource = registeredToolSources.get(tool.name);
@@ -544,6 +545,27 @@ async function loadToolDefinitions(args: {
     activeToolIds: args.activeToolIds,
     autoAttachToolNames: args.autoAttachToolNames,
   });
+
+  // A package's tools are always attached: it declared the `tools` permission and registered them
+  // for this install, so there is no second switch for a user to find. Names are namespaced by
+  // package id, but a custom tool could still be named to match, so the collision map decides.
+  const packageToolDefs = capabilityToolDefs().filter((tool) => {
+    const existingSource = registeredToolSources.get(tool.function.name);
+    if (existingSource) {
+      logger.warn(
+        '[tools] Skipping package tool "%s" because it collides with existing %s tool',
+        tool.function.name,
+        existingSource,
+      );
+      return false;
+    }
+    registeredToolSources.set(tool.function.name, "package");
+    return true;
+  });
+  if (packageToolDefs.length > 0) {
+    allToolDefs.push(...packageToolDefs);
+    toolDefs = [...(toolDefs ?? []), ...packageToolDefs];
+  }
 
   return { toolDefs, allToolDefs, customToolDefs };
 }
@@ -963,6 +985,7 @@ async function resolveToolRuntime(
   };
 
   const baseToolExecutionContext: ToolExecutionContext = {
+    chatId,
     gameState: gameState ? (gameState as Record<string, unknown>) : undefined,
     hiddenContext: buildCustomToolHiddenContext({
       requestBody,

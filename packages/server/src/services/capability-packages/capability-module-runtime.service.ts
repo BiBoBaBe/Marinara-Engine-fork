@@ -40,6 +40,11 @@ import {
   registerCapabilityPromptContext,
   type CapabilityPromptContextContributor,
 } from "./capability-prompt-context.service.js";
+import {
+  registerCapabilityTool,
+  releaseCapabilityTools,
+  type CapabilityToolRegistration,
+} from "./capability-tool-registry.service.js";
 
 type Cleanup = () => void | Promise<void>;
 type CapabilityActivationContext = {
@@ -53,6 +58,8 @@ type CapabilityActivationContext = {
     registerService<T>(key: string, service: T): Cleanup;
     /** Contribute text to each turn's system prompt. Requires the `prompt-context` permission. */
     registerPromptContext(contributor: CapabilityPromptContextContributor): Cleanup;
+    /** Offer the model a tool this package handles. Requires the `tools` permission. */
+    registerTool(registration: CapabilityToolRegistration): Cleanup;
     registerPrivilegedRoutes(
       routes: import("fastify").FastifyPluginAsync,
       options: { prefix: string },
@@ -242,6 +249,14 @@ class CapabilityModuleRuntime {
             }
             return trackCleanup(registerCapabilityPromptContext(installed.id, contributor));
           },
+          registerTool: (registration) => {
+            if (!installed.manifest.permissions?.includes("tools")) {
+              throw new Error(
+                `Capability package ${installed.id} must declare the "tools" permission to register a tool`,
+              );
+            }
+            return trackCleanup(registerCapabilityTool(installed.id, registration));
+          },
           registerPrivilegedRoutes: async (routes, options) =>
             trackCleanup(await registerCapabilityPrivilegedRoutes(app, installed, routes, options)),
           runInternalRoute: (options) => runCapabilityInternalRoute(app, installed.id, options),
@@ -256,6 +271,9 @@ class CapabilityModuleRuntime {
       this.cleanups.set(installed.id, async () => {
         if (moduleCleanup) await moduleCleanup();
         await runCleanups(registeredCleanups);
+        // Belt and braces: a tool left in the registry would be offered to a model whose package
+        // is no longer there to answer it.
+        releaseCapabilityTools(installed.id);
       });
       logger.info("Activated and verified capability package %s@%s", installed.id, installed.version);
     } catch (error) {
@@ -263,6 +281,7 @@ class CapabilityModuleRuntime {
       try {
         if (moduleCleanup) await moduleCleanup();
         await runCleanups(registeredCleanups);
+        releaseCapabilityTools(installed.id);
       } catch (cleanupError) {
         logger.warn(cleanupError, "Capability package %s cleanup failed after activation error", installed.id);
       }

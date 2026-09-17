@@ -511,6 +511,68 @@ context as success. On reload, the package must report readiness from its saved 
 server prompt-context contributor remains read-only and subject to its short deadline; do not
 use it for world generation or as a long-running startup barrier.
 
+### Capability API 1.19: package-contributed tools
+
+Capability API 1.16 gave a package a way to have the model *say* something it could act on. This one
+gives it a way to have the model *call* something. A package holding the new `tools` permission
+registers a named tool from its server entrypoint, and the Engine offers it to the model beside the
+built-ins on every turn of every chat, validates the call against the package's own JSON Schema, and
+hands the arguments to the package's handler.
+
+```ts
+export async function activate(api) {
+  api.registerTool({
+    name: "set_time",
+    description: "Move the world clock forward or back.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["advance", "rewind"] },
+        minutes: { type: "integer", minimum: 0 },
+      },
+      required: ["action", "minutes"],
+      additionalProperties: false,
+    },
+    handler: async (args, { chatId }) => {
+      const clock = await moveClock(chatId, args.action, args.minutes);
+      return { time: clock.label };
+    },
+  });
+}
+```
+
+Tool calling rather than a response format, on purpose. A response format claims the whole reply, so
+the narration would have to be a field inside a JSON object and could not stream. A tool call arrives
+alongside the prose and costs it nothing: the model writes its turn as normal and calls the tool
+while it does. It also means the package gets arguments the provider itself constrained, instead of
+parsing them back out of finished narration — which is the difference between a schema and a
+convention the model is asked to honour.
+
+Enums are the reason this matters. A package that knows the twelve places in its world can put those
+twelve strings in the schema, and a call naming a thirteenth is refused before the handler sees it.
+Refusals reuse the Engine's own tool-argument validator, which names the values that would have
+worked, so the model gets something it can act on rather than "must be equal to one of the allowed
+values". Whatever the handler returns is shown to the model as the tool result.
+
+Rules worth knowing before you write one:
+
+- Names are namespaced to `<packageId>_<name>`, with `-` flattened to `_`, so `world-clock`'s
+  `set_time` reaches the model as `world_clock_set_time`. A qualified name already taken by another
+  package, a built-in, or a user's custom tool is refused and logged rather than silently shadowing.
+- A package's tools are always attached for as long as it is active. There is no second per-chat
+  switch the way there is for built-in tools: declaring the permission and registering the tool is
+  the decision.
+- The parameters schema is compiled at registration, so a schema the Engine cannot compile fails the
+  package at activation, where a developer sees it, rather than mid-turn.
+- A handler that throws is reported to the model as a failed tool call and logged; its message is not
+  forwarded. A package must never be able to cost somebody their turn.
+- Deactivating, updating or removing a package releases its tools, so a tool is never offered to a
+  model whose package is no longer there to answer it.
+
+This is not a soft seam. `api.registerTool` only exists on an Engine this new, so a package that
+needs it must declare `capabilityApi` 1.19 and will refuse to install on anything older.
+
+
 ## Initial packages
 
 - all currently built-in agents;
