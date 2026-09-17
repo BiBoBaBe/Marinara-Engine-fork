@@ -463,7 +463,9 @@ function validateParameterProperty(prop: unknown, path: string): void {
 function appendPackageToolDefs(
   allToolDefs: LLMToolDefinition[],
   registeredToolSources: Map<string, "built-in" | "custom" | "package">,
+  nativeToolsAvailable: boolean,
 ): LLMToolDefinition[] {
+  if (!nativeToolsAvailable) return [];
   const packageToolDefs = capabilityToolDefs().filter((tool) => {
     const existingSource = registeredToolSources.get(tool.function.name);
     if (existingSource) {
@@ -485,6 +487,7 @@ async function loadToolDefinitions(args: {
   customToolsStore: CustomToolsStore;
   resolveTools: boolean;
   enableChatTools: boolean;
+  nativeToolsAvailable: boolean;
   activeToolIds: string[];
   autoAttachToolNames: readonly string[];
 }): Promise<{
@@ -504,7 +507,7 @@ async function loadToolDefinitions(args: {
   // belongs to whoever will actually execute the call.
   if (!args.resolveTools) {
     for (const tool of BUILT_IN_TOOLS) registeredToolSources.set(tool.name, "built-in");
-    const packageOnlyToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources);
+    const packageOnlyToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources, args.nativeToolsAvailable);
     return {
       toolDefs: packageOnlyToolDefs.length > 0 ? packageOnlyToolDefs : toolDefs,
       allToolDefs,
@@ -586,7 +589,7 @@ async function loadToolDefinitions(args: {
     autoAttachToolNames: args.autoAttachToolNames,
   });
 
-  const packageToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources);
+  const packageToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources, args.nativeToolsAvailable);
   if (packageToolDefs.length > 0) {
     toolDefs = [...(toolDefs ?? []), ...packageToolDefs];
   }
@@ -807,6 +810,7 @@ async function resolveToolRuntime(
     emitMetadataPatch,
     observeSpotifyPlaybackBeforePlay,
     lorebookEmbeddingOptions,
+    nativeToolsAvailable = true,
   }: ResolveAgentGenerationToolsArgs,
   options: {
     enableChatTools: boolean;
@@ -838,6 +842,7 @@ async function resolveToolRuntime(
     customToolsStore,
     resolveTools: enableChatTools || enableAgentTools || autoAttachToolNames.length > 0,
     enableChatTools,
+    nativeToolsAvailable,
     activeToolIds,
     autoAttachToolNames,
   });

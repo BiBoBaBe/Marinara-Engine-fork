@@ -58,6 +58,7 @@ const MAX_TOOLS_PER_PACKAGE = 16;
 const MAX_TOOLS_TOTAL = 64;
 const MAX_DESCRIPTION_LENGTH = 512;
 const MAX_SCHEMA_BYTES = 8 * 1024;
+const MAX_RESULT_BYTES = 64 * 1024;
 
 /** How long a package's handler has before the turn stops waiting on it. */
 const HANDLER_TIMEOUT_MS = 10_000;
@@ -81,16 +82,24 @@ export function registerCapabilityTool(packageId: string, registration: Capabili
       `Capability tool ${name} description exceeds ${MAX_DESCRIPTION_LENGTH} characters; it is sent to the model on every turn`,
     );
   }
-  let schemaBytes: number;
+  let serializedSchema: string;
+  let parameters: Record<string, unknown>;
   try {
-    schemaBytes = Buffer.byteLength(JSON.stringify(registration.parameters) ?? "", "utf8");
+    serializedSchema = JSON.stringify(registration.parameters);
+    parameters = JSON.parse(serializedSchema) as Record<string, unknown>;
   } catch {
     throw new Error(`Capability tool ${name} has a parameters schema that cannot be serialised`);
   }
-  if (schemaBytes > MAX_SCHEMA_BYTES) {
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+    throw new Error(`Capability tool ${name} parameters schema must be an object`);
+  }
+  if (Buffer.byteLength(serializedSchema, "utf8") > MAX_SCHEMA_BYTES) {
     throw new Error(`Capability tool ${name} parameters schema exceeds ${MAX_SCHEMA_BYTES} bytes`);
   }
   const qualifiedName = qualifyToolName(packageId, name);
+  if (qualifiedName.length > 64) {
+    throw new Error(`Capability tool qualified name ${qualifiedName} exceeds 64 characters`);
+  }
   const existing = byQualifiedName.get(qualifiedName);
   if (existing && existing.packageId !== packageId) {
     throw new Error(`Capability tool ${qualifiedName} is already registered by ${existing.packageId}`);
@@ -108,7 +117,7 @@ export function registerCapabilityTool(packageId: string, registration: Capabili
   // package at activation, where a developer sees it, not silently mid-turn.
   let validateArguments: ToolArgumentsValidator;
   try {
-    validateArguments = createToolArgumentsValidator(registration.parameters);
+    validateArguments = createToolArgumentsValidator(parameters);
   } catch (error) {
     throw new Error(
       `Capability tool ${qualifiedName} has an invalid parameters schema: ${
@@ -118,6 +127,7 @@ export function registerCapabilityTool(packageId: string, registration: Capabili
   }
   const registered: Registered = {
     ...registration,
+    parameters,
     name,
     packageId,
     qualifiedName,
@@ -148,7 +158,7 @@ export function capabilityToolDefs(): Array<{
     function: {
       name: tool.qualifiedName,
       description: tool.description,
-      parameters: tool.parameters,
+      parameters: structuredClone(tool.parameters),
     },
   }));
 }
@@ -189,7 +199,14 @@ export async function executeCapabilityTool(
       `Capability tool ${name}`,
       HANDLER_TIMEOUT_MS,
     );
-    return result ?? { ok: true };
+    const normalized = result ?? { ok: true };
+    const serialized = typeof normalized === "string" ? normalized : JSON.stringify(normalized);
+    if (typeof serialized !== "string") throw new Error("Tool result is not serializable");
+    if (Buffer.byteLength(serialized, "utf8") > MAX_RESULT_BYTES) {
+      return { error: `Tool ${tool.name} result exceeds ${MAX_RESULT_BYTES} bytes` };
+    }
+    // Return the same snapshot that was measured, without package-owned getters or toJSON hooks.
+    return typeof normalized === "string" ? normalized : JSON.parse(serialized);
   } catch (error) {
     logger.warn(error, "[capability/tools] Package %s failed handling %s", tool.packageId, name);
     return { error: `Tool ${tool.name} failed` };

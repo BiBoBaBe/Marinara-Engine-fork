@@ -51,10 +51,33 @@ assert.deepEqual(defs[0], {
   function: { name: "world_clock_set_time", description: "Move the world clock.", parameters },
 });
 
+parameters.properties.action.enum.push("teleport");
+assert.deepEqual(
+  (capabilityToolDefs()[0]!.function.parameters as typeof parameters).properties.action.enum,
+  ["advance", "rewind"],
+  "registration snapshots the provider schema",
+);
+assert.match(
+  String(validateCapabilityToolArguments("world_clock_set_time", { action: "teleport", minutes: 30 })),
+  /advance, rewind/,
+);
+parameters.properties.action.enum.pop();
+const exposed = capabilityToolDefs()[0]!.function.parameters as typeof parameters;
+exposed.properties.action.enum.push("teleport");
+assert.deepEqual(
+  (capabilityToolDefs()[0]!.function.parameters as typeof parameters).properties.action.enum,
+  ["advance", "rewind"],
+  "callers cannot mutate the registered schema through a returned definition",
+);
+
 // ── Registration refuses what the model could never be told about ──
 assert.throws(
   () => registerCapabilityTool(PACKAGE_ID, { name: "Set Time", description: "x", parameters, handler: () => null }),
   /is invalid/,
+);
+assert.throws(
+  () => registerCapabilityTool("x".repeat(64), { name: "tool", description: "x", parameters, handler: () => null }),
+  /qualified name.*64/,
 );
 assert.throws(
   () => registerCapabilityTool(PACKAGE_ID, { name: "ok_name", description: "  ", parameters, handler: () => null }),
@@ -109,6 +132,17 @@ assert.deepEqual(await executeCapabilityTool("world_clock_missing", {}, "chat-7"
 });
 releaseThrower();
 
+const releaseLarge = registerCapabilityTool(PACKAGE_ID, {
+  name: "large",
+  description: "Large result",
+  parameters: { type: "object" },
+  handler: () => ({ value: "x".repeat(65537) }),
+});
+const largeResult = await executeCapabilityTool("world_clock_large", {}, "chat-7");
+assert.match(JSON.stringify(largeResult), /exceeds.*65536/);
+assert.ok(JSON.stringify(largeResult).length < 200, "oversized results cannot crowd out the conversation");
+releaseLarge();
+
 // ── Release drops a package's tools, so a deactivated package is never offered ──
 release();
 assert.equal(isCapabilityTool("world_clock_set_time"), false);
@@ -134,17 +168,21 @@ assert.match(
   /registerTool: \(registration\) => \{[\s\S]*permissions\?\.includes\("tools"\)[\s\S]*registerCapabilityTool\(installed\.id, registration\)/u,
   "registerTool must be gated on the tools permission",
 );
-assert.match(runtimeSource, /releaseCapabilityTools\(installed\.id\)/u, "deactivation must drop the package's tools");
+assert.match(
+  runtimeSource,
+  /for \(const release of toolCleanups\.splice\(0\)\) release\(\);/u,
+  "deactivation releases only tools owned by that activation",
+);
 
 const resolutionSource = read("../../packages/server/src/services/generation/tool-resolution-runtime.ts");
 assert.match(
   resolutionSource,
-  /const packageToolDefs = appendPackageToolDefs\(allToolDefs, registeredToolSources\);[\s\S]*toolDefs = \[\.\.\.\(toolDefs \?\? \[\]\), \.\.\.packageToolDefs\]/u,
+  /const packageToolDefs = appendPackageToolDefs\(allToolDefs, registeredToolSources, args.nativeToolsAvailable\);[\s\S]*toolDefs = \[\.\.\.\(toolDefs \?\? \[\]\), \.\.\.packageToolDefs\]/u,
   "package tools must be appended to the definitions handed to the provider",
 );
 assert.match(
   resolutionSource,
-  /if \(!args\.resolveTools\) \{[\s\S]*appendPackageToolDefs\(allToolDefs, registeredToolSources\)/u,
+  /if \(!args\.resolveTools\) \{[\s\S]*appendPackageToolDefs\(allToolDefs, registeredToolSources, args.nativeToolsAvailable\)/u,
   "package tools must still be attached when every built-in and custom tool is switched off",
 );
 assert.match(
@@ -167,7 +205,7 @@ assert.match(
 
 assert.match(
   runtimeSource,
-  /try \{\n\s*if \(moduleCleanup\) await moduleCleanup\(\);\n\s*\} finally \{[\s\S]*releaseCapabilityTools\(installed\.id\)/u,
+  /for \(const release of toolCleanups\.splice\(0\)\) release\(\);[\s\S]*try \{\n\s*if \(moduleCleanup\) await withDeadline\(moduleCleanup\(\), "Capability module cleanup", 8000\);\n\s*\} finally \{/u,
   "a module cleanup that throws must not strand a package's tools in the registry",
 );
 

@@ -513,8 +513,8 @@ use it for world generation or as a long-running startup barrier.
 
 ### Capability API 1.19: package-contributed tools
 
-Capability API 1.16 gave a package a way to have the model *say* something it could act on. This one
-gives it a way to have the model *call* something. A package holding the new `tools` permission
+Capability API 1.16 gave a package a way to have the model _say_ something it could act on. This one
+gives it a way to have the model _call_ something. A package holding the new `tools` permission
 registers a named tool from its server entrypoint, and the Engine offers it to the model beside the
 built-ins on every turn of every chat, validates the call against the package's own JSON Schema, and
 hands the arguments to the package's handler.
@@ -558,17 +558,22 @@ Rules worth knowing before you write one:
 
 - Names are namespaced to `<packageId>_<name>`, with `-` flattened to `_`, so `world-clock`'s
   `set_time` reaches the model as `world_clock_set_time`. A qualified name already taken by another
-  package, a built-in, or a user's custom tool is refused and logged rather than silently shadowing.
+  package is refused. Built-ins and enabled custom tools keep ownership of colliding names; the
+  package definition is omitted and the built-in or custom handler runs. Qualified names must fit
+  the provider limit of **64 characters**.
   Resolution is built-in first, then custom, then package, in both the definitions the model is
   shown and the executor, so the owner of a name is always the one that runs the call.
 - A package's tools are always attached for as long as it is active. There is no second per-chat
   switch the way there is for built-in tools: declaring the permission and registering the tool is
-  the decision.
-- The parameters schema is compiled at registration, so a schema the Engine cannot compile fails the
+  the decision. The selected provider must support native tool calls.
+- The parameters schema is snapshotted and compiled at registration, so a schema the Engine cannot compile fails the
   package at activation, where a developer sees it, rather than mid-turn.
 - A handler that throws is reported to the model as a failed tool call and logged; its message is not
   forwarded. A handler that has not settled within **10 seconds** is abandoned the same way — it keeps
   running, but the turn stops waiting on it. A package must never be able to cost somebody their turn.
+- Tool results must serialize to at most **64 KiB**. Larger or non-serializable results fail the call
+  instead of crowding out the conversation. Descriptions and results are trusted package content;
+  package authors must check `chatId` before reading or changing chat-specific state.
 - Every definition is serialised into each turn's provider request and counted by context fitting, so
   registration is bounded: at most **16 tools per package** and **64 across all packages**, a
   description of at most **512 characters**, and a parameters schema of at most **8 KiB**. Exceeding
@@ -579,10 +584,10 @@ Rules worth knowing before you write one:
   or replace a live one belonging to a re-activated package.
 - Deactivating, updating or removing a package releases its tools, so a tool is never offered to a
   model whose package is no longer there to answer it.
+  Tools are removed before awaiting package cleanup, whose individual callbacks have an 8-second deadline.
 
 This is not a soft seam. `api.registerTool` only exists on an Engine this new, so a package that
 needs it must declare `capabilityApi` 1.19 and will refuse to install on anything older.
-
 
 ## Initial packages
 

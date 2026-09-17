@@ -38,13 +38,10 @@ import {
 } from "./capability-route-registration.service.js";
 import {
   registerCapabilityPromptContext,
+  withDeadline,
   type CapabilityPromptContextContributor,
 } from "./capability-prompt-context.service.js";
-import {
-  registerCapabilityTool,
-  releaseCapabilityTools,
-  type CapabilityToolRegistration,
-} from "./capability-tool-registry.service.js";
+import { registerCapabilityTool, type CapabilityToolRegistration } from "./capability-tool-registry.service.js";
 
 type Cleanup = () => void | Promise<void>;
 type CapabilityActivationContext = {
@@ -126,7 +123,7 @@ async function runCleanups(cleanups: Cleanup[]): Promise<void> {
   let firstError: unknown;
   for (const cleanup of cleanups.splice(0).reverse()) {
     try {
-      await cleanup();
+      await withDeadline(cleanup(), "Capability cleanup", 8000);
     } catch (error) {
       firstError ??= error;
     }
@@ -200,6 +197,7 @@ class CapabilityModuleRuntime {
   ): Promise<void> {
     const { installed } = runtimePackage;
     const registeredCleanups: Cleanup[] = [];
+    const toolCleanups: Array<() => void> = [];
     let moduleCleanup: Cleanup | undefined;
     // A package can keep hold of the activation context and call back into it later. Once this
     // activation has been torn down, those calls must not reach the host: a tool registered after
@@ -263,7 +261,9 @@ class CapabilityModuleRuntime {
             if (!activationLive) {
               throw new Error(`Capability package ${installed.id} cannot register a tool after its activation ended`);
             }
-            return trackCleanup(registerCapabilityTool(installed.id, registration));
+            const release = registerCapabilityTool(installed.id, registration);
+            toolCleanups.push(release);
+            return trackCleanup(release);
           },
           registerPrivilegedRoutes: async (routes, options) =>
             trackCleanup(await registerCapabilityPrivilegedRoutes(app, installed, routes, options)),
@@ -281,29 +281,25 @@ class CapabilityModuleRuntime {
         // the registry would be offered to a model whose package is no longer there to answer it,
         // so tracked cleanups and the tool release run either way and the first error is rethrown.
         activationLive = false;
+        // Release only this activation's tools before awaiting package cleanup. An old
+        // teardown cannot delete replacements registered by a concurrent activation.
+        for (const release of toolCleanups.splice(0)) release();
         try {
-          if (moduleCleanup) await moduleCleanup();
+          if (moduleCleanup) await withDeadline(moduleCleanup(), "Capability module cleanup", 8000);
         } finally {
-          try {
-            await runCleanups(registeredCleanups);
-          } finally {
-            releaseCapabilityTools(installed.id);
-          }
+          await runCleanups(registeredCleanups);
         }
       });
       logger.info("Activated and verified capability package %s@%s", installed.id, installed.version);
     } catch (error) {
       logger.error(error, "Failed to activate capability package %s@%s", installed.id, installed.version);
       activationLive = false;
+      for (const release of toolCleanups.splice(0)) release();
       try {
         try {
-          if (moduleCleanup) await moduleCleanup();
+          if (moduleCleanup) await withDeadline(moduleCleanup(), "Capability module cleanup", 8000);
         } finally {
-          try {
-            await runCleanups(registeredCleanups);
-          } finally {
-            releaseCapabilityTools(installed.id);
-          }
+          await runCleanups(registeredCleanups);
         }
       } catch (cleanupError) {
         logger.warn(cleanupError, "Capability package %s cleanup failed after activation error", installed.id);

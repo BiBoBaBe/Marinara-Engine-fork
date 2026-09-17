@@ -161,6 +161,31 @@ function baseArgs(overrides: Partial<ResolveGenerationToolsArgs>): ResolveGenera
   };
 }
 
+{
+  const { registerCapabilityTool } =
+    await import("../../packages/server/src/services/capability-packages/capability-tool-registry.service.js");
+  const release = registerCapabilityTool("fixture", {
+    name: "clock",
+    description: "Read the clock",
+    parameters: { type: "object" },
+    handler: () => ({ time: "noon" }),
+  });
+  try {
+    const supported = await resolveGenerationTools(baseArgs({ nativeToolsAvailable: true }));
+    assert.deepEqual(
+      names(supported.toolDefs),
+      ["fixture_clock"],
+      "package tools attach without enabling built-in tools",
+    );
+    assert.equal(supported.enableChatTools, false);
+    const unsupported = await resolveGenerationTools(baseArgs({ nativeToolsAvailable: false }));
+    assert.equal(unsupported.toolsAttached, false, "package tools respect the provider's native tool capability");
+    assert.equal(unsupported.toolDefs, undefined);
+  } finally {
+    release();
+  }
+}
+
 const gameTurn = await resolveGenerationTools(baseArgs({ autoAttachToolNames: GAME_MODE_AUTO_ATTACH_TOOL_NAMES }));
 assert.equal(gameTurn.enableChatTools, false, "auto-attach must not turn the chat's tool toggle on");
 assert.equal(gameTurn.toolsAttached, true, "a game turn must take the tool-calling branch");
