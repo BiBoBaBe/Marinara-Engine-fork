@@ -78,6 +78,102 @@ async function chooseClassicForNextBattle(page: Page, testInfo: TestInfo) {
   await page.getByRole("button", { name: "Close chat settings", exact: true }).click();
 }
 
+test("Switching saved tactical chats uses only the destination battle for actions", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const saved: Array<{ chatId: string; state: TacticalCombatState; heroName: string }> = [];
+  const createdChatIds: string[] = [];
+  try {
+    for (const seed of [101, 202]) {
+      const heroName = `Traveler ${seed}`;
+      const chatParty = [{ ...party[0], id: `traveler-${seed}`, name: heroName }];
+      const chatEnemies = [{ ...enemies[0], id: `guard-${seed}`, name: `Guard ${seed}` }];
+      const created = await request.post("/api/game/create", {
+        data: {
+          name: `Saved battle ${seed}`,
+          setupConfig: {
+            genre: "Fantasy",
+            setting: "A ruined gate",
+            tone: "Adventure",
+            difficulty: "normal",
+            playerGoals: "Hold the gate",
+            gmMode: "standalone",
+            rating: "sfw",
+            partyCharacterIds: [],
+            combatStyle: "tactical",
+            tacticalBattlefield: { seed, size: "small" },
+          },
+        },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const chatId = (await created.json()).sessionChat.id as string;
+      createdChatIds.push(chatId);
+      const started = await request.post("/api/game/combat/tactical/start", {
+        data: { chatId, party: chatParty, enemies: chatEnemies, environment: "ruins", formation: "line" },
+      });
+      expect(started.ok(), await started.text()).toBeTruthy();
+      const state = (await started.json()).state as TacticalCombatState;
+      saved.push({ chatId, state, heroName });
+      const message = await request.post(`/api/chats/${chatId}/messages`, {
+        data: { role: "assistant", content: `${heroName} holds the gate. [state: combat]` },
+      });
+      expect(message.ok(), await message.text()).toBeTruthy();
+      const patched = await request.patch(`/api/chats/${chatId}/metadata`, {
+        data: {
+          gameSessionStatus: "active",
+          gameIntroPresented: true,
+          gameActiveState: "combat",
+          gameImageAutoGenerationEnabled: false,
+          gameStoryboardAutoIllustrationsEnabled: false,
+          gameCombatStyle: "tactical",
+          gameCombatState: {
+            party: chatParty,
+            enemies: chatEnemies,
+            startMessageId: (await message.json()).id,
+            combatStyle: "tactical",
+            sceneEnvironmentType: "ruins",
+            formation: "line",
+          },
+          gameTacticalCombatSnapshot: state,
+        },
+      });
+      expect(patched.ok(), await patched.text()).toBeTruthy();
+    }
+
+    const [first, second] = saved;
+    if (!first || !second) throw new Error("Both saved battle fixtures must exist.");
+    await openGame(page, first.chatId, testInfo);
+    const battle = page.locator('[data-component="TacticalCombatUI"]');
+    await expect(battle.getByRole("button", { name: new RegExp(first.heroName) })).toBeVisible({ timeout: 40_000 });
+    await page.evaluate(async (chatId) => {
+      const storeUrl = new URL("/src/stores/chat.store.ts", window.location.href).href;
+      const { useChatStore } = await import(/* @vite-ignore */ storeUrl);
+      useChatStore.getState().setActiveChatId(chatId);
+    }, second.chatId);
+    await expect(battle.getByRole("button", { name: new RegExp(second.heroName) })).toBeVisible({ timeout: 40_000 });
+    await expect(battle.getByRole("button", { name: new RegExp(first.heroName) })).toHaveCount(0);
+
+    const actionRequest = page.waitForRequest((candidate) =>
+      candidate.url().endsWith("/api/game/combat/tactical/action"),
+    );
+    await battle.getByRole("button", { name: "End Turn", exact: true }).click();
+    const payload = (await actionRequest).postDataJSON();
+    expect(payload.chatId).toBe(second.chatId);
+    expect(payload.state.seed).toBe(second.state.seed);
+    expect(payload.state.units.map((unit: { id: string }) => unit.id)).toEqual(
+      second.state.units.map((unit) => unit.id),
+    );
+    await expect
+      .poll(async () => (await readMetadata(request, second.chatId)).gameTacticalCombatSnapshot?.round)
+      .toBeGreaterThan(second.state.round);
+    expect((await readMetadata(request, first.chatId)).gameTacticalCombatSnapshot).toEqual(first.state);
+  } finally {
+    for (const chatId of createdChatIds) await request.delete(`/api/chats/${chatId}?force=true`).catch(() => undefined);
+  }
+});
+
 for (const variant of ["current", "legacy", "invalid-brief"] as const) {
   const legacySnapshot = variant === "legacy";
   test(`GameSurface restores ${variant} pending and accepted tactical terrain without changing the active battle style`, async ({

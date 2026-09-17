@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { GameSetupConfig } from "../../packages/shared/src/types/game.js";
+import { i18n } from "../../packages/client/src/localization/i18n.js";
 import {
   buildGameSetupShareFile,
   buildGameSetupSummarySections,
@@ -23,14 +24,17 @@ const source = { gameName: "Terrain round trip", config };
 const shared = buildGameSetupShareFile(source, "2026-09-16T00:00:00.000Z");
 const imported = parseGameSetupShareFileJson(JSON.stringify(shared));
 assert.deepEqual(imported.setup.config.tacticalBattlefield, config.tacticalBattlefield);
+i18n.addResourceBundle("en", "translation", {
+  "ui.game.gamesetupsummary.sizeLarge": "Localized large battlefield",
+});
 const summary = buildGameSetupSummarySections(source).flatMap((section) => section.rows);
 assert.ok(
   summary.some((row) => String(row.value) === "0"),
   "Seed zero is displayed rather than replaced by random",
 );
 assert.ok(
-  summary.some((row) => /large/i.test(String(row.value))),
-  "The reusable summary retains the chosen size",
+  summary.some((row) => row.value === "Localized large battlefield"),
+  "The reusable summary uses the localized size label",
 );
 assert.ok(summary.some((row) => String(row.value).includes("forest clearing")));
 

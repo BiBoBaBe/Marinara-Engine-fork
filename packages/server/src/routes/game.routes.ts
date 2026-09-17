@@ -6375,18 +6375,13 @@ export async function gameRoutes(app: FastifyInstance) {
   // ── POST /game/create ──
   app.post("/create", async (req, reply) => {
     logger.info("[game/create] Received request");
-    const requestedBattlefield = (req.body as { setupConfig?: { tacticalBattlefield?: unknown } } | null)?.setupConfig
-      ?.tacticalBattlefield;
-    if (requestedBattlefield !== undefined) {
-      const battlefieldResult = tacticalBattlefieldSetupSchema.safeParse(requestedBattlefield);
-      if (!battlefieldResult.success) {
-        const issue = battlefieldResult.error.issues[0];
-        return reply.status(400).send({
-          error: `Invalid tactical battlefield settings: ${issue?.message ?? "invalid settings"}`,
-        });
-      }
+    const parsed = createGameSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: `Invalid game setup: ${parsed.error.issues[0]?.message ?? "invalid settings"}`,
+      });
     }
-    const parsedCreateGameInput = createGameSchema.parse(req.body);
+    const parsedCreateGameInput = parsed.data;
     const { name, connectionId, promptPresetId, chatId, preferences, shareLabels } = parsedCreateGameInput;
     const normalizedSpatialMapDraftOptions =
       parsedCreateGameInput.setupConfig.spatialMapDraftSize !== undefined ||

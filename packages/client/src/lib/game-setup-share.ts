@@ -750,7 +750,13 @@ function tacticalBattlefieldRows(config: GameSetupConfig): GameSetupSummaryRow[]
     },
     {
       label: translate("ui.game.gamesetupsummary.battlefieldSize"),
-      value: settings?.size ? titleCaseToken(settings.size) : translate("ui.game.gamesetupsummary.auto"),
+      value: settings?.size
+        ? {
+            small: translate("ui.game.gamesetupsummary.sizeSmall"),
+            medium: translate("ui.game.gamesetupsummary.sizeMedium"),
+            large: translate("ui.game.gamesetupsummary.sizeLarge"),
+          }[settings.size]
+        : translate("ui.game.gamesetupsummary.auto"),
     },
     {
       label: translate("ui.game.gamesetupsummary.terrainGuidance"),

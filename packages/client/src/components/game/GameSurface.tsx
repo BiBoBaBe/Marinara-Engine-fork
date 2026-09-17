@@ -12626,6 +12626,7 @@ function GameSurfaceComponent({
                         >
                           {effectiveCombatStyle === "tactical" ? (
                             <TacticalCombatUI
+                              key={activeChatId}
                               chatId={activeChatId}
                               party={combatParty}
                               enemies={combatEnemies}
