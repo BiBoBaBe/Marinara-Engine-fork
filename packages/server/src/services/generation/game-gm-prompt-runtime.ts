@@ -278,6 +278,10 @@ export async function injectGameGmPromptRuntime(args: {
     !Array.isArray(args.chatMetadata.gameTacticalCombatSnapshot)
       ? "tactical"
       : null;
+  const resolvedCombatStyle =
+    pinnedCombatStyle ??
+    legacyTacticalCombatStyle ??
+    ((args.chatMetadata.gameCombatStyle as string) || (setupConfig?.combatStyle as string) || "classic");
 
   const lastMapPos = args.chatMetadata.lastMapPosition as string | { x: number; y: number } | undefined;
   const currentMapPos = gameMap?.partyPosition;
@@ -341,12 +345,9 @@ export async function injectGameGmPromptRuntime(args: {
     // An active encounter keeps the style it started with. Legacy snapshots did
     // not store that pin, so an existing tactical state is the next-best proof.
     // Outside combat, the runtime drawer remains the preference for the next battle.
-    combatStyle:
-      pinnedCombatStyle ??
-      legacyTacticalCombatStyle ??
-      ((args.chatMetadata.gameCombatStyle as string) || (setupConfig?.combatStyle as string) || "classic"),
+    combatStyle: resolvedCombatStyle,
     tacticalBattlefieldContext:
-      gameActiveState === "combat"
+      gameActiveState === "combat" && resolvedCombatStyle === "tactical"
         ? summarizeTacticalBattlefield(args.chatMetadata.gameTacticalCombatSnapshot)
         : undefined,
     genre: (setupConfig?.genre as string) || "fantasy",

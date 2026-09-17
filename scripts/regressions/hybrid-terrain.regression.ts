@@ -35,6 +35,18 @@ assert.deepEqual(hybrid.grid, legacy, "an omitted brief must preserve legacy see
 assert.equal(hybrid.battlefield.generatorVersion, 1);
 assert.equal(hybrid.battlefield.size, "small");
 
+for (const [unitCount, size, width, height] of [
+  [5, "small", 12, 8],
+  [6, "medium", 13, 9],
+  [8, "medium", 13, 9],
+  [9, "large", 14, 10],
+] as const) {
+  const generated = generateTacticalBattlefield(unitCount, deterministicRng(71, 0), "forest", undefined);
+  if (!generated.ok) throw new Error(generated.error);
+  assert.deepEqual([generated.battlefield.size, generated.grid.width, generated.grid.height], [size, width, height]);
+  assert.deepEqual(generated.grid, generateGrid(unitCount, deterministicRng(71, 0), "forest"));
+}
+
 const landmark = generateTacticalBattlefield(2, deterministicRng(99, 0), "plains", {
   size: "large",
   features: [{ terrain: "wall", placement: "center", shape: "barrier" }],

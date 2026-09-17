@@ -122,6 +122,18 @@ try {
     "An active encounter's pinned style wins over the next-battle setting",
   );
   assert.match(activeContext.tacticalBattlefieldContext ?? "", /Accepted features: forest center patch/);
+  const classicContext = await resolvePromptContext({
+    gameActiveState: "combat",
+    gameCombatStyle: "tactical",
+    gameCombatState: { combatStyle: "classic" },
+    gameTacticalCombatSnapshot: state,
+  });
+  assert.equal(classicContext.combatStyle, "classic");
+  assert.equal(
+    classicContext.tacticalBattlefieldContext,
+    undefined,
+    "A pinned classic encounter must ignore retained tactical terrain",
+  );
   assert.equal(
     (
       await resolvePromptContext({

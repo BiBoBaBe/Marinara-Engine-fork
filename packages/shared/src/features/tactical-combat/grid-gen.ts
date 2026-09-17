@@ -161,12 +161,13 @@ function pickTerrain(weights: EnvProfile["weights"], rng: () => number): Tactica
   return "forest";
 }
 
+function defaultBattlefieldSize(unitCount: number): TacticalBattlefieldSize {
+  return unitCount > 8 ? "large" : unitCount > 5 ? "medium" : "small";
+}
+
 /** Grid dimensions scale with the number of combatants. Default 12x8, cap 14x10. */
 export function gridDimensions(unitCount: number, size?: TacticalBattlefieldSize): { width: number; height: number } {
-  if (size) return BATTLEFIELD_SIZES[size];
-  if (unitCount > 8) return { width: 14, height: 10 };
-  if (unitCount > 5) return { width: 13, height: 9 };
-  return { width: 12, height: 8 };
+  return { ...BATTLEFIELD_SIZES[size ?? defaultBattlefieldSize(unitCount)] };
 }
 
 const SPAWN_COLS = 2;
@@ -397,7 +398,7 @@ export function generateTacticalBattlefield(
   const validated = validateTacticalBattlefieldBrief(requestedBrief);
   if (!validated.ok) return validated;
   const brief = validated.brief;
-  const size = brief?.size ?? (unitCount > 8 ? "large" : unitCount > 5 ? "medium" : "small");
+  const size = brief?.size ?? defaultBattlefieldSize(unitCount);
   const grid = generateGrid(unitCount, rng, environment, size);
   const protectedTiles = new Set<string>();
 
