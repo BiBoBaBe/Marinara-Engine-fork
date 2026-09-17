@@ -220,7 +220,7 @@ function baseArgs(overrides: Partial<ResolveGenerationToolsArgs>): ResolveGenera
         }),
       );
       assert.ok(
-        !names(invalidCustom.toolDefs).includes("fixture_clock"),
+        !names(invalidCustom.toolDefs)?.includes("fixture_clock"),
         "an invalid enabled custom tool still owns its name",
       );
     }
