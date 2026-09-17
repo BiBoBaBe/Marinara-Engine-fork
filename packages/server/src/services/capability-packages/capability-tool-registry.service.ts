@@ -27,8 +27,7 @@ export interface CapabilityToolRegistration {
    * Runs when the model calls it. Whatever it returns is shown to the model as the tool's result,
    * so a short confirmation is usually right and an object is fine.
    *
-   * A throw is caught and reported to the model as a failure: a package must never be able to cost
-   * somebody their turn.
+   * A throw is caught and reported to the model as a failed tool call.
    */
   handler: (args: Record<string, unknown>, context: CapabilityToolCall) => unknown | Promise<unknown>;
 }
@@ -188,8 +187,9 @@ export async function executeCapabilityTool(
   const tool = byQualifiedName.get(name);
   if (!tool) return { error: `Unknown tool ${name}` };
   try {
-    // A handler that never settles would hold the turn open forever, so the wait is bounded. The
-    // handler itself keeps running; the turn simply stops depending on it.
+    // ponytail: this trusted in-process runtime bounds asynchronous waits, not synchronous work.
+    // Hard cancellation would require isolating package execution in a worker or process.
+    // A timed-out handler keeps running; the turn simply stops depending on it.
     const result = await withDeadline(
       tool.handler(args, {
         chatId,

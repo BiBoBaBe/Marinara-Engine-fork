@@ -570,7 +570,7 @@ Rules worth knowing before you write one:
   package at activation, where a developer sees it, rather than mid-turn.
 - A handler that throws is reported to the model as a failed tool call and logged; its message is not
   forwarded. A handler that has not settled within **10 seconds** is abandoned the same way — it keeps
-  running, but the turn stops waiting on it. A package must never be able to cost somebody their turn.
+  running, but the turn stops waiting on it.
 - Tool results must serialize to at most **64 KiB**. Larger or non-serializable results fail the call
   instead of crowding out the conversation. Descriptions and results are trusted package content;
   package authors must check `chatId` before reading or changing chat-specific state.
@@ -585,6 +585,10 @@ Rules worth knowing before you write one:
 - Deactivating, updating or removing a package releases its tools, so a tool is never offered to a
   model whose package is no longer there to answer it.
   Tools are removed before awaiting package cleanup, whose individual callbacks have an 8-second deadline.
+
+These deadlines bound asynchronous waits only. Packages run as trusted code in the server process;
+synchronous work that blocks the event loop cannot be interrupted by a timer. Hard cancellation would
+require a separate worker or process boundary, which this API does not provide.
 
 This is not a soft seam. `api.registerTool` only exists on an Engine this new, so a package that
 needs it must declare `capabilityApi` 1.19 and will refuse to install on anything older.
