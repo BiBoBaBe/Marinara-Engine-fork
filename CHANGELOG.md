@@ -4,6 +4,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Starting a Conversation or Roleplay chat from a character card keeps that character selected when saved wizard defaults are applied (#6284).
+- CI isolates language checks from live agent-catalog availability and gives cold native server startup its own deadline while preserving the restart deadline.
+- Roleplay documents choose one of three built-in styles for each document kind and keep that choice with the saved command. Real dice rolls appear inside the reply where they were requested, using the existing dice animation and preserving their results after reload (#6279).
+- Pinch zoom on mobile preserves the Roleplay layout and media size instead of treating the smaller visual viewport as an open keyboard (#6278).
+- Advanced Memory scene decisions have room for reasoning models to finish, respect the helper connection's output cap, and explain output-limit failures (#6280).
+- Model discovery errors expose the underlying network error code and clarify that the provider must be reachable from the Marinara server (#6268).
+- Roleplay interruption instructions explicitly cover dialogue and actions, with a concrete example of a plausible intervention (#6281).
+
 - Tactical Game Mode can combine a GM terrain brief with a reusable battlefield seed and size. Requested terrain is validated and preserved, with an explicit generated-terrain fallback when a layout cannot be used. Flying and teleporting units gain distinct movement rules while retaining terrain defense and evasion bonuses. Malformed saved grids are excluded from GM battlefield summaries (#6265).
 - Added a contributor roadmap separating combat participation from battlefield rules, with follow-up plans for summoning and versioned tabletop rules profiles (#6265).
 - Codex contributors review locally with CodeRabbit and resolve valid findings before requesting PR review, reducing use of the repository's shared review quota. Documented false positives or purely pedantic suggestions do not block review.
