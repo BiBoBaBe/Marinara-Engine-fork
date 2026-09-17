@@ -13,7 +13,13 @@ import { createLLMProvider } from "../services/llm/provider-registry.js";
 import type { ChatMessage } from "../services/llm/base-provider.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
+import { passThroughLeaf } from "../services/prompt/prompt-escaping.js";
 import { localAuthProviderBaseUrl, normalizeRpgStatPools } from "@marinara-engine/shared";
+import {
+  tacticalBattlefieldSetupSchema,
+  validateTacticalEncounterBlueprint,
+  type TacticalBattlefieldSetup,
+} from "../services/game/tactical-battlefield.service.js";
 import type {
   EncounterInitRequest,
   EncounterActionRequest,
@@ -306,6 +312,7 @@ function buildInitPrompt(
   gameStateCtx: string,
   spellbookCtx: string,
   tactical: boolean,
+  tacticalBattlefield?: TacticalBattlefieldSetup,
 ): ChatMessage[] {
   const msgs: ChatMessage[] = [];
 
@@ -330,6 +337,11 @@ function buildInitPrompt(
     system += `IMPORTANT: When generating the party's attacks, prioritize spells/abilities from the spellbook above. These are the player's known spells and custom attacks that MUST be available as attack options.\n\n`;
   }
 
+  if (tactical && tacticalBattlefield?.instructions) {
+    // User-authored prompt prose stays verbatim under the shared prompt-leaf contract.
+    system += `The player supplied these battlefield design instructions. Follow them when choosing the bounded semantic terrain brief, while keeping the generated battlefield playable:\n<battlefield_instructions>\n${passThroughLeaf(tacticalBattlefield.instructions)}\n</battlefield_instructions>\n\n`;
+  }
+
   system += `Here is the chat history before the encounter:\n<history>\n`;
   msgs.push({ role: "system", content: system });
 
@@ -352,6 +364,7 @@ function buildInitPrompt(
   inst += `      "statuses": [],\n`;
   if (tactical) {
     inst += `      "class": "fighter|knight|rogue|archer|mage|healer",\n`;
+    inst += `      "movementMode": "walk|fly|teleport",\n`;
   }
   inst += `      "isPlayer": true\n`;
   inst += `    }\n`;
@@ -366,6 +379,7 @@ function buildInitPrompt(
   inst += `      "description": "Brief enemy description",\n`;
   if (tactical) {
     inst += `      "class": "fighter|knight|rogue|archer|mage|healer",\n`;
+    inst += `      "movementMode": "walk|fly|teleport",\n`;
   }
   inst += `      "sprite": "emoji or brief visual description"\n`;
   inst += `    }\n`;
@@ -379,7 +393,11 @@ function buildInitPrompt(
   inst += `  },\n`;
   if (tactical) {
     inst += `  "battlefield": {\n`;
-    inst += `    "formation": "line|ambush|surrounded|skirmish|defense"\n`;
+    inst += `    "formation": "line|ambush|surrounded|skirmish|defense",\n`;
+    inst += `    "terrainBrief": {\n`;
+    inst += `      "size": "small|medium|large",\n`;
+    inst += `      "features": [{"terrain":"plains|forest|mountain|ruin|water|wall","placement":"center|north|south|east|west","shape":"patch|barrier"}]\n`;
+    inst += `    }\n`;
     inst += `  },\n`;
   }
   inst += `  "itemEffects": [\n`;
@@ -405,6 +423,11 @@ function buildInitPrompt(
   if (tactical) {
     inst += `- battlefield.formation: pick the arrangement matching how the scene led into combat — ambushed → ambush, encircled → surrounded, holding/defending a position → defense, sudden chance encounter → skirmish, otherwise line.\n`;
     inst += `- class: pick each combatant's tactical role from how they fight — ranged bow/gun users → archer, spellcasters → mage, dedicated healers → healer, fast skirmishers/assassins → rogue, armored defenders → knight, otherwise fighter.\n`;
+    inst += `- movementMode: use fly only when established context says the combatant can sustain battlefield flight, teleport only when established context says they can reliably teleport during combat, otherwise walk. Do not invent movement powers.\n`;
+    inst += `- battlefield.terrainBrief: describe at most four important semantic terrain features supported by the scene. A barrier may use only wall, water, or mountain. Do not repeat the same terrain/placement/shape combination. The server generates and validates exact tiles.\n`;
+    if (tacticalBattlefield?.size) {
+      inst += `- battlefield.terrainBrief.size: use exactly "${tacticalBattlefield.size}" because the player selected that board size.\n`;
+    }
   }
   inst += `- statuses: format {"name":"Status","emoji":"💀","duration":X,"modifier":-2,"stat":"attack|defense|speed|hp"}\n`;
   inst += `- HP values: if the persona section above lists a configured Max HP (from stat bars named HP/Health/etc, or from "Max HP" under Persona RPG Stats), use that EXACT number for the player's maxHp, and set hp = maxHp so combat starts at full health. If a character ally has a "Max HP: N" line in its block, do the same for that ally. Do NOT invent or "rebalance" a defined Max HP, and do NOT start any combatant below full HP at combat init. Only invent HP for combatants (enemies, unstatted allies) that have no defined HP in the context.\n`;
@@ -610,6 +633,17 @@ export async function encounterRoutes(app: FastifyInstance) {
         (chatMeta?.gameCombatStyle as string | undefined) ??
         ((chatMeta?.gameSetupConfig as Record<string, unknown> | undefined)?.combatStyle as string | undefined) ??
         "classic";
+      const setupConfig = chatMeta?.gameSetupConfig as Record<string, unknown> | undefined;
+      const tacticalBattlefieldResult =
+        combatStyle === "tactical" && setupConfig?.tacticalBattlefield !== undefined
+          ? tacticalBattlefieldSetupSchema.safeParse(setupConfig.tacticalBattlefield)
+          : null;
+      if (tacticalBattlefieldResult && !tacticalBattlefieldResult.success) {
+        const issue = tacticalBattlefieldResult.error.issues[0];
+        return reply.status(400).send({
+          error: `Stored tactical battlefield settings are invalid: ${issue?.message ?? "invalid settings"}`,
+        });
+      }
       const gameStateCtx = await buildGameStateContext(gsStorage, chatId, personaName, chatMeta);
       const spellbookCtx = await loadSpellbookContext(spellbookId);
 
@@ -629,6 +663,7 @@ export async function encounterRoutes(app: FastifyInstance) {
         gameStateCtx,
         spellbookCtx,
         combatStyle === "tactical",
+        tacticalBattlefieldResult?.success ? tacticalBattlefieldResult.data : undefined,
       );
       debugLog(
         "[debug/game/combat:init] request chatId=%s model=%s historyMessages=%d settings=%s",
@@ -665,6 +700,13 @@ export async function encounterRoutes(app: FastifyInstance) {
 
       if (!combatState?.party || !combatState?.enemies) {
         return reply.status(502).send({ error: "Invalid combat data returned by AI" });
+      }
+      if (combatStyle === "tactical") {
+        const tacticalResult = validateTacticalEncounterBlueprint(combatState);
+        if (!tacticalResult.ok) {
+          return reply.status(502).send({ error: `AI returned invalid tactical combat data: ${tacticalResult.error}` });
+        }
+        combatState = tacticalResult.blueprint as Record<string, unknown>;
       }
       debugLog("[debug/game/combat:init] parsed response:\n%s", JSON.stringify(combatState, null, 2));
 

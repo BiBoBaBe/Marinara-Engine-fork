@@ -8,6 +8,7 @@
 // ──────────────────────────────────────────────
 
 import type { MusicEnemyTier } from "../utils/music-score.js";
+import type { TacticalMovementMode } from "../features/tactical-combat/types.js";
 
 /** Attack definition for party members and enemies. */
 export interface CombatAttack {
@@ -105,6 +106,8 @@ export interface CombatPartyMember {
   isPlayer: boolean;
   /** Tactical-combat class hint (fighter/knight/rogue/archer/mage/healer). Classic combat ignores this. */
   class?: string;
+  /** Tactical traversal rule. Classic combat ignores this; missing means walk. */
+  movementMode?: TacticalMovementMode;
 }
 
 /** An enemy in the encounter. */
@@ -118,6 +121,8 @@ export interface CombatEnemy {
   sprite: string;
   /** Tactical-combat class hint (fighter/knight/rogue/archer/mage/healer). Classic combat ignores this. */
   class?: string;
+  /** Tactical traversal rule. Classic combat ignores this; missing means walk. */
+  movementMode?: TacticalMovementMode;
 }
 
 /** AI-chosen visual styling hints for the combat environment. */

@@ -94,6 +94,10 @@ export interface GameSetupSummarySection {
   rows: GameSetupSummaryRow[];
 }
 
+const TACTICAL_BATTLEFIELD_SEED_MAX = 0xffffffff;
+const TACTICAL_BATTLEFIELD_INSTRUCTIONS_MAX = 4_000;
+const TACTICAL_BATTLEFIELD_SIZES = new Set(["small", "medium", "large"]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -233,6 +237,34 @@ function parseShareConfig(value: unknown): GameSetupConfig {
   if (value.combatStyle !== undefined && value.combatStyle !== "classic" && value.combatStyle !== "tactical") {
     throw new Error("This file has an invalid combat style.");
   }
+  if (value.tacticalBattlefield !== undefined) {
+    if (!isRecord(value.tacticalBattlefield)) {
+      throw new Error(translate("ui.game.gamesetupshare.invalidTacticalBattlefieldSettings"));
+    }
+    const battlefield = value.tacticalBattlefield;
+    if (
+      battlefield.seed !== undefined &&
+      (typeof battlefield.seed !== "number" ||
+        !Number.isSafeInteger(battlefield.seed) ||
+        battlefield.seed < 0 ||
+        battlefield.seed > TACTICAL_BATTLEFIELD_SEED_MAX)
+    ) {
+      throw new Error(translate("ui.game.gamesetupshare.invalidTacticalBattlefieldSeed"));
+    }
+    if (
+      battlefield.size !== undefined &&
+      (typeof battlefield.size !== "string" || !TACTICAL_BATTLEFIELD_SIZES.has(battlefield.size))
+    ) {
+      throw new Error(translate("ui.game.gamesetupshare.invalidTacticalBattlefieldSize"));
+    }
+    if (
+      battlefield.instructions !== undefined &&
+      (typeof battlefield.instructions !== "string" ||
+        battlefield.instructions.length > TACTICAL_BATTLEFIELD_INSTRUCTIONS_MAX)
+    ) {
+      throw new Error(translate("ui.game.gamesetupshare.invalidTacticalTerrainGuidance"));
+    }
+  }
   if (
     value.gameWorldMapMode !== undefined &&
     value.gameWorldMapMode !== "standard" &&
@@ -324,13 +356,32 @@ function parseShareConfig(value: unknown): GameSetupConfig {
 }
 
 function normalizeShareConfig(config: GameSetupConfig): GameSetupConfig {
-  if (config.spatialMapDraftSize === undefined && config.spatialMapTargetLocationCount === undefined) return config;
-  const options = resolveGameSpatialMapDraftOptions(config.spatialMapDraftSize, config.spatialMapTargetLocationCount);
-  return {
-    ...config,
-    spatialMapDraftSize: options.size,
-    spatialMapTargetLocationCount: options.targetLocationCount,
-  };
+  let normalized = config;
+  if (config.spatialMapDraftSize !== undefined || config.spatialMapTargetLocationCount !== undefined) {
+    const options = resolveGameSpatialMapDraftOptions(config.spatialMapDraftSize, config.spatialMapTargetLocationCount);
+    normalized = {
+      ...normalized,
+      spatialMapDraftSize: options.size,
+      spatialMapTargetLocationCount: options.targetLocationCount,
+    };
+  }
+  if (normalized.combatStyle === "tactical" && normalized.tacticalBattlefield) {
+    const instructions = normalized.tacticalBattlefield.instructions?.trim();
+    const tacticalBattlefield = {
+      ...(normalized.tacticalBattlefield.seed !== undefined ? { seed: normalized.tacticalBattlefield.seed } : {}),
+      ...(normalized.tacticalBattlefield.size ? { size: normalized.tacticalBattlefield.size } : {}),
+      ...(instructions ? { instructions } : {}),
+    };
+    const { tacticalBattlefield: _unused, ...rest } = normalized;
+    normalized = {
+      ...rest,
+      ...(Object.keys(tacticalBattlefield).length > 0 ? { tacticalBattlefield } : {}),
+    };
+  } else if (normalized.tacticalBattlefield) {
+    const { tacticalBattlefield: _unused, ...rest } = normalized;
+    normalized = rest;
+  }
+  return normalized;
 }
 
 export function buildGameSetupShareFile(
@@ -482,7 +533,8 @@ export function resolveGameSetupImport(
   file: GameSetupShareFile,
   context: GameSetupImportContext,
 ): ResolvedGameSetupImport {
-  const { config: sourceConfig, labels, connections: snapshots } = file.setup;
+  const { labels, connections: snapshots } = file.setup;
+  const sourceConfig = normalizeShareConfig(file.setup.config);
   const warnings: string[] = [];
   // Restore installed selections, but import only declared seeds, never arbitrary package state.
   const experience =
@@ -688,6 +740,32 @@ function formatPresentation(config: GameSetupConfig): string {
   return `Custom (${selectedIds.map(titleCaseToken).join(" + ")})`;
 }
 
+function tacticalBattlefieldRows(config: GameSetupConfig): GameSetupSummaryRow[] {
+  if (config.combatStyle !== "tactical") return [];
+  const settings = config.tacticalBattlefield;
+  return [
+    {
+      label: translate("ui.game.gamesetupsummary.battlefieldSeed"),
+      value: settings?.seed !== undefined ? String(settings.seed) : translate("ui.game.gamesetupsummary.random"),
+    },
+    {
+      label: translate("ui.game.gamesetupsummary.battlefieldSize"),
+      value:
+        settings?.size == null
+          ? translate("ui.game.gamesetupsummary.auto")
+          : settings.size === "small"
+            ? translate("ui.game.gamesetupsummary.sizeSmall")
+            : settings.size === "large"
+              ? translate("ui.game.gamesetupsummary.sizeLarge")
+              : translate("ui.game.gamesetupsummary.sizeMedium"),
+    },
+    {
+      label: translate("ui.game.gamesetupsummary.terrainGuidance"),
+      value: settings?.instructions?.trim() || translate("ui.game.gamesetupsummary.none"),
+    },
+  ];
+}
+
 function generationParameterRows(parameters: Partial<GenerationParameters> | null | undefined): GameSetupSummaryRow[] {
   const entries = Object.entries(parameters ?? {}).filter(([, value]) => value !== undefined);
   if (entries.length === 0) return [{ label: "Generation parameters", value: "Connection defaults (not captured)" }];
@@ -744,6 +822,7 @@ export function buildGameSetupSummarySections(source: GameSetupShareSource): Gam
         { label: "Tone", value: config.tone },
         { label: "Difficulty", value: titleCaseToken(config.difficulty) },
         { label: "Combat style", value: titleCaseToken(config.combatStyle ?? "classic") },
+        ...tacticalBattlefieldRows(config),
         { label: "Quick Time Events", value: config.enableQuickTimeEvents === false ? "Off" : "On" },
         { label: "Content rating", value: config.rating.toUpperCase() },
         { label: "Language", value: config.language?.trim() || "Default" },

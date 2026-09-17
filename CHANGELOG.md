@@ -4,6 +4,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Tactical Game Mode can combine a GM terrain brief with a reusable battlefield seed and size. Requested terrain is validated and preserved, with an explicit generated-terrain fallback when a layout cannot be used. Flying and teleporting units gain distinct movement rules while retaining terrain defense and evasion bonuses. Malformed saved grids are excluded from GM battlefield summaries (#6265).
+- Added a contributor roadmap separating combat participation from battlefield rules, with follow-up plans for summoning and versioned tabletop rules profiles (#6265).
+- Codex contributors review locally with CodeRabbit and resolve valid findings before requesting PR review, reducing use of the repository's shared review quota. Documented false positives or purely pedantic suggestions do not block review.
+
 - Custom agent outputs now show separate public-output and private-context editors under the same spoiler protection. Responses that omit private context retain the previous visible turn’s value (#6254).
 - Copied Support Diagnostics include only the latest five relevant client events, omitting routine visibility events and keeping reports shorter while preserving the full local recovery history (#6261).
 - Character Library and Characters panel token estimates include the full character card, including example messages, alternate greetings, instructions, and embedded lore (#6255).

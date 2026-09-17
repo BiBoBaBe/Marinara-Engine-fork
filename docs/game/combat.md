@@ -1,6 +1,37 @@
 # Game Mode: Combat
 
-This guide explains combat in Marinara Engine Game Mode. It covers how a fight starts, the action menu, and the dice math behind every hit. It also explains status effects, elemental reactions, boss mechanics, loot, the Interrupt control, and Quick-Time Events. Combat is run by the AI Game Master (GM), the character who narrates your adventure.
+This guide explains combat in Marinara Engine Game Mode. Choose **Classic** menu battles or **Tactical** grid battles under **Combat Preference** in the setup wizard's **World** step. The AI Game Master (GM) establishes the encounter and narrates the results; the engine resolves battle actions.
+
+## Tactical battles and terrain
+
+Tactical combat places your party and enemies on a battlefield. Select a party unit, inspect its movement range, choose a destination and action, then confirm. Each party unit can act before the enemy phase. Attack forecasts show expected consequences before you commit.
+
+When creating a Tactical game, optional battlefield settings let you choose a seed, a size and terrain guidance for the GM. Leave the seed blank for a generated seed. A seed is a whole number from 0 to 4294967295, including zero. It reproduces the board when the encounter's combatants, terrain brief and other generation inputs are the same; it does not force the GM to generate the same story or enemies.
+
+The GM supplies the scene's environment, formation and a short terrain brief. The engine then creates the exact tiles and spawn positions. Briefs can request terrain patches and barriers near the center or an edge of the map. Terrain guidance is a request to the GM, not a guarantee that every word becomes a tile. The accepted battlefield is saved, so refreshing restores that board rather than generating another one.
+
+The engine checks the brief and the resulting layout. It preserves requested terrain while making the generated encounter reachable. If those constraints cannot fit together, the battle reports the problem. **Use generated terrain** explicitly starts without the rejected terrain features; it does not quietly erase them. Exact hand-painted maps and a battlefield editor are not available yet.
+
+| Terrain               | Walking                 | Defense and evasion                       |
+| --------------------- | ----------------------- | ----------------------------------------- |
+| Plains                | Costs 1 movement point  | No bonus                                  |
+| Forest                | Costs 2 movement points | +1 defense, +15 percentage points evasion |
+| Ruins                 | Costs 1 movement point  | +1 defense, +10 percentage points evasion |
+| Mountain, water, wall | Blocks walking          | No bonus                                  |
+
+Units with an established flying or teleportation capability can move differently:
+
+- **Walking** follows reachable ground tiles. Enemy units block the path; units cannot finish on an occupied tile.
+- **Flying** crosses terrain and intervening units at one movement point per tile, including forests. A flying unit can hover over an otherwise blocked tile, but cannot finish on another unit.
+- **Teleportation** ignores intervening terrain and units. Its destination must be within movement range, unoccupied and walkable. It cannot end inside a wall, on a mountain tile or over unsupported water.
+
+Both special movement modes use the current movement allowance and orthogonal tile distance. They retain the destination terrain's defense/evasion bonuses. This is a simple flat-grid movement model; altitude, ceilings, spell-specific costs and spell-specific sight requirements are not modeled.
+
+Tactical combat uses party and enemy phases, rather than individual tabletop initiative. Movement-blocking walls do not yet block ranged attacks by line of sight. Cover, tabletop rule profiles and full summoning combat are separate future work.
+
+## Classic battles
+
+The remaining action-menu and dice-math sections describe Classic combat. All party members participate, but your selected command controls the first living party combatant; other companions act automatically.
 
 ## Starting an encounter
 
@@ -47,11 +78,11 @@ On a hit, base damage comes from the attacker's Attack stat and grows with their
 The last step scales damage by the game's Difficulty, which you set in the setup wizard. The four settings multiply final damage like this:
 
 | Difficulty | Damage multiplier |
-|---|---|
-| Casual | 0.6 |
-| Normal | 1.0 |
-| Hard | 1.3 |
-| Brutal | 1.6 |
+| ---------- | ----------------- |
+| Casual     | 0.6               |
+| Normal     | 1.0               |
+| Hard       | 1.3               |
+| Brutal     | 1.6               |
 
 Higher difficulty means both sides hit harder, so fights are shorter and riskier.
 

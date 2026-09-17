@@ -31,7 +31,7 @@ When you create a Game Mode chat, a **setup wizard** opens. It has seven steps. 
 The seven steps are:
 
 1. **Connection.** Set the game name, pick the GM connection, and optionally set a scene-effects connection. Scene effects default to **Local Model (Gemma)**.
-2. **World.** Set the genre, setting, tone, difficulty, content rating, and language.
+2. **World.** Set the genre, setting, tone, difficulty, content rating, and language. Choose **Classic** or **Tactical** under **Combat Preference**. Tactical games also offer optional battlefield seed, size and terrain guidance.
 3. **Party.** Pick your persona (the character you play), the **Game Master Mode**, and any party members.
 4. **Goals.** Tell the GM what you want from the adventure.
 5. **Lorebooks.** Attach any lorebooks whose facts the GM should treat as canon. A lorebook is a set of background world facts. See [Lorebooks](../lorebooks/overview.md).
@@ -39,6 +39,8 @@ The seven steps are:
 7. **GM.** Choose the presentation style and review advanced GM instructions before the world is built.
 
 When you finish, click **Start Game**.
+
+For Tactical games, leaving the battlefield options blank lets the GM choose a scene-appropriate brief and the engine generate a board. A fixed seed makes generation repeatable for the same encounter inputs; terrain guidance asks the GM for features such as a ruined wall or forest clearing. See [Combat](combat.md#tactical-battles-and-terrain) for movement rules, terrain bonuses and generation failures.
 
 ### Defaults worth knowing
 

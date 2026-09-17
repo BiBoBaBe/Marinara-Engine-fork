@@ -33,6 +33,7 @@ import type {
   HudWidget,
   GameBlueprint,
   TacticalCombatState,
+  TacticalBattlefieldBrief,
   TacticalAction,
   TacticalEvent,
   RPGStatPool,
@@ -855,6 +856,7 @@ export function useTacticalCombatStart() {
       party: Combatant[];
       enemies: Combatant[];
       seed?: number;
+      battlefield?: TacticalBattlefieldBrief;
       /** Blueprint scene context — themes the terrain (styleNotes.environmentType). */
       environment?: string;
       /** Blueprint battlefield.formation — drives spawn placement. */

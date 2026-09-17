@@ -61,6 +61,9 @@ async function mountWizard(page: Page, testInfo: TestInfo, options: WizardMountO
   });
   await page.addInitScript((value) => localStorage.setItem("marinara:whats-new:seen-version", value), version);
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "What shall we cook tonight?", exact: true })).toBeVisible({
+    timeout: 40_000,
+  });
   await page.evaluate(
     async ({ isNewGame, chatMetadata, characters }) => {
       const { GameSetupWizard } = await import("/src/components/game/GameSetupWizard.tsx" as string);
@@ -522,4 +525,74 @@ test("an ordinary setup import keeps the prefilled seed", async ({ page }, testI
   await wizard.getByRole("switch", { name: "Setup fixture", exact: true }).click();
   await expect(seedField).toHaveValue("4242");
   await expect(wizard.getByRole("alert")).toHaveCount(0);
+});
+
+test("Tactical setup imports and submits seed zero, size and terrain guidance", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  await page.route("**/api/capability-packages/installed", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/capability-packages/agents", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/connections", (route) => route.fulfill({ json: wizardConnections }));
+  await page.route("**/api/lorebooks", (route) => route.fulfill({ json: [] }));
+  const wizard = await mountWizard(page, testInfo, { isNewGame: true });
+  await wizard
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "tactical.marinara-game-setup.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          format: "marinara-game-setup",
+          version: 1,
+          gameName: "River crossing",
+          gmConnectionId: "wizard-connection",
+          setup: {
+            config: {
+              genre: "Fantasy",
+              setting: "River crossing",
+              tone: "Hopeful",
+              difficulty: "normal",
+              rating: "sfw",
+              gmMode: "standalone",
+              partyCharacterIds: [],
+              playerGoals: "Reach the far shore",
+              combatStyle: "tactical",
+              tacticalBattlefield: { seed: 0, size: "large", instructions: "Ruins beside a forest clearing." },
+            },
+          },
+        }),
+      ),
+    });
+  await expect(wizard.getByPlaceholder("Name your adventure...", { exact: true })).toHaveValue("River crossing");
+  const { next, back } = stepNavigation(wizard);
+  await next();
+  const seed = wizard.getByLabel("Battlefield seed", { exact: true });
+  await expect(seed).toHaveValue("0");
+  await expect(wizard.getByLabel("Battlefield size", { exact: true })).toHaveValue("large");
+  await expect(wizard.getByLabel("Terrain guidance", { exact: true })).toHaveValue("Ruins beside a forest clearing.");
+  await seed.fill("1.5");
+  await expect(wizard.getByRole("alert")).toContainText(/whole number/i);
+  for (let step = 0; step < 5; step++) await next();
+  await expect(wizard.getByRole("button", { name: "Download setup", exact: true })).toBeDisabled();
+  await expect(wizard.getByRole("button", { name: /Start/u })).toBeDisabled();
+  for (let step = 0; step < 5; step++) await back();
+  await expect(wizard.getByRole("heading", { name: "World", exact: true })).toBeVisible();
+  await seed.fill("0");
+  await expect(wizard.getByRole("alert")).toHaveCount(0);
+  await wizard.getByRole("button", { name: /^Classic/ }).click();
+  await expect(seed).toHaveCount(0);
+  await wizard.getByRole("button", { name: /^Tactical/ }).click();
+  await expect(seed).toHaveValue("0");
+  await wizard.getByLabel("Terrain guidance", { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("hybrid-terrain-setup.png") });
+  for (let step = 0; step < 5; step++) await next();
+  await expect(wizard.getByRole("button", { name: "Download setup", exact: true })).toBeEnabled();
+  await wizard.getByRole("button", { name: /Start/u }).click();
+  const result = JSON.parse((await page.getByTestId("wizard-result").textContent()) ?? "{}");
+  expect(result.config.combatStyle).toBe("tactical");
+  expect(result.config.tacticalBattlefield).toEqual({
+    seed: 0,
+    size: "large",
+    instructions: "Ruins beside a forest clearing.",
+  });
 });
