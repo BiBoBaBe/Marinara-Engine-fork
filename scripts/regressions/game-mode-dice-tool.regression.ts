@@ -178,6 +178,28 @@ function baseArgs(overrides: Partial<ResolveGenerationToolsArgs>): ResolveGenera
       "package tools attach without enabling built-in tools",
     );
     assert.equal(supported.enableChatTools, false);
+    const collision = await resolveGenerationTools(
+      baseArgs({
+        customToolsStore: {
+          listEnabled: async () => [
+            {
+              name: "fixture_clock",
+              description: "My clock",
+              parametersSchema: { type: "object" },
+              executionType: "static",
+              webhookUrl: null,
+              staticResult: "noon",
+              scriptBody: null,
+            },
+          ],
+        },
+      }),
+    );
+    assert.equal(
+      collision.toolDefs,
+      undefined,
+      "disabling chat tools cannot expose a package handler under a custom tool's name",
+    );
     const unsupported = await resolveGenerationTools(baseArgs({ nativeToolsAvailable: false }));
     assert.equal(unsupported.toolsAttached, false, "package tools respect the provider's native tool capability");
     assert.equal(unsupported.toolDefs, undefined);

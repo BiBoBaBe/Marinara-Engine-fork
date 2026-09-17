@@ -500,6 +500,7 @@ async function loadToolDefinitions(args: {
   const customToolDefs: CustomToolDef[] = [];
 
   const registeredToolSources = new Map<string, "built-in" | "custom" | "package">();
+  const enabledCustomTools = await args.customToolsStore.listEnabled();
 
   // A package's tools are attached even when every built-in and custom tool is switched off: the
   // user's tool switches are about the Engine's tools, not about whether an installed package can
@@ -507,6 +508,9 @@ async function loadToolDefinitions(args: {
   // belongs to whoever will actually execute the call.
   if (!args.resolveTools) {
     for (const tool of BUILT_IN_TOOLS) registeredToolSources.set(tool.name, "built-in");
+    for (const tool of enabledCustomTools) {
+      if (!registeredToolSources.has(tool.name)) registeredToolSources.set(tool.name, "custom");
+    }
     const packageOnlyToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources, args.nativeToolsAvailable);
     return {
       toolDefs: packageOnlyToolDefs.length > 0 ? packageOnlyToolDefs : toolDefs,
@@ -533,7 +537,6 @@ async function loadToolDefinitions(args: {
     });
   }
 
-  const enabledCustomTools = await args.customToolsStore.listEnabled();
   for (const customTool of enabledCustomTools) {
     const existingSource = registeredToolSources.get(customTool.name);
     if (existingSource) {
