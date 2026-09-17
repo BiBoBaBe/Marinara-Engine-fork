@@ -520,7 +520,7 @@ built-ins on every turn of every chat, validates the call against the package's 
 hands the arguments to the package's handler.
 
 ```ts
-export async function activate(api) {
+export async function activate({ api }) {
   api.registerTool({
     name: "set_time",
     description: "Move the world clock forward or back.",
@@ -559,6 +559,8 @@ Rules worth knowing before you write one:
 - Names are namespaced to `<packageId>_<name>`, with `-` flattened to `_`, so `world-clock`'s
   `set_time` reaches the model as `world_clock_set_time`. A qualified name already taken by another
   package, a built-in, or a user's custom tool is refused and logged rather than silently shadowing.
+  Resolution is built-in first, then custom, then package, in both the definitions the model is
+  shown and the executor, so the owner of a name is always the one that runs the call.
 - A package's tools are always attached for as long as it is active. There is no second per-chat
   switch the way there is for built-in tools: declaring the permission and registering the tool is
   the decision.

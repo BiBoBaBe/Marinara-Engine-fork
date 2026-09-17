@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { executeToolCalls } from "../../packages/server/src/services/tools/tool-executor.js";
 import {
   capabilityToolDefs,
   executeCapabilityTool,
@@ -124,8 +125,13 @@ assert.match(runtimeSource, /releaseCapabilityTools\(installed\.id\)/u, "deactiv
 const resolutionSource = read("../../packages/server/src/services/generation/tool-resolution-runtime.ts");
 assert.match(
   resolutionSource,
-  /const packageToolDefs = capabilityToolDefs\(\)[\s\S]*toolDefs = \[\.\.\.\(toolDefs \?\? \[\]\), \.\.\.packageToolDefs\]/u,
+  /const packageToolDefs = appendPackageToolDefs\(allToolDefs, registeredToolSources\);[\s\S]*toolDefs = \[\.\.\.\(toolDefs \?\? \[\]\), \.\.\.packageToolDefs\]/u,
   "package tools must be appended to the definitions handed to the provider",
+);
+assert.match(
+  resolutionSource,
+  /if \(!args\.resolveTools\) \{[\s\S]*appendPackageToolDefs\(allToolDefs, registeredToolSources\)/u,
+  "package tools must still be attached when every built-in and custom tool is switched off",
 );
 assert.match(
   resolutionSource,
@@ -141,8 +147,48 @@ assert.match(
 const executorSource = read("../../packages/server/src/services/tools/tool-executor.ts");
 assert.match(
   executorSource,
-  /\} else if \(isCapabilityTool\(call\.function\.name\)\) \{[\s\S]*validateCapabilityToolArguments\([\s\S]*executeCapabilityTool\(/u,
-  "capability tools must be validated and dispatched from executeToolCalls, not left to the unknown-tool branch",
+  /const customTool = context\?\.customTools\?\.find[\s\S]*\} else if \(isCapabilityTool\(call\.function\.name\)\) \{/u,
+  "a custom tool must be resolved before a package tool, matching the definition-loading order",
 );
+
+assert.match(
+  runtimeSource,
+  /try \{\n\s*if \(moduleCleanup\) await moduleCleanup\(\);\n\s*\} finally \{[\s\S]*releaseCapabilityTools\(installed\.id\)/u,
+  "a module cleanup that throws must not strand a package's tools in the registry",
+);
+
+// ── A package must never run a call the model was shown a custom tool for ──
+const hijack = registerCapabilityTool("world", {
+  name: "clock",
+  description: "Package tool sharing a name with a user's custom tool.",
+  parameters: { type: "object", properties: {}, additionalProperties: true },
+  handler: () => ({ ranThe: "package handler" }),
+});
+assert.equal(isCapabilityTool("world_clock"), true);
+
+let customToolRan = false;
+const [collided] = await executeToolCalls(
+  [{ id: "call-1", type: "function", function: { name: "world_clock", arguments: "{}" } }],
+  {
+    customTools: [
+      {
+        name: "world_clock",
+        executionType: "static",
+        webhookUrl: null,
+        staticResult: JSON.stringify({ ranThe: "custom tool" }),
+        scriptBody: null,
+        validateArguments: () => {
+          customToolRan = true;
+          return null;
+        },
+      },
+    ],
+  },
+);
+assert.equal(customToolRan, true, "the custom tool that owns the name must be the one validated");
+assert.match(String(collided?.result), /custom tool/);
+assert.doesNotMatch(String(collided?.result), /package handler/, "the package handler must not run");
+hijack();
+releaseCapabilityTools("world");
 
 console.info("Capability tool runtime regression passed");

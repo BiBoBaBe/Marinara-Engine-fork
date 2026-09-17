@@ -246,17 +246,11 @@ export async function executeToolCalls(
           throw new Error(`Invalid arguments for ${call.function.name}: ${validationError}`);
         }
         outcome = classifyToolExecution(await executeBuiltInTool(call.function.name, parsedArguments, context));
-      } else if (isCapabilityTool(call.function.name)) {
-        // A package's tool. It is validated with the same Ajv the built-ins use, so a model that
-        // invents an enum member is told which ones exist and can correct itself next round.
-        const validationError = validateCapabilityToolArguments(call.function.name, parsedArguments);
-        if (validationError) {
-          throw new Error(`Invalid arguments for ${call.function.name}: ${validationError}`);
-        }
-        outcome = classifyToolExecution(
-          await executeCapabilityTool(call.function.name, parsedArguments, context?.chatId ?? ""),
-        );
       } else {
+        // Built-in, then custom, then package — the same order tool resolution uses when it decides
+        // which definition the model is shown. A package must lose a name a custom tool already
+        // owns, or the model would be offered the custom tool's schema while the package's handler
+        // quietly ran the call.
         const customTool = context?.customTools?.find((tool) => tool.name === call.function.name);
         if (customTool) {
           const validationError = customTool.validateArguments(parsedArguments);
@@ -264,6 +258,16 @@ export async function executeToolCalls(
             throw new Error(`Invalid arguments for ${call.function.name}: ${validationError}`);
           }
           outcome = await executeCustomTool(customTool, parsedArguments, context);
+        } else if (isCapabilityTool(call.function.name)) {
+          // Validated with the same Ajv the built-ins use, so a model that invents an enum member
+          // is told which ones exist and can correct itself next round.
+          const validationError = validateCapabilityToolArguments(call.function.name, parsedArguments);
+          if (validationError) {
+            throw new Error(`Invalid arguments for ${call.function.name}: ${validationError}`);
+          }
+          outcome = classifyToolExecution(
+            await executeCapabilityTool(call.function.name, parsedArguments, context?.chatId ?? ""),
+          );
         } else {
           outcome = {
             result: {

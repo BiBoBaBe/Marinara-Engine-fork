@@ -453,6 +453,34 @@ function validateParameterProperty(prop: unknown, path: string): void {
   }
 }
 
+/**
+ * Appends every registered package tool that does not collide with a name already spoken for.
+ *
+ * The collision map is the authority: `executeToolCalls` resolves a call built-in first, then
+ * custom, then package, so a package tool must lose the same way here. Otherwise the model would
+ * be shown one tool's schema and a different owner's handler would run.
+ */
+function appendPackageToolDefs(
+  allToolDefs: LLMToolDefinition[],
+  registeredToolSources: Map<string, "built-in" | "custom" | "package">,
+): LLMToolDefinition[] {
+  const packageToolDefs = capabilityToolDefs().filter((tool) => {
+    const existingSource = registeredToolSources.get(tool.function.name);
+    if (existingSource) {
+      logger.warn(
+        '[tools] Skipping package tool "%s" because it collides with existing %s tool',
+        tool.function.name,
+        existingSource,
+      );
+      return false;
+    }
+    registeredToolSources.set(tool.function.name, "package");
+    return true;
+  });
+  allToolDefs.push(...packageToolDefs);
+  return packageToolDefs;
+}
+
 async function loadToolDefinitions(args: {
   customToolsStore: CustomToolsStore;
   resolveTools: boolean;
@@ -468,9 +496,21 @@ async function loadToolDefinitions(args: {
   const allToolDefs: LLMToolDefinition[] = [];
   const customToolDefs: CustomToolDef[] = [];
 
-  if (!args.resolveTools) return { toolDefs, allToolDefs, customToolDefs };
-
   const registeredToolSources = new Map<string, "built-in" | "custom" | "package">();
+
+  // A package's tools are attached even when every built-in and custom tool is switched off: the
+  // user's tool switches are about the Engine's tools, not about whether an installed package can
+  // do its job. Built-in names are still reserved here so the definition the model is shown always
+  // belongs to whoever will actually execute the call.
+  if (!args.resolveTools) {
+    for (const tool of BUILT_IN_TOOLS) registeredToolSources.set(tool.name, "built-in");
+    const packageOnlyToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources);
+    return {
+      toolDefs: packageOnlyToolDefs.length > 0 ? packageOnlyToolDefs : toolDefs,
+      allToolDefs,
+      customToolDefs,
+    };
+  }
 
   for (const tool of BUILT_IN_TOOLS) {
     const existingSource = registeredToolSources.get(tool.name);
@@ -546,24 +586,8 @@ async function loadToolDefinitions(args: {
     autoAttachToolNames: args.autoAttachToolNames,
   });
 
-  // A package's tools are always attached: it declared the `tools` permission and registered them
-  // for this install, so there is no second switch for a user to find. Names are namespaced by
-  // package id, but a custom tool could still be named to match, so the collision map decides.
-  const packageToolDefs = capabilityToolDefs().filter((tool) => {
-    const existingSource = registeredToolSources.get(tool.function.name);
-    if (existingSource) {
-      logger.warn(
-        '[tools] Skipping package tool "%s" because it collides with existing %s tool',
-        tool.function.name,
-        existingSource,
-      );
-      return false;
-    }
-    registeredToolSources.set(tool.function.name, "package");
-    return true;
-  });
+  const packageToolDefs = appendPackageToolDefs(allToolDefs, registeredToolSources);
   if (packageToolDefs.length > 0) {
-    allToolDefs.push(...packageToolDefs);
     toolDefs = [...(toolDefs ?? []), ...packageToolDefs];
   }
 

@@ -269,19 +269,32 @@ class CapabilityModuleRuntime {
       await capabilityPackageManager.markRuntimeStatus(installed.id, "active");
       await capabilityPackageManager.markRuntimeReadiness(installed.id, "ready");
       this.cleanups.set(installed.id, async () => {
-        if (moduleCleanup) await moduleCleanup();
-        await runCleanups(registeredCleanups);
-        // Belt and braces: a tool left in the registry would be offered to a model whose package
-        // is no longer there to answer it.
-        releaseCapabilityTools(installed.id);
+        // A module cleanup that throws must not strand the host-side registrations. A tool left in
+        // the registry would be offered to a model whose package is no longer there to answer it,
+        // so tracked cleanups and the tool release run either way and the first error is rethrown.
+        try {
+          if (moduleCleanup) await moduleCleanup();
+        } finally {
+          try {
+            await runCleanups(registeredCleanups);
+          } finally {
+            releaseCapabilityTools(installed.id);
+          }
+        }
       });
       logger.info("Activated and verified capability package %s@%s", installed.id, installed.version);
     } catch (error) {
       logger.error(error, "Failed to activate capability package %s@%s", installed.id, installed.version);
       try {
-        if (moduleCleanup) await moduleCleanup();
-        await runCleanups(registeredCleanups);
-        releaseCapabilityTools(installed.id);
+        try {
+          if (moduleCleanup) await moduleCleanup();
+        } finally {
+          try {
+            await runCleanups(registeredCleanups);
+          } finally {
+            releaseCapabilityTools(installed.id);
+          }
+        }
       } catch (cleanupError) {
         logger.warn(cleanupError, "Capability package %s cleanup failed after activation error", installed.id);
       }
