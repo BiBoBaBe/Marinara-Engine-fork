@@ -179,7 +179,9 @@ try {
       terrainBriefError: "model-authored spoof",
     }),
   });
+  const invalidTerrainSnapshot = structuredClone(invalidTerrainInput);
   const recoverableTerrain = validateTacticalEncounterBlueprint(invalidTerrainInput);
+  assert.deepEqual(invalidTerrainInput, invalidTerrainSnapshot);
   assert.equal(recoverableTerrain.ok, true);
   if (recoverableTerrain.ok) {
     assert.equal(recoverableTerrain.blueprint.battlefield?.terrainBrief, undefined);
@@ -197,7 +199,9 @@ try {
       terrainBriefError: "model-authored spoof",
     }),
   });
+  const validTerrainSnapshot = structuredClone(validTerrainInput);
   const validTerrain = validateTacticalEncounterBlueprint(validTerrainInput);
+  assert.deepEqual(validTerrainInput, validTerrainSnapshot);
   assert.equal(validTerrain.ok, true);
   if (validTerrain.ok) {
     assert.deepEqual(validTerrain.blueprint.battlefield?.terrainBrief, {
