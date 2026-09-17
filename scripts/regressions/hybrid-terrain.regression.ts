@@ -6,6 +6,7 @@ import {
   forecastAttack,
   generateTacticalBattlefield,
   getMovementRange,
+  summarizeTacticalBattlefield,
   validateTacticalBattlefieldBrief,
 } from "../../packages/shared/src/features/tactical-combat/index.js";
 import { generateGrid } from "../../packages/shared/src/features/tactical-combat/grid-gen.js";
@@ -127,6 +128,35 @@ assert.match(
   buildTacticalSummary(centerBarrier).battlefieldSummary ?? "",
   /Accepted features: wall center barrier/,
   "the final combat summary must retain its accepted terrain context",
+);
+assert.match(
+  summarizeTacticalBattlefield(centerBarrier) ?? "",
+  /Resolved terrain:/,
+  "a complete generated grid must produce terrain context",
+);
+
+const wrongGridDimensions = structuredClone(centerBarrier);
+wrongGridDimensions.grid.width--;
+assert.equal(
+  summarizeTacticalBattlefield(wrongGridDimensions),
+  undefined,
+  "saved terrain context must reject dimensions that do not match its generated board size",
+);
+
+const incompleteGridRow = structuredClone(centerBarrier);
+incompleteGridRow.grid.tiles[0]!.pop();
+assert.equal(
+  summarizeTacticalBattlefield(incompleteGridRow),
+  undefined,
+  "saved terrain context must reject incomplete grid rows",
+);
+
+const unknownTerrain = structuredClone(centerBarrier);
+unknownTerrain.grid.tiles[0]![0] = "unknown-terrain" as never;
+assert.equal(
+  summarizeTacticalBattlefield(unknownTerrain),
+  undefined,
+  "saved terrain context must reject unknown terrain cells",
 );
 for (const formation of ["line", "ambush", "surrounded", "skirmish", "defense"] as const) {
   const state = createTacticalCombat(

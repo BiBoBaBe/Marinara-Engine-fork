@@ -102,6 +102,9 @@ async function delayNextTacticalStart(
   const requestSeen = deferred<Record<string, unknown>>();
   const responseReady = deferred();
   const responseComplete = deferred();
+  // The caller may exit on responseReady's rejection before awaiting responseComplete.
+  void responseReady.promise.catch(() => {});
+  void responseComplete.promise.catch(() => {});
   let delayed = false;
   await page.route("**/api/game/combat/tactical/start", async (route) => {
     const payload = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;

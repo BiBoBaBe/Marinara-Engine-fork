@@ -1,8 +1,11 @@
-import { TACTICAL_BATTLEFIELD_GENERATOR_VERSION, validateTacticalBattlefieldBrief } from "./grid-gen.js";
-import { TERRAIN_DATA } from "./types.js";
+import {
+  gridDimensions,
+  TACTICAL_BATTLEFIELD_GENERATOR_VERSION,
+  validateTacticalBattlefieldBrief,
+} from "./grid-gen.js";
+import { TERRAIN_DATA, type TacticalBattlefieldSize } from "./types.js";
 
 const BATTLEFIELD_SIZES = new Set(["small", "medium", "large"]);
-const MAX_TILES_PER_AXIS = 64;
 const MAX_SUMMARY_LENGTH = 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -28,6 +31,21 @@ export function summarizeTacticalBattlefield(value: unknown): string | undefined
     return undefined;
   }
 
+  const { width, height } = gridDimensions(0, provenance.size as TacticalBattlefieldSize);
+  const tiles = value.grid.tiles;
+  if (value.grid.width !== width || value.grid.height !== height || !Array.isArray(tiles) || tiles.length !== height) {
+    return undefined;
+  }
+
+  const counts = new Map<string, number>();
+  for (const row of tiles) {
+    if (!Array.isArray(row) || row.length !== width) return undefined;
+    for (const terrain of row) {
+      if (!isKnownTerrain(terrain)) return undefined;
+      counts.set(terrain, (counts.get(terrain) ?? 0) + 1);
+    }
+  }
+
   const lines = [
     `Seed: ${Number.isInteger(value.seed) ? value.seed : "unknown"}`,
     `Environment: ${typeof value.environment === "string" && /^[a-z]+$/.test(value.environment) ? value.environment : "unspecified"}`,
@@ -39,23 +57,13 @@ export function summarizeTacticalBattlefield(value: unknown): string | undefined
     `Accepted features: ${features?.length ? features.map((feature) => `${feature.terrain} ${feature.placement} ${feature.shape}`).join("; ") : "none"}`,
   );
 
-  const tiles = value.grid.tiles;
-  if (Array.isArray(tiles)) {
-    const counts = new Map<string, number>();
-    for (const row of tiles.slice(0, MAX_TILES_PER_AXIS)) {
-      if (!Array.isArray(row)) continue;
-      for (const terrain of row.slice(0, MAX_TILES_PER_AXIS)) {
-        if (isKnownTerrain(terrain)) counts.set(terrain, (counts.get(terrain) ?? 0) + 1);
-      }
-    }
-    if (counts.size) {
-      lines.push(
-        `Resolved terrain: ${[...counts.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([terrain, count]) => `${terrain} ${count}`)
-          .join(", ")}`,
-      );
-    }
+  if (counts.size) {
+    lines.push(
+      `Resolved terrain: ${[...counts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([terrain, count]) => `${terrain} ${count}`)
+        .join(", ")}`,
+    );
   }
   return lines.join("\n").slice(0, MAX_SUMMARY_LENGTH);
 }
