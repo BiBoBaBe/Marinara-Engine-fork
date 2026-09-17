@@ -8374,8 +8374,8 @@ function GameSurfaceComponent({
   );
 
   const combatUiActive = gameState === "combat" && !!combatParty && !!combatEnemies;
-  // Effective combat style: runtime metadata override (settings drawer) ??
-  // wizard setup choice ?? legacy default "classic".
+  // Effective combat style: active encounter pin ?? runtime metadata override
+  // (settings drawer) ?? wizard setup choice ?? legacy default "classic".
   const combatSetupConfig = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
   const effectiveCombatStyle: GameCombatStyle =
     combatPinnedStyle ??

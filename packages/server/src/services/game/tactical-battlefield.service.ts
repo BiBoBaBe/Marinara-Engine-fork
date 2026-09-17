@@ -56,6 +56,8 @@ export function validateTacticalEncounterBlueprint(value: unknown): TacticalEnco
       const member = members[index];
       if (!member || typeof member !== "object" || Array.isArray(member)) continue;
       const movementMode = (member as { movementMode?: unknown }).movementMode;
+      // Omission is the legacy walking default. Reject explicit unsupported capabilities:
+      // silently changing them to walking would change the encounter's movement rules.
       if (
         movementMode !== undefined &&
         !(typeof movementMode === "string" && TACTICAL_MOVEMENT_MODES.has(movementMode as TacticalMovementMode))

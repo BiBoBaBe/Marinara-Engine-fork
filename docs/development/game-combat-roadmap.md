@@ -27,6 +27,8 @@ Generated terrain may be repaired for connectivity, but authored constraints mus
 
 Walking, flying and teleportation need explicit movement semantics. Flight and teleportation may cross walls, water and mountains and bypass forest's extra movement cost. Terrain defense and evasion bonuses remain independent of movement mode.
 
+An omitted movement mode defaults to walking for legacy encounters. An explicitly unsupported movement mode is rejected with an error; do not silently replace a requested capability with walking. This validation contract applies to generated blueprints and tactical API inputs.
+
 Keep traversal, legal destinations and occupancy separate. Teleporting across a wall does not imply permission to finish inside solid terrain. The initial flat grid cannot represent altitude, ceilings, spell-specific sight requirements or limited flight duration; document that ceiling instead of claiming full tabletop movement rules. Reuse the same movement legality for previews, resolution, path animation and enemy AI.
 
 ## Tabletop rules: built-in profiles plus GM reference tools
