@@ -86,7 +86,7 @@ export function validateTacticalBattlefieldBrief(value: unknown): TacticalBattle
     ) {
       return { ok: false, error: "Unknown battlefield feature shape." };
     }
-    if (feature.shape === "barrier" && !["wall", "water", "mountain"].includes(feature.terrain)) {
+    if (feature.shape === "barrier" && !TERRAIN_DATA[feature.terrain as TacticalTerrain].impassable) {
       return { ok: false, error: "Barrier features must use wall, water, or mountain terrain." };
     }
     const key = `${feature.terrain}:${feature.placement}:${feature.shape}`;
