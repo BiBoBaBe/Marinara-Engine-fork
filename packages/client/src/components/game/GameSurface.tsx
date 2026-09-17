@@ -4610,6 +4610,23 @@ function GameSurfaceComponent({
     };
   }, [activeChatId]);
 
+  const combatPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest snapshot stored in a ref so the cleanup path can flush it synchronously
+  // when the effect re-runs (chat switch / unmount) — without this, a refresh inside
+  // the 800 ms debounce window would silently drop the most recent state.
+  const combatPendingSnapshotRef = useRef<{ chatId: string; snapshot: GameCombatStateSnapshot } | null>(null);
+  // Shared helper used by restore validation, combat-end, and return-to-pre-combat-turn
+  // so every path clears pending persistence before wiping stored combat state.
+  const clearCombatSnapshot = useCallback((chatId: string | null) => {
+    if (!chatId) return;
+    if (combatPersistTimer.current) {
+      clearTimeout(combatPersistTimer.current);
+      combatPersistTimer.current = null;
+    }
+    combatPendingSnapshotRef.current = null;
+    api.patch(`/chats/${chatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null }).catch(() => {});
+  }, []);
+
   // ── Restore in-progress combat state from chat metadata on page load ──
   // Without this, refreshing during a fight drops the user back into prose narration even
   // though gameActiveState is still "combat", because the live party/enemy snapshot only
@@ -4626,9 +4643,7 @@ function GameSurfaceComponent({
     if (!snapshot || !snapshot.party?.length || !snapshot.enemies?.length) return;
     if (chatMeta.gameActiveState !== "combat") {
       // Stale snapshot — combat ended but the metadata write didn't land. Clear it.
-      api
-        .patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null })
-        .catch(() => {});
+      clearCombatSnapshot(activeChatId);
       return;
     }
     // Runtime validation: the snapshot is JSON-deserialized from chat metadata that
@@ -4643,9 +4658,7 @@ function GameSurfaceComponent({
         "[game-surface] Discarding combat snapshot — failed Combatant schema validation. " +
           "Likely written by an older client version.",
       );
-      api
-        .patch(`/chats/${activeChatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null })
-        .catch(() => {});
+      clearCombatSnapshot(activeChatId);
       return;
     }
     setCombatParty(rawParty);
@@ -4700,6 +4713,7 @@ function GameSurfaceComponent({
     chatMeta.gameCombatStyle,
     chatMeta.gameSetupConfig,
     chatMeta.gameTacticalCombatSnapshot,
+    clearCombatSnapshot,
     isMessagesLoading,
   ]);
 
@@ -4707,23 +4721,6 @@ function GameSurfaceComponent({
   // Mirrors the scene-asset persistence above but only fires while combat is active.
   // The snapshot doesn't include per-round transient state (animations, log entries) —
   // those reset on restore and combat resumes from the start of the round.
-  const combatPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Latest snapshot stored in a ref so the cleanup path can flush it synchronously
-  // when the effect re-runs (chat switch / unmount) — without this, a refresh inside
-  // the 800 ms debounce window would silently drop the most recent state.
-  const combatPendingSnapshotRef = useRef<{ chatId: string; snapshot: GameCombatStateSnapshot } | null>(null);
-  // Shared helper used by combat-end + return-to-pre-combat-turn so both paths reliably
-  // wipe the persisted snapshot, even if the exploration-state PATCH is still in flight
-  // when the user refreshes.
-  const clearCombatSnapshot = useCallback((chatId: string | null) => {
-    if (!chatId) return;
-    if (combatPersistTimer.current) {
-      clearTimeout(combatPersistTimer.current);
-      combatPersistTimer.current = null;
-    }
-    combatPendingSnapshotRef.current = null;
-    api.patch(`/chats/${chatId}/metadata`, { gameCombatState: null, gameTacticalCombatSnapshot: null }).catch(() => {});
-  }, []);
   useEffect(() => {
     if (combatRestoredChatIdRef.current !== activeChatId) return;
     if (!combatParty || !combatEnemies || gameState !== "combat") return;

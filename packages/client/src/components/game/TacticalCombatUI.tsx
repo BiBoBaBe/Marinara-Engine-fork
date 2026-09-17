@@ -511,6 +511,7 @@ export function TacticalCombatUI({
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const popupIdRef = useRef(0);
   const endedRef = useRef(false);
+  const launchGenerationRef = useRef(0);
 
   const playSfx = useCallback((tag: string) => audioManager.playSfx(tag, assets), [assets]);
 
@@ -520,8 +521,11 @@ export function TacticalCombatUI({
   }, []);
 
   useEffect(() => {
-    return () => clearTimers();
-  }, [clearTimers]);
+    return () => {
+      launchGenerationRef.current += 1;
+      clearTimers();
+    };
+  }, [chatId, clearTimers]);
 
   // ── Persist snapshot to chat metadata after every authoritative state change ──
   const persistSnapshot = useCallback(
@@ -532,17 +536,18 @@ export function TacticalCombatUI({
   );
 
   // ── Launch a fresh battle (payload build + player marking + setState/persist/SFX) ──
-  // Shared by the mount effect and the restart flow. `isCancelled` lets the mount
-  // effect drop a stale response after unmount; restart passes nothing.
+  // Mount, restart, and terrain fallback all discard responses superseded by a
+  // newer launch, a chat switch, or an unmount.
   const launchBattle = useCallback(
     (options?: {
-      isCancelled?: () => boolean;
       omitBattlefield?: boolean;
       seed?: number;
       battlefieldOverride?: TacticalBattlefieldBrief | null;
       environmentOverride?: string | null;
       formationOverride?: string | null;
     }) => {
+      const generation = ++launchGenerationRef.current;
+      const isCancelled = () => generation !== launchGenerationRef.current;
       setStarting(true);
       setStartError(null);
       setTerrainFallbackAvailable(false);
@@ -573,7 +578,7 @@ export function TacticalCombatUI({
       startMut
         .mutateAsync(startPayload)
         .then((res) => {
-          if (options?.isCancelled?.()) return;
+          if (isCancelled()) return;
           // Engine does NOT set isPlayer — the client marks the persona's combatant.
           const playerId = playerCombatantId ?? party[0]?.id ?? null;
           const marked: TacticalCombatState = {
@@ -583,13 +588,13 @@ export function TacticalCombatUI({
             ),
           };
           setState(marked);
-          onBattlefieldReady?.(marked);
           setStarting(false);
           persistSnapshot(marked);
           playSfx(SFX.start);
+          onBattlefieldReady?.(marked);
         })
         .catch((err: unknown) => {
-          if (options?.isCancelled?.()) return;
+          if (isCancelled()) return;
           setStarting(false);
           setTerrainFallbackAvailable(Boolean(requestedBattlefield && !options?.omitBattlefield));
           setStartError(err instanceof Error ? err.message : "Failed to start the tactical battle.");
@@ -619,11 +624,7 @@ export function TacticalCombatUI({
       setTerrainFallbackAvailable(true);
       return;
     }
-    let cancelled = false;
-    launchBattle({ isCancelled: () => cancelled });
-    return () => {
-      cancelled = true;
-    };
+    launchBattle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 

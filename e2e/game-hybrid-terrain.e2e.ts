@@ -5,6 +5,18 @@ import type {
 } from "../packages/shared/src/features/tactical-combat/types.js";
 import { seedUIState } from "./ui-state-fixture.js";
 
+type HybridTerrainFixture = {
+  acceptedCount: number;
+  isMutating: () => number;
+  unmount: () => void;
+};
+
+declare global {
+  interface Window {
+    __hybridTerrainFixture?: HybridTerrainFixture;
+  }
+}
+
 const party = [
   {
     id: "scout",
@@ -52,6 +64,81 @@ async function snapshot(request: APIRequestContext, chatId: string): Promise<Tac
   return metadata.gameTacticalCombatSnapshot;
 }
 
+async function createInitialTacticalState(request: APIRequestContext, chatId: string): Promise<TacticalCombatState> {
+  const response = await request.post("/api/game/combat/tactical/start", {
+    data: {
+      chatId,
+      party,
+      enemies,
+      seed: 0,
+      environment: "ruins",
+      formation: "line",
+    },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return ((await response.json()) as { state: TacticalCombatState }).state;
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function delayNextTacticalStart(
+  page: Page,
+  shouldDelay: (payload: Record<string, unknown>) => boolean,
+): Promise<{
+  release: () => void;
+  requestSeen: Promise<Record<string, unknown>>;
+  responseReady: Promise<void>;
+  responseComplete: Promise<void>;
+}> {
+  const release = deferred();
+  const requestSeen = deferred<Record<string, unknown>>();
+  const responseReady = deferred();
+  const responseComplete = deferred();
+  let delayed = false;
+  await page.route("**/api/game/combat/tactical/start", async (route) => {
+    const payload = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+    if (delayed || !shouldDelay(payload)) {
+      await route.continue();
+      return;
+    }
+    delayed = true;
+    requestSeen.resolve(payload);
+    try {
+      const response = await route.fetch();
+      responseReady.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+      responseComplete.resolve();
+    } catch (error) {
+      responseReady.reject(error);
+      responseComplete.reject(error);
+      throw error;
+    }
+  });
+  return {
+    release: release.resolve,
+    requestSeen: requestSeen.promise,
+    responseReady: responseReady.promise,
+    responseComplete: responseComplete.promise,
+  };
+}
+
+async function unmountBattle(page: Page) {
+  await page.evaluate(() => window.__hybridTerrainFixture?.unmount());
+}
+
+async function waitForSettledMutations(page: Page) {
+  await expect.poll(() => page.evaluate(() => window.__hybridTerrainFixture?.isMutating() ?? 0)).toBe(0);
+}
+
 /** Mount the actual battle surface; start, actions and persistence use the real local API. */
 async function mountBattle(
   page: Page,
@@ -84,13 +171,30 @@ async function mountBattle(
       const container = document.createElement("div");
       container.style.cssText = "position:fixed;inset:0;z-index:99999;background:#111827";
       document.body.append(container);
-      ReactDOM.createRoot(container).render(
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const root = ReactDOM.createRoot(container);
+      const fixture = {
+        acceptedCount: 0,
+        isMutating: () => queryClient.isMutating(),
+        unmount: () => {
+          root.unmount();
+          container.remove();
+        },
+      };
+      window.__hybridTerrainFixture = fixture;
+      root.render(
         React.createElement(
           QueryClientProvider,
           {
-            client: new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+            client: queryClient,
           },
-          React.createElement(TacticalCombatUI, { ...props, onCombatEnd: () => {} }),
+          React.createElement(TacticalCombatUI, {
+            ...props,
+            onBattlefieldReady: () => {
+              fixture.acceptedCount += 1;
+            },
+            onCombatEnd: () => {},
+          }),
         ),
       );
     },
@@ -239,3 +343,56 @@ test("An invalid GM terrain brief waits for explicit fallback without another mo
     await request.delete(`/api/chats/${chatId}`);
   }
 });
+
+for (const scenario of [
+  {
+    name: "restored restart",
+    async mount(page: Page, request: APIRequestContext, testInfo: TestInfo, chatId: string) {
+      const initialState = await createInitialTacticalState(request, chatId);
+      await mountBattle(page, testInfo, chatId, {}, initialState);
+    },
+    shouldDelay: () => true,
+    async trigger(page: Page) {
+      await page.getByTitle("Restart the battle", { exact: true }).click();
+      await page.getByRole("button", { name: "Restart", exact: true }).last().click();
+    },
+  },
+  {
+    name: "explicit generated fallback",
+    async mount(page: Page, _request: APIRequestContext, testInfo: TestInfo, chatId: string) {
+      await mountBattle(page, testInfo, chatId, {
+        features: [
+          { terrain: "wall", placement: "west", shape: "barrier" },
+          { terrain: "water", placement: "west", shape: "barrier" },
+        ],
+      });
+      await expect(page.getByRole("button", { name: "Use generated terrain", exact: true })).toBeVisible();
+    },
+    shouldDelay: (payload: Record<string, unknown>) => !("battlefield" in payload),
+    async trigger(page: Page) {
+      await page.getByRole("button", { name: "Use generated terrain", exact: true }).click();
+    },
+  },
+] as const) {
+  test(`Late tactical launch completion after unmount does not persist ${scenario.name}`, async ({
+    page,
+    request,
+  }, testInfo) => {
+    const chatId = await createGame(request);
+    const delayedStart = await delayNextTacticalStart(page, scenario.shouldDelay);
+    try {
+      await scenario.mount(page, request, testInfo, chatId);
+      await scenario.trigger(page);
+      await expect(delayedStart.requestSeen).resolves.toMatchObject({ chatId });
+      await delayedStart.responseReady;
+      await unmountBattle(page);
+      delayedStart.release();
+      await delayedStart.responseComplete;
+      await waitForSettledMutations(page);
+      await expect.poll(() => page.evaluate(() => window.__hybridTerrainFixture?.acceptedCount ?? 0)).toBe(0);
+      await expect.poll(() => snapshot(request, chatId)).toBeFalsy();
+    } finally {
+      await request.delete(`/api/chats/${chatId}`);
+    }
+  });
+}
