@@ -500,6 +500,9 @@ async function loadToolDefinitions(args: {
   const customToolDefs: CustomToolDef[] = [];
 
   const registeredToolSources = new Map<string, "built-in" | "custom" | "package">();
+  if (!args.resolveTools && (!args.nativeToolsAvailable || capabilityToolDefs().length === 0)) {
+    return { toolDefs, allToolDefs, customToolDefs };
+  }
   const enabledCustomTools = await args.customToolsStore.listEnabled();
 
   // A package's tools are attached even when every built-in and custom tool is switched off: the
